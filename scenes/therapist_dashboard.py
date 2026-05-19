@@ -2240,9 +2240,9 @@ class TherapistDashboardScene:
         W, H = self.WIDTH, self.HEIGHT
         _card_bg(surface, pa, alpha=220)
         table_y = pa.y + int(28*H/1080)
-        cols   = ["Date", "Patient", "Game", "Score", "Duration", "Difficulty"]
-        col_xs = [pa.x+int(16*W/1920), pa.x+int(230*W/1920), pa.x+int(510*W/1920),
-                  pa.x+int(720*W/1920), pa.x+int(860*W/1920), pa.x+int(1020*W/1920)]
+        cols   = ["Date", "Game", "Score", "Duration", "Difficulty", "Therapist"]
+        col_xs = [pa.x+int(16*W/1920),  pa.x+int(230*W/1920), pa.x+int(480*W/1920),
+                  pa.x+int(620*W/1920), pa.x+int(790*W/1920),  pa.x+int(980*W/1920)]
         for cx, c in zip(col_xs, cols):
             surface.blit(self.fnt["section"].render(c, True, (85,105,135)), (cx, table_y))
         pygame.draw.line(surface, (210,218,230),
@@ -2283,13 +2283,18 @@ class TherapistDashboardScene:
 
             date_str = str(s.get("played_at",""))[:16]
             mins, secs = divmod(int(s.get("duration_sec", 0)), 60)
-            dur_str = f"{mins}:{secs:02d}" if mins else f"{secs}s"
+            if mins and secs:
+                dur_str = f"{mins}min {secs}s"
+            elif mins:
+                dur_str = f"{mins}min"
+            else:
+                dur_str = f"{secs}s"
             vals = [date_str,
-                    s.get("patient_name","—"),
                     s.get("game","—"),
                     str(s.get("score","—")),
                     dur_str,
-                    s.get("difficulty","—")]
+                    s.get("difficulty","—"),
+                    s.get("therapist_name","—")]
             for cx, v in zip(col_xs, vals):
                 surface.blit(self.fnt["small"].render(v, True, (40,55,75)),
                              (cx, ry + int(14*H/1080)))
@@ -2302,7 +2307,7 @@ class TherapistDashboardScene:
         W, H = self.WIDTH, self.HEIGHT
         _card_bg(surface, pa, alpha=220)
         lx = pa.x + int(16*W/1920)
-        ly = pa.y + int(28*H/1080)
+        ly = pa.y + int(20*H/1080)
 
         pt = self.selected_patient
         if not pt:
@@ -2322,47 +2327,76 @@ class TherapistDashboardScene:
                          self.fnt["empty_head"], self.fnt["small_i"])
             return
 
-        total   = len(sessions)
-        scores  = [s.get("score", 0) for s in sessions]
-        durs    = [s.get("duration_sec", 0) for s in sessions]
-        best    = max(scores)
-        avg     = sum(scores) / total
-        tot_dur = sum(durs)
-        tot_min, tot_sec = divmod(tot_dur, 60)
+        # Group sessions by game name
+        from collections import defaultdict
+        by_game = defaultdict(list)
+        for s in sessions:
+            by_game[s.get("game", "Unknown")].append(s)
 
-        stats = [
-            ("Total Sessions",   str(total)),
-            ("Best Score",       str(best)),
-            ("Average Score",    f"{avg:.1f}"),
-            ("Total Play Time",  f"{tot_min}m {tot_sec}s"),
+        GAME_COLORS = [
+            (60, 140, 210), (55, 185, 100), (210, 120, 40),
+            (160, 60, 200), (200, 60, 80),  (40, 180, 190),
         ]
-        sw = int((pa.width - int(64*W/1920)) // 4)
-        for i, (label, val) in enumerate(stats):
-            sx = lx + i * (sw + int(16*W/1920))
-            box = pygame.Rect(sx, ly, sw, int(90*H/1080))
-            _card_bg(surface, box, alpha=235, border_col=(185,210,240), border_w=1)
-            surface.blit(self.fnt["section"].render(label, True, (85,105,135)),
-                         (sx + int(10*W/1920), ly + int(10*H/1080)))
-            surface.blit(self.fnt["panel_title"].render(val, True, (40,100,210)),
-                         (sx + int(10*W/1920), ly + int(40*H/1080)))
 
-        # Recent sessions bar chart (score per session, last 10)
-        chart_y = ly + int(120*H/1080)
-        surface.blit(self.fnt["section"].render("Score per Session (recent)", True, (85,105,135)),
-                     (lx, chart_y))
-        chart_y += int(32*H/1080)
-        recent = sessions[:10][::-1]
-        if recent:
-            max_s  = max(s.get("score", 1) for s in recent) or 1
-            bar_w  = int((pa.width - int(64*W/1920)) // len(recent))
-            bar_h_max = int(180*H/1080)
-            for i, s in enumerate(recent):
-                bh = max(4, int(bar_h_max * s.get("score", 0) / max_s))
-                bx = lx + i * (bar_w + 4)
-                br = pygame.Rect(bx, chart_y + bar_h_max - bh, bar_w - 4, bh)
-                pygame.draw.rect(surface, (60, 140, 210), br, border_radius=4)
-                sc_s = self.fnt["time"].render(str(s.get("score",0)), True, (60,80,120))
-                surface.blit(sc_s, sc_s.get_rect(center=(br.centerx, br.y - int(14*H/1080))))
+        section_h   = int(200*H/1080)
+        section_gap = int(18*H/1080)
+        cy = ly
+
+        for g_idx, (game_name, g_sessions) in enumerate(by_game.items()):
+            if cy + section_h > pa.bottom - int(10*H/1080):
+                break
+
+            bar_col = GAME_COLORS[g_idx % len(GAME_COLORS)]
+            g_scores = [s.get("score", 0) for s in g_sessions]
+            g_durs   = [s.get("duration_sec", 0) for s in g_sessions]
+            g_total  = len(g_sessions)
+            g_best   = max(g_scores)
+            g_avg    = sum(g_scores) / g_total
+            g_tmin, g_tsec = divmod(sum(g_durs), 60)
+
+            # Section heading
+            surface.blit(self.fnt["section"].render(game_name, True, bar_col),
+                         (lx, cy))
+            pygame.draw.line(surface, bar_col,
+                             (lx, cy + int(28*H/1080)),
+                             (pa.right - int(16*W/1920), cy + int(28*H/1080)), 1)
+            cy += int(36*H/1080)
+
+            # Stat boxes
+            stat_items = [
+                ("Sessions",    str(g_total)),
+                ("Best Score",  str(g_best)),
+                ("Avg Score",   f"{g_avg:.1f}"),
+                ("Play Time",   f"{g_tmin}m {g_tsec}s" if g_tmin else f"{g_tsec}s"),
+            ]
+            sw = int((pa.width - int(64*W/1920)) // 4)
+            for si, (lbl, val) in enumerate(stat_items):
+                sx = lx + si * (sw + int(16*W/1920))
+                box = pygame.Rect(sx, cy, sw, int(70*H/1080))
+                _card_bg(surface, box, alpha=235,
+                         border_col=(*bar_col, 255), border_w=1)
+                surface.blit(self.fnt["tag"].render(lbl, True, (100,120,150)),
+                             (sx + int(8*W/1920), cy + int(8*H/1080)))
+                surface.blit(self.fnt["body_b"].render(val, True, bar_col),
+                             (sx + int(8*W/1920), cy + int(34*H/1080)))
+            cy += int(80*H/1080)
+
+            # Mini bar chart — last 8 sessions
+            recent = g_sessions[:8][::-1]
+            if recent:
+                max_s     = max(s.get("score", 1) for s in recent) or 1
+                bar_w     = int((pa.width - int(64*W/1920)) // len(recent))
+                bar_h_max = int(60*H/1080)
+                for i, s in enumerate(recent):
+                    bh = max(4, int(bar_h_max * s.get("score", 0) / max_s))
+                    bx = lx + i * (bar_w + 4)
+                    br = pygame.Rect(bx, cy + bar_h_max - bh, bar_w - 4, bh)
+                    pygame.draw.rect(surface, bar_col, br, border_radius=4)
+                    sc_s = self.fnt["time"].render(str(s.get("score", 0)),
+                                                   True, (80, 100, 130))
+                    surface.blit(sc_s, sc_s.get_rect(
+                        center=(br.centerx, cy + bar_h_max - bh - int(14*H/1080))))
+            cy += int(60*H/1080) + section_gap
 
     # ──────────────────────────────────────────────────────────────────
     #  PANEL 3: CALIBRATION RECORDS

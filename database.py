@@ -180,18 +180,20 @@ class Database:
         if patient_id is not None:
             cur = self.conn.execute("""
                 SELECT s.id, s.played_at, s.game, s.score, s.duration_sec, s.difficulty,
-                       p.full_name AS patient_name
+                       p.full_name AS patient_name, t.full_name AS therapist_name
                 FROM sessions s
-                LEFT JOIN patients p ON s.patient_id = p.id
+                LEFT JOIN patients   p ON s.patient_id   = p.id
+                LEFT JOIN therapists t ON s.therapist_id = t.id
                 WHERE s.therapist_id = ? AND s.patient_id = ?
                 ORDER BY s.played_at DESC
             """, (therapist_id, patient_id))
         else:
             cur = self.conn.execute("""
                 SELECT s.id, s.played_at, s.game, s.score, s.duration_sec, s.difficulty,
-                       p.full_name AS patient_name
+                       p.full_name AS patient_name, t.full_name AS therapist_name
                 FROM sessions s
-                LEFT JOIN patients p ON s.patient_id = p.id
+                LEFT JOIN patients   p ON s.patient_id   = p.id
+                LEFT JOIN therapists t ON s.therapist_id = t.id
                 WHERE s.therapist_id = ?
                 ORDER BY s.played_at DESC
             """, (therapist_id,))
