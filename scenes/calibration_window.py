@@ -65,33 +65,33 @@ DIFFICULTY_PRESETS = {
     "Easy": {
         "threshold_pct": 40,
         "speed":         "Slow",
-        "duration":      "60 seconds",
+        "duration":      "60 s",
         "difficulty":    "Easy",
         "desc":          "Wide range, slow pace — ideal for early rehabilitation",
         "color":         (60, 180, 100),
     },
-    "Moderate": {
+    "Medium": {
         "threshold_pct": 60,
         "speed":         "Normal",
-        "duration":      "120 seconds",
-        "difficulty":    "Moderate",
+        "duration":      "120 s",
+        "difficulty":    "Medium",
         "desc":          "Balanced challenge — recommended for most patients",
         "color":         (60, 130, 220),
     },
     "Hard": {
         "threshold_pct": 80,
         "speed":         "Fast",
-        "duration":      "180 seconds",
+        "duration":      "180 s",
         "difficulty":    "Hard",
         "desc":          "High precision, faster pace — for advanced recovery",
         "color":         (220, 90, 60),
     },
 }
 
-PRESET_ORDER     = ["Easy", "Moderate", "Hard"]
+PRESET_ORDER     = ["Easy", "Medium", "Hard"]
 SPEED_OPTS       = ["Slow", "Normal", "Fast"]
-DIFFICULTY_OPTS  = ["Easy", "Moderate", "Hard"]
-DURATION_OPTS    = ["60 seconds", "120 seconds", "180 seconds", "Custom"]
+DIFFICULTY_OPTS  = ["Easy", "Medium", "Hard"]
+DURATION_OPTS    = ["60 s", "120 s", "180 s", "Custom"]
 THRESHOLD_PCTS   = [30, 40, 50, 60, 70, 80, 90]
 
 RECORD_DURATION  = 3.0
@@ -123,14 +123,14 @@ class CalibrationWindow:
         self.live_value    = 0.0
 
         # ── results-phase: preset & advanced settings ─────────────────
-        self.selected_preset   = "Moderate"   # Easy / Moderate / Hard / Custom
+        self.selected_preset   = "Medium"     # Easy / Medium / Hard / Custom
         self.advanced_open     = False
 
         # advanced settings (start at Moderate defaults)
         self.adv_threshold_pct = 60           # int, one of THRESHOLD_PCTS
         self.adv_speed         = "Normal"
-        self.adv_duration      = "120 seconds"
-        self.adv_difficulty    = "Moderate"
+        self.adv_duration      = "120 s"
+        self.adv_difficulty    = "Medium"
         self.adv_custom_dur    = ""           # text when duration == "Custom"
         self.adv_dur_active    = False        # custom duration field focused
 
@@ -350,7 +350,7 @@ class CalibrationWindow:
     def _enter_results(self):
         self.phase = "results"
         # seed advanced settings from Moderate preset scaled to actual average
-        self._apply_preset("Moderate")
+        self._apply_preset("Medium")
 
     def _apply_preset(self, name):
         self.selected_preset = name
@@ -366,7 +366,7 @@ class CalibrationWindow:
     def _accept(self):
         avg = sum(self.trial_results) / len(self.trial_results) if self.trial_results else 0.0
         threshold = round(avg * self.adv_threshold_pct / 100.0, 4)
-        dur_display = (self.adv_custom_dur + " seconds"
+        dur_display = (self.adv_custom_dur + " s"
                        if self.adv_duration == "Custom" and self.adv_custom_dur
                        else self.adv_duration)
         self.calibration_result = {
@@ -468,7 +468,7 @@ class CalibrationWindow:
         begin_r = pygame.Rect(cx - int(170 * W / 1920), area.y + int(620 * H / 1080),
                               int(340 * W / 1920),       int(54 * H / 1080))
         pygame.draw.rect(surface, C["accent"], begin_r, border_radius=14)
-        b_s = self.fnt["btn"].render("Begin Calibration  →", True, C["white"])
+        b_s = self.fnt["sym25"].render("Begin Calibration  →", True, C["white"])
         surface.blit(b_s, b_s.get_rect(center=begin_r.center))
         self._begin_rect = begin_r
 
@@ -678,14 +678,14 @@ class CalibrationWindow:
         self._draw_preset_cards(surface, rx, ry2, rw, C, avg)
 
         # advanced settings toggle button
-        adv_y = ry2 + int(230 * H / 1080)
+        adv_y = ry2 + int(290 * H / 1080)
         adv_lbl = ("▲  Advanced Settings (Custom)" if self.advanced_open
                    else "▼  Advanced Settings")
         adv_col = C["accent2"] if self.advanced_open else C["panel2"]
         adv_r   = pygame.Rect(rx, adv_y, rw, int(40 * H / 1080))
         pygame.draw.rect(surface, adv_col, adv_r, border_radius=10)
         pygame.draw.rect(surface, C["border"], adv_r, 1, border_radius=10)
-        adv_s = self.fnt["btn"].render(adv_lbl, True, C["text"])
+        adv_s = self.fnt["sym25"].render(adv_lbl, True, C["text"])
         surface.blit(adv_s, adv_s.get_rect(midleft=(adv_r.x + int(16 * W / 1920),
                                                       adv_r.centery)))
         self._adv_toggle_rect = adv_r
@@ -720,7 +720,7 @@ class CalibrationWindow:
         n     = len(PRESET_ORDER)
         gap   = int(14 * W / 1920)
         cw    = (rw - gap * (n - 1)) // n
-        ch    = int(212 * H / 1080)
+        ch    = int(272 * H / 1080)
 
         self._preset_card_rects = {}
         for i, name in enumerate(PRESET_ORDER):
@@ -767,7 +767,7 @@ class CalibrationWindow:
                 surface.blit(val_s, (cr.x + int(14 * W / 1920) + lbl_s.get_width() + int(6 * W / 1920), ty))
                 ty += int(36 * H / 1080)
 
-            # description
+            # description — placed below the last row
             desc_words = p["desc"].split()
             desc_lines, cur = [], ""
             for w in desc_words:
@@ -780,7 +780,7 @@ class CalibrationWindow:
                     cur = test
             if cur:
                 desc_lines.append(cur)
-            dy2 = cr.bottom - int(14 * H / 1080) - len(desc_lines) * int(22 * H / 1080)
+            dy2 = ty + int(10 * H / 1080)
             for dl in desc_lines:
                 ds = self.fnt["small"].render(dl, True, C["sub"])
                 surface.blit(ds, (cr.x + int(14 * W / 1920), dy2))

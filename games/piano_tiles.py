@@ -11,6 +11,7 @@ import random
 from screens.base import BaseScreen
 from games.fatigue import FatigueMixin
 from sensors.input_handler import input_handler
+from audio import play_success, play_error, start_music, stop_music
 from constants import *
 
 DURATIONS   = {"Easy": 30, "Medium": 45, "Hard": 60}
@@ -113,11 +114,10 @@ class PianoTilesGame(FatigueMixin, BaseScreen):
     def update(self, dt):
         state = input_handler.get_state()
 
-        # Finger button polling (ESP32 hardware buttons)
-        if input_handler.connected:
-            for i, pressed in enumerate(state["fingers"]):
-                if pressed:
-                    self._hit_lane(i)
+        # Finger button polling (hardware or stub)
+        for i, pressed in enumerate(state["fingers"]):
+            if pressed:
+                self._hit_lane(i)
 
         self._update_fatigue(dt, state)
         if self.fatigue_paused or self.paused:

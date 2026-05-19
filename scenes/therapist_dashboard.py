@@ -119,9 +119,9 @@ SKILL_GAMES = {
                        "Gravity Catch", "Key and Lock", "Steady Aim"],
 }
 
-DIFFICULTY_OPTS = ["Easy", "Moderate", "Hard", "Custom"]
+DIFFICULTY_OPTS = ["Easy", "Medium", "Hard", "Custom"]
 SMART_PRESETS   = {
-    "Mild":     {"duration": "60 seconds", "speed": "Normal", "sensitivity": "Medium", "difficulty": "Moderate"},
+    "Mild":     {"duration": "60 seconds", "speed": "Normal", "sensitivity": "Medium", "difficulty": "Medium"},
     "Moderate": {"duration": "60 seconds", "speed": "Normal", "sensitivity": "Medium", "difficulty": "Easy"},
 }
 
@@ -442,7 +442,7 @@ class TherapistDashboardScene:
         self.gc = {
             "selected_game": None,          # Tuple of (game_name, game_type) or None if not selected
             "duration": "60 seconds",       # Session duration (60/120/180 seconds or Custom)
-            "difficulty": "Moderate",       # Difficulty level (Easy/Moderate/Hard/Custom)
+            "difficulty": "Medium",         # Difficulty level (Easy/Medium/Hard/Custom)
             "speed": "Normal",              # Game speed (Slow/Normal/Fast)
             "sensitivity": "Medium",        # Input sensitivity (Low/Medium/High)
             "resistance": "Medium Ball",    # Ball resistance for games (Soft/Medium/Hard)
@@ -948,9 +948,8 @@ class TherapistDashboardScene:
                 dur_sec = int(dur_str.split()[0])
             except (ValueError, IndexError):
                 dur_sec = 60
-        _diff_remap = {"Moderate": "Medium"}  # dashboard uses "Moderate", games use "Medium"
-        raw_diff = self.gc.get("difficulty", "Easy")
-        game_diff = _diff_remap.get(raw_diff, raw_diff)
+        raw_diff  = self.gc.get("difficulty", "Easy")
+        game_diff = raw_diff
         builtins.pending_game_data = {
             "account_id":   self.account.get("id"),
             "account":      self.account,
