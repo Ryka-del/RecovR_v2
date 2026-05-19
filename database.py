@@ -82,6 +82,28 @@ class Database:
             )
         """)
 
+        # Calibration records
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS calibrations (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                patient_id      INTEGER,
+                therapist_id    INTEGER,
+                game_type       TEXT,
+                sensor          TEXT,
+                sensitivity     TEXT,
+                average         REAL,
+                threshold       REAL,
+                threshold_pct   INTEGER,
+                speed           TEXT,
+                duration        TEXT,
+                difficulty      TEXT,
+                preset          TEXT,
+                calibrated_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (patient_id)   REFERENCES patients(id),
+                FOREIGN KEY (therapist_id) REFERENCES therapists(id)
+            )
+        """)
+
         # Session records
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
@@ -99,6 +121,51 @@ class Database:
         """)
 
         self.conn.commit()
+
+    # ── CALIBRATION RECORDS ───────────────────────────────────────────
+
+    def save_calibration(self, patient_id, therapist_id, result):
+        p = result.get("params", {})
+        self.conn.execute("""
+            INSERT INTO calibrations
+              (patient_id, therapist_id, game_type, sensor, sensitivity,
+               average, threshold, threshold_pct, speed, duration, difficulty, preset)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            patient_id, therapist_id,
+            result.get("game_type",   ""),
+            result.get("sensor",      ""),
+            result.get("sensitivity", ""),
+            result.get("average",     0.0),
+            result.get("threshold",   0.0),
+            p.get("threshold_pct", 0),
+            p.get("speed",         ""),
+            p.get("duration",      ""),
+            p.get("difficulty",    ""),
+            result.get("preset",      ""),
+        ))
+        self.conn.commit()
+
+    def get_calibrations(self, therapist_id, patient_id=None):
+        if patient_id is not None:
+            cur = self.conn.execute("""
+                SELECT c.*, p.full_name AS patient_name, t.full_name AS therapist_name
+                FROM calibrations c
+                LEFT JOIN patients p ON c.patient_id = p.id
+                LEFT JOIN therapists t ON c.therapist_id = t.id
+                WHERE c.therapist_id = ? AND c.patient_id = ?
+                ORDER BY c.calibrated_at DESC
+            """, (therapist_id, patient_id))
+        else:
+            cur = self.conn.execute("""
+                SELECT c.*, p.full_name AS patient_name, t.full_name AS therapist_name
+                FROM calibrations c
+                LEFT JOIN patients p ON c.patient_id = p.id
+                LEFT JOIN therapists t ON c.therapist_id = t.id
+                WHERE c.therapist_id = ?
+                ORDER BY c.calibrated_at DESC
+            """, (therapist_id,))
+        return [dict(r) for r in cur.fetchall()]
 
     # ── SESSION RECORDS ───────────────────────────────────────────────
 

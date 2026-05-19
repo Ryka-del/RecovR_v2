@@ -1528,6 +1528,11 @@ class TherapistDashboardScene:
                 self.calibration_done   = True
                 self.calibration_result = self._cal_win.calibration_result
                 self._cal_win           = None
+                pt_id = (self.selected_patient or {}).get("id")
+                if pt_id and hasattr(self.db, "save_calibration"):
+                    self.db.save_calibration(
+                        pt_id, self.account["id"], self.calibration_result
+                    )
             elif self._cal_win.cancelled:
                 self._cal_win = None
 
@@ -2360,30 +2365,53 @@ class TherapistDashboardScene:
     def _draw_calibration(self, surface, pa):
         W, H = self.WIDTH, self.HEIGHT
         _card_bg(surface, pa, alpha=220)
-        table_y = pa.y+int(28*H/1080)
-        cols    = ["Data Type","Force Sensor","Flex Sensor","Motion Sensor","Timestamp","Therapist"]
-        # Widened column positions to fit larger font
-        col_xs  = [pa.x+int(16*W/1920),  pa.x+int(230*W/1920), pa.x+int(450*W/1920),
-                   pa.x+int(670*W/1920), pa.x+int(900*W/1920), pa.x+int(1120*W/1920)]
-        for cx,c in zip(col_xs,cols):
-            surface.blit(self.fnt["section"].render(c,True,(85,105,135)),(cx,table_y))
-        pygame.draw.line(surface,(210,218,230),
-                         (pa.x+int(16*W/1920),table_y+int(36*H/1080)),
-                         (pa.right-int(16*W/1920),table_y+int(36*H/1080)),1)
-        info_r = pygame.Rect(pa.x+int(16*W/1920),table_y+int(50*H/1080),
-                             pa.width-int(32*W/1920),int(64*H/1080))
-        pygame.draw.rect(surface,(235,245,255),info_r,border_radius=8)
-        pygame.draw.rect(surface,(180,210,240),info_r,1,border_radius=8)
-        surface.blit(self.fnt["sym26"].render(
-            "ℹ  Calibration values (Raw, Average Max, Resting, Threshold) are recorded "
-            "per patient at the start of each session.",
-            True,(65,105,165)),(info_r.x+int(14*W/1920),info_r.y+int(18*H/1080)))
-        _empty_state(surface,
-                     pygame.Rect(pa.x,table_y+int(130*H/1080),pa.width,
-                                 pa.bottom-table_y-int(130*H/1080)),
-                     "🎯","No calibration records yet",
-                     "Calibration data will appear here after the first session calibration.",
-                     self.fnt["empty_head"],self.fnt["small_i"])
+        table_y = pa.y + int(28*H/1080)
+
+        cols   = ["Patient", "Game", "Sensor", "Avg", "Threshold", "Sensitivity", "Date"]
+        col_xs = [pa.x+int(16*W/1920),  pa.x+int(220*W/1920), pa.x+int(430*W/1920),
+                  pa.x+int(600*W/1920), pa.x+int(730*W/1920),  pa.x+int(880*W/1920),
+                  pa.x+int(1060*W/1920)]
+        for cx, c in zip(col_xs, cols):
+            surface.blit(self.fnt["section"].render(c, True, (85,105,135)), (cx, table_y))
+        pygame.draw.line(surface, (210,218,230),
+                         (pa.x+int(16*W/1920), table_y+int(32*H/1080)),
+                         (pa.right-int(16*W/1920), table_y+int(32*H/1080)), 1)
+
+        records = (self.db.get_calibrations(self.account["id"])
+                   if hasattr(self.db, "get_calibrations") else [])
+
+        if not records:
+            _empty_state(surface,
+                         pygame.Rect(pa.x, table_y+int(48*H/1080), pa.width,
+                                     pa.bottom-table_y-int(48*H/1080)),
+                         "🎯", "No calibration records yet",
+                         "Calibration data will appear here after the first session calibration.",
+                         self.fnt["empty_head"], self.fnt["small_i"])
+            return
+
+        row_h  = int(38*H/1080)
+        max_rows = int((pa.bottom - table_y - int(48*H/1080)) // row_h)
+        for j, rec in enumerate(records[:max_rows]):
+            ry = table_y + int(44*H/1080) + j * row_h
+            if j % 2 == 0:
+                row_r = pygame.Rect(pa.x+int(8*W/1920), ry, pa.width-int(16*W/1920), row_h)
+                bg = pygame.Surface((row_r.width, row_r.height), pygame.SRCALPHA)
+                pygame.draw.rect(bg, (240,246,255,160),
+                                 (0,0,row_r.width,row_r.height), border_radius=6)
+                surface.blit(bg, row_r.topleft)
+
+            date_str = str(rec.get("calibrated_at", ""))[:10]
+            vals = [
+                rec.get("patient_name", "—"),
+                rec.get("game_type", "—"),
+                rec.get("sensor", "—"),
+                f"{rec.get('average', 0):.3f}",
+                f"{rec.get('threshold', 0):.3f}",
+                rec.get("sensitivity", "—"),
+                date_str,
+            ]
+            for cx, v in zip(col_xs, vals):
+                surface.blit(self.fnt["body"].render(v, True, (40,55,75)), (cx, ry+int(9*H/1080)))
 
     # ──────────────────────────────────────────────────────────────────
     #  PANEL 4: GAME CONFIGURATION
