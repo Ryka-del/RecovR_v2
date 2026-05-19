@@ -807,7 +807,7 @@ class TherapistDashboardScene:
 
     # Maps the specific game name chosen in Game Config to a scene key in main.py
     _GAME_SCENE_MAP = {
-        "Basketball": "space_hoops",
+        "Basketball": "basketball",
         "Steady Aim": "steady_aim",
     }
 

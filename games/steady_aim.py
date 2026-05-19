@@ -71,6 +71,8 @@ class SteadyAimGame(FatigueMixin, BaseScreen):
         self._init_fatigue()
         start_music()
         self._reset()
+        self._show_instructions = True
+        self._pause_btn_rect    = pygame.Rect(GAME_W - 90, 13, 70, 46)
 
     def _reset(self):
         self._init_fatigue()
@@ -111,6 +113,14 @@ class SteadyAimGame(FatigueMixin, BaseScreen):
         return max(-1.0, min(1.0, raw))
 
     def handle_event(self, event):
+        if self._show_instructions:
+            if (event.type == pygame.KEYDOWN or
+                    (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1) or
+                    input_handler.was_pressed(event, "action")):
+                self._show_instructions = False
+                self.start_time = pygame.time.get_ticks()
+            return
+
         if self.game_over:
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if self._results_again_rect.collidepoint(event.pos):
@@ -141,13 +151,17 @@ class SteadyAimGame(FatigueMixin, BaseScreen):
                 if self.pause_sel == 0: self.paused = False
                 elif self.pause_sel == 1: self._reset(); self.paused = False
                 elif self.pause_sel == 2: self.vol_active = True
-                else: self._exit_to_menu()
+                else: self._exit_to_game_config()
+            return
+        if (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
+                and self._pause_btn_rect.collidepoint(event.pos)):
+            self.paused = True
             return
         if input_handler.was_pressed(event, "back"):
             self.paused = True
 
     def update(self, dt):
-        if self.game_over:
+        if self._show_instructions or self.game_over:
             return
 
         self._state = input_handler.get_state()
@@ -192,9 +206,62 @@ class SteadyAimGame(FatigueMixin, BaseScreen):
 
     def _exit_to_game_config(self):
         import builtins
+        stop_music()
         builtins.pending_panel   = 4
         builtins.pending_patient = self._patient
+        builtins.pending_account = self.account
         self.manager.go_to("therapist_dashboard")
+
+    def _draw_instructions(self, surface):
+        T = get_theme()
+        ov = pygame.Surface((GAME_W, GAME_H), pygame.SRCALPHA)
+        ov.fill((0, 0, 0, 210))
+        surface.blit(ov, (0, 0))
+
+        pw, ph = 860, 570
+        px, py = (GAME_W - pw) // 2, (GAME_H - ph) // 2
+        bg = pygame.Surface((pw, ph), pygame.SRCALPHA)
+        bg.fill((18, 26, 46, 252))
+        surface.blit(bg, (px, py))
+        pygame.draw.rect(surface, T["ACCENT"], pygame.Rect(px, py, pw, ph), 2, border_radius=16)
+
+        f_title = pygame.font.SysFont("monospace", 36, bold=True)
+        f_head  = pygame.font.SysFont("monospace", 22, bold=True)
+        f_body  = pygame.font.SysFont("monospace", 19)
+        f_hint  = pygame.font.SysFont("monospace", 21, bold=True)
+
+        diff_col = {"Easy": T["GREEN"], "Medium": T["YELLOW"], "Hard": T["RED"]}[self.difficulty]
+        title = f_title.render("STEADY AIM  --  How to Play", True, diff_col)
+        surface.blit(title, title.get_rect(centerx=GAME_W // 2, top=py + 26))
+        pygame.draw.line(surface, T["ACCENT"], (px + 40, py + 78), (px + pw - 40, py + 78), 1)
+
+        y = py + 96
+        for header, lines in [
+            ("OBJECTIVE", [
+                "Move the cursor into the glowing circle.",
+                "Hold inside until the arc fills completely -- then you score!",
+            ]),
+            ("CONTROLS", [
+                "Tilt wrist LEFT / RIGHT  to move cursor horizontally.",
+                "Tilt wrist UP / DOWN     to move cursor vertically.",
+            ]),
+            ("THIS SESSION", [
+                f"Hold time per circle:  {self.hold_time:.1f} seconds",
+                f"Goal:                  Hit {self.goal} circles",
+                f"Time limit:            {int(self.duration)} seconds",
+                f"Difficulty:            {self.difficulty}",
+            ]),
+        ]:
+            surface.blit(f_head.render(header, True, T["ACCENT"]), (px + 48, y))
+            y += 30
+            for line in lines:
+                surface.blit(f_body.render(line, True, T["TEXT"]), (px + 64, y))
+                y += 26
+            y += 14
+
+        blink_col = T["YELLOW"] if (pygame.time.get_ticks() // 600) % 2 == 0 else T["GRAY"]
+        hint = f_hint.render("Press any key or click to begin", True, blink_col)
+        surface.blit(hint, hint.get_rect(centerx=GAME_W // 2, bottom=py + ph - 20))
 
     def _end_game(self):
         stop_music()
@@ -225,6 +292,10 @@ class SteadyAimGame(FatigueMixin, BaseScreen):
             pygame.draw.line(surface, T["PANEL"], (0, y), (GAME_W, y), 1)
         for x in range(0, GAME_W, 80):
             pygame.draw.line(surface, T["PANEL"], (x, 0), (x, GAME_H), 1)
+
+        if self._show_instructions:
+            self._draw_instructions(surface)
+            return
 
         font_hud = self._font_hud
         font_sm  = self._font_sm
@@ -295,6 +366,14 @@ class SteadyAimGame(FatigueMixin, BaseScreen):
         surface.blit(font_hud.render(
             f"{max(0, int(self.time_left)):02d}s", True, time_col),
             (GAME_W - 160, 18))
+
+        # Pause button
+        pb     = self._pause_btn_rect
+        pb_col = T["ACCENT"]
+        pygame.draw.rect(surface, T["PANEL"], pb, border_radius=8)
+        pygame.draw.rect(surface, pb_col, pb, 2, border_radius=8)
+        pb_lbl = font_sm.render("II", True, pb_col)
+        surface.blit(pb_lbl, pb_lbl.get_rect(center=pb.center))
 
         # Hold progress bar (below HUD)
         if inside:

@@ -24,17 +24,25 @@ class FatigueMixin:
     def _update_fatigue(self, dt, state):
         if self.fatigue_paused:
             return
-        grip_delta = abs(state.get("grip",   0.0) - self._last_grip)
-        tilt_delta = abs(state.get("tilt_x", 0.0) - self._last_tilt)
+        grip       = state.get("grip",   0.0)
+        tilt       = state.get("tilt_x", 0.0)
         finger_any = any(state.get("fingers", []))
-        if grip_delta > ACTIVITY_THRESH or tilt_delta > ACTIVITY_THRESH or finger_any:
+        # Active if there is any grip/tilt (sustained holds count, not just changes)
+        is_active = (
+            grip > ACTIVITY_THRESH or
+            abs(tilt) > ACTIVITY_THRESH or
+            abs(grip - self._last_grip) > ACTIVITY_THRESH or
+            abs(tilt - self._last_tilt) > ACTIVITY_THRESH or
+            finger_any
+        )
+        if is_active:
             self.fatigue_timer = 0.0
         else:
             self.fatigue_timer += dt
             if self.fatigue_timer >= FATIGUE_TIMEOUT:
                 self.fatigue_paused = True
-        self._last_grip = state.get("grip",   0.0)
-        self._last_tilt = state.get("tilt_x", 0.0)
+        self._last_grip = grip
+        self._last_tilt = tilt
 
     def _resume_fatigue(self):
         self.fatigue_timer  = 0.0

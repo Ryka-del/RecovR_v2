@@ -77,6 +77,7 @@ from scenes.game_scene          import make_game_scene
 # --- IMPORT GAMES ---
 from games.space_hoops import SpaceHoopsGame
 from games.steady_aim  import SteadyAimGame
+from games.basketball  import BasketballGame
 
 SCENES = {
     "therapist_welcome"  : TherapistWelcomeScene,
@@ -88,6 +89,7 @@ SCENES = {
     # Games
     "space_hoops"        : make_game_scene(SpaceHoopsGame),
     "steady_aim"         : make_game_scene(SteadyAimGame),
+    "basketball"         : make_game_scene(BasketballGame),
 }
 
 # --- CROSSFADE ---
