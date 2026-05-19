@@ -156,8 +156,9 @@ class BasketballGame(FatigueMixin, BaseScreen):
         self._show_instructions = True
 
     def _reset(self):
-        self.game_over      = False
-        self._pending_score = False
+        self.game_over           = False
+        self._pending_score      = False
+        self._grip_ignore_timer  = 0.0
         self.score          = 0
         self.reps           = 0
         self.time_left      = float(self.time_start)
@@ -198,8 +199,11 @@ class BasketballGame(FatigueMixin, BaseScreen):
             if (event.type == pygame.KEYDOWN or
                     (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1) or
                     input_handler.was_pressed(event, "action")):
-                self._show_instructions = False
-                self.start_time = pygame.time.get_ticks()
+                self._show_instructions    = False
+                self.start_time            = pygame.time.get_ticks()
+                self._grip                 = 0.0
+                self._squeezing            = False
+                self._grip_ignore_timer    = 0.8   # ignore grip for 0.8s so dismiss-squeeze doesn't charge bar
             return
 
         if self.game_over:
@@ -268,6 +272,13 @@ class BasketballGame(FatigueMixin, BaseScreen):
 
         raw = self._normalize(self._state["grip"])
 
+        # Grace period after instructions dismissed — ignore grip so the dismiss-squeeze doesn't charge bar
+        if self._grip_ignore_timer > 0:
+            self._grip_ignore_timer -= dt
+            raw = 0.0
+            self._grip      = 0.0
+            self._squeezing = False
+
         # Evaluate zone from CURRENT grip before updating it
         needle_now = 1.0 - self._grip
         half       = self.zone_w / 2
@@ -296,10 +307,11 @@ class BasketballGame(FatigueMixin, BaseScreen):
             if self.zone_pos > 0.55: self.zone_dir = -1
             if self.zone_pos < 0.10: self.zone_dir =  1
 
-        # Needle: rises while squeezing, freezes when released
+        # Needle: rises while squeezing, drops to 0 instantly on release
         if raw > 0.1:
             self._grip = min(1.0, self._grip + RAMP_UP * dt)
-        # else: no change — needle stays at current position
+        else:
+            self._grip = 0.0
 
         # Ball physics
         if self.ball_active:
@@ -312,11 +324,10 @@ class BasketballGame(FatigueMixin, BaseScreen):
             if (abs(self.ball_x - hcx) < HOOP_RX and
                     abs(self.ball_y - hcy) < BALL_R + HOOP_RY):
                 if self._pending_score:
-                    self.score      += 1
-                    self.reps       += 1
-                    self.time_left  += self.time_bonus
-                    self.score_flash = 0.6
-                    self.feedback    = (f"+{self.time_bonus}s  PERFECT!", (0, 255, 160), 1.5)
+                    self.score       += 1
+                    self.reps        += 1
+                    self.score_flash  = 0.6
+                    self.feedback     = ("PERFECT!", (0, 255, 160), 1.5)
                     play_success()
                     self._pending_score = False
                 self.ball_active = False
@@ -400,7 +411,7 @@ class BasketballGame(FatigueMixin, BaseScreen):
             ]),
             ("THIS SESSION", [
                 f"Goal:          Score {self.goal} baskets",
-                f"Starting time: {self.time_start} seconds  (+{self.time_bonus}s per score)",
+                f"Starting time: {self.time_start} seconds",
                 f"Difficulty:    {self.difficulty}",
             ]),
         ]:
