@@ -40,6 +40,7 @@ import sys, os, math, datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import Database
 from scenes.icon_renderer import draw_icon, ICONS
+from scenes.calibration_window import CalibrationWindow
 
 # ─────────────────────────────────────────────────────────────────────
 #  NAV / PANEL CONSTANTS
@@ -287,6 +288,13 @@ class TherapistDashboardScene:
         self.calibration_bypassed = False
         self._bypass_btn_rect     = pygame.Rect(0, 0, 1, 1)
         self._bypass_hov          = False
+
+        # ── Real calibration state ─────────────────────────────────────
+        self.calibration_done     = False       # True after CalibrationWindow accepted
+        self.calibration_result   = None        # dict from CalibrationWindow
+        self._cal_win             = None        # active CalibrationWindow instance (or None)
+        self._calibrate_btn_rect  = pygame.Rect(0, 0, 1, 1)
+        self._calibrate_hov       = False
 
         # ── Interactive UI element rects ──
         # These store clickable areas for various buttons/interactive elements
@@ -589,6 +597,11 @@ class TherapistDashboardScene:
         if self.action_triggered:
             return None
 
+        # ── Calibration window intercepts all events when active ──────
+        if self._cal_win is not None:
+            self._cal_win.handle_event(event)
+            return None
+
         # ── Touch screen input (mobile/tablet) ──
         if event.type == pygame.FINGERDOWN:
             # FINGERDOWN uses normalized coordinates (0.0-1.0), convert to pixels
@@ -766,6 +779,9 @@ class TherapistDashboardScene:
                     elif action == "name":
                         self.selected_patient = patient
                         self._init_game_config_state()
+                        self.calibration_done   = False
+                        self.calibration_result = None
+                        self._cal_win           = None
                         self._open_panel(4)
                     elif action == "select":
                         if (self.selected_patient is not None and
@@ -789,6 +805,10 @@ class TherapistDashboardScene:
         if self.active_panel == 5:
             if self._bypass_btn_rect.collidepoint(pos):
                 self.calibration_bypassed = not self.calibration_bypassed
+                return None
+            if self._calibrate_btn_rect.collidepoint(pos):
+                game_type = (self.gc.get("selected_game") or (None, None))[1] or "Grip Strength"
+                self._cal_win = CalibrationWindow(self.WIDTH, self.HEIGHT, game_type)
                 return None
             if self._start_btn_rect.collidepoint(pos) and self._session_ready():
                 return self._launch_game()
@@ -814,7 +834,7 @@ class TherapistDashboardScene:
     def _session_ready(self):
         return (self.selected_patient is not None and
                 self.gc["selected_game"] is not None and
-                self.calibration_bypassed)
+                (self.calibration_done or self.calibration_bypassed))
 
     # Maps the specific game name chosen in Game Config to a scene key in main.py
     _GAME_SCENE_MAP = {
@@ -1468,7 +1488,18 @@ class TherapistDashboardScene:
         self.start_hov         = self._start_btn_rect.collidepoint(mouse_pos)      # Start Session button
         self.register_link_hov = self._register_link_rect.collidepoint(mouse_pos)  # Patient list "register" link
         self.preset_hov        = self._preset_btn_rect.collidepoint(mouse_pos)     # Smart Preset button
-        self._bypass_hov       = self._bypass_btn_rect.collidepoint(mouse_pos)     # Calibration bypass toggle
+        self._bypass_hov      = self._bypass_btn_rect.collidepoint(mouse_pos)      # Calibration bypass toggle
+        self._calibrate_hov   = self._calibrate_btn_rect.collidepoint(mouse_pos)  # Real Calibrate button
+
+        # ── Calibration window update (delegates sensor + phase logic) ──
+        if self._cal_win is not None:
+            self._cal_win.update(dt)
+            if self._cal_win.done:
+                self.calibration_done   = True
+                self.calibration_result = self._cal_win.calibration_result
+                self._cal_win           = None
+            elif self._cal_win.cancelled:
+                self._cal_win = None
 
         # ── Share modal hover states ──
         self._share_search_hov  = self._share_search_rect.collidepoint(mouse_pos)
@@ -1567,6 +1598,10 @@ class TherapistDashboardScene:
         if self._share_modal_open:
             self._draw_overlay(surface)
             self._draw_share_modal(surface)
+
+        # Calibration window (full-screen, drawn last so it covers everything)
+        if self._cal_win is not None:
+            self._cal_win.draw(surface)
 
         if self.alpha < 255:
             self.fade_surface.set_alpha(255-self.alpha)
@@ -2485,7 +2520,7 @@ class TherapistDashboardScene:
         cx0 = pa.x + int(20*W/1920)
         cy0 = pa.y + int(20*H/1080)
 
-        cal_done = self.calibration_bypassed
+        cal_done = self.calibration_done or self.calibration_bypassed
 
         steps = [
             ("Patient selected",             True),
@@ -2527,7 +2562,35 @@ class TherapistDashboardScene:
 
         cal_r = pygame.Rect(pa.x+int(610*W/1920), cy0+int(225*H/1080),
                             pa.width-int(630*W/1920), int(220*H/1080))
-        if cal_done:
+        if self.calibration_done and not self.calibration_bypassed:
+            # ── Real calibration complete ─────────────────────────────
+            res = self.calibration_result or {}
+            pygame.draw.rect(surface, (215,248,225), cal_r, border_radius=14)
+            pygame.draw.rect(surface, (55,185,85),   cal_r, 1, border_radius=14)
+            surface.blit(self.fnt["section"].render("✓  Calibration Complete",
+                         True, (30,140,60)),
+                         (cal_r.x+int(12*W/1920), cal_r.y+int(12*H/1080)))
+            details = [
+                f"Sensor      : {res.get('sensor', '—')}",
+                f"Average     : {res.get('average', 0):.3f}",
+                f"Threshold   : {res.get('threshold', 0):.3f}",
+                f"Sensitivity : {res.get('sensitivity', '—')}",
+            ]
+            for j, ln in enumerate(details):
+                surface.blit(self.fnt["small"].render(ln, True, (40,120,60)),
+                             (cal_r.x+int(12*W/1920),
+                              cal_r.y+int(50*H/1080)+j*int(26*H/1080)))
+            # Re-calibrate button (smaller)
+            recal_r = pygame.Rect(cal_r.x+int(12*W/1920), cal_r.bottom-int(46*H/1080),
+                                  int(172*W/1920), int(32*H/1080))
+            rc_col = (40,150,70) if self._calibrate_hov else (55,185,85)
+            pygame.draw.rect(surface, rc_col, recal_r, border_radius=8)
+            surface.blit(self.fnt["small"].render("Re-Calibrate", True, (255,255,255)),
+                         self.fnt["small"].render("Re-Calibrate", True,
+                         (255,255,255)).get_rect(center=recal_r.center))
+            self._calibrate_btn_rect = recal_r
+        elif cal_done:
+            # ── Bypassed (DEV) ────────────────────────────────────────
             pygame.draw.rect(surface, (220,248,228), cal_r, border_radius=14)
             pygame.draw.rect(surface, (60,190,90),   cal_r, 1, border_radius=14)
             surface.blit(self.fnt["section"].render("Calibration Bypassed (DEV)",
@@ -2537,25 +2600,36 @@ class TherapistDashboardScene:
                          "Session will run without sensor calibration.",
                          True, (50,120,70)),
                          (cal_r.x+int(12*W/1920), cal_r.y+int(46*H/1080)))
+            self._calibrate_btn_rect = pygame.Rect(0, 0, 1, 1)
         else:
+            # ── Calibration Required ──────────────────────────────────
             pygame.draw.rect(surface, (255,248,220), cal_r, border_radius=14)
             pygame.draw.rect(surface, (240,190,60),  cal_r, 1, border_radius=14)
             surface.blit(self.fnt["section"].render("Calibration Required",
                          True, (160,110,20)),
                          (cal_r.x+int(12*W/1920), cal_r.y+int(12*H/1080)))
+            game_type = (gc.get("selected_game") or (None, "—"))[1] or "—"
+            sensor_map = {
+                "Grip Strength": "Force Sensor",
+                "Finger Flexion": "Flex Sensors",
+                "Wrist Rotation": "Motion Sensor",
+            }
+            sensor_name = sensor_map.get(game_type, "Sensor")
             for j, ln in enumerate([
-                    "Force Sensor, Flex Sensor, and Motion Sensor",
-                    "must be calibrated before each session",
-                    "to ensure accuracy of results."]):
+                    f"Game type: {game_type}",
+                    f"Requires: {sensor_name}",
+                    "Calibrate before starting the session."]):
                 surface.blit(self.fnt["small"].render(ln, True, (130,95,30)),
                              (cal_r.x+int(12*W/1920),
                               cal_r.y+int(50*H/1080)+j*int(30*H/1080)))
             gc_btn = pygame.Rect(cal_r.x+int(12*W/1920), cal_r.bottom-int(50*H/1080),
                                  int(180*W/1920), int(36*H/1080))
-            pygame.draw.rect(surface, (225,165,30), gc_btn, border_radius=8)
+            btn_col = (195,135,15) if self._calibrate_hov else (225,165,30)
+            pygame.draw.rect(surface, btn_col, gc_btn, border_radius=8)
             surface.blit(self.fnt["small"].render("Calibrate", True, (255,255,255)),
                          self.fnt["small"].render("Calibrate", True,
                          (255,255,255)).get_rect(center=gc_btn.center))
+            self._calibrate_btn_rect = gc_btn
 
         # DEV bypass toggle
         byp_r    = pygame.Rect(pa.x+int(16*W/1920), pa.bottom-int(120*H/1080),
