@@ -169,7 +169,7 @@ class SteadyAimGame(FatigueMixin, BaseScreen):
         if self.fatigue_paused or self.paused: return
 
         self.time_left -= dt
-        if self.time_left <= 0 or self.score >= self.goal:
+        if self.time_left <= 0:
             self._end_game(); return
 
         # Move cursor with wrist tilt
@@ -231,24 +231,23 @@ class SteadyAimGame(FatigueMixin, BaseScreen):
         f_hint  = pygame.font.SysFont("monospace", 21, bold=True)
 
         diff_col = {"Easy": T["GREEN"], "Medium": T["YELLOW"], "Hard": T["RED"]}[self.difficulty]
-        title = f_title.render("STEADY AIM  --  How to Play", True, diff_col)
+        title = f_title.render("How to Play", True, diff_col)
         surface.blit(title, title.get_rect(centerx=GAME_W // 2, top=py + 26))
         pygame.draw.line(surface, T["ACCENT"], (px + 40, py + 78), (px + pw - 40, py + 78), 1)
 
         y = py + 96
         for header, lines in [
             ("OBJECTIVE", [
-                "Move the cursor into the glowing circle.",
+                "Move the arrow inside circle.",
                 "Hold inside until the arc fills completely -- then you score!",
             ]),
             ("CONTROLS", [
-                "Tilt wrist LEFT / RIGHT  to move cursor horizontally.",
-                "Tilt wrist UP / DOWN     to move cursor vertically.",
+                "Tilt hand LEFT / RIGHT to move arrow horizontally.",
+                "Tilt hand UP / DOWN to move arrow vertically.",
             ]),
             ("THIS SESSION", [
                 f"Hold time per circle:  {self.hold_time:.1f} seconds",
-                f"Goal:                  Hit {self.goal} circles",
-                f"Time limit:            {int(self.duration)} seconds",
+                f"Duration:              {int(self.duration)} seconds",
                 f"Difficulty:            {self.difficulty}",
             ]),
         ]:
@@ -337,21 +336,22 @@ class SteadyAimGame(FatigueMixin, BaseScreen):
             fl.fill((0, 255, 160, alpha))
             surface.blit(fl, (0, 0))
 
-        # Cursor — triangle/arrow shape
+        # Cursor — proper upward arrow
         cur_x, cur_y = int(self.cursor_x), int(self.cursor_y)
-        cur_col = T["GREEN"] if inside else T["WHITE"]
+        cur_col    = T["GREEN"] if inside else T["WHITE"]
+        cur_shadow = T["BG"]
+        tip_w, shaft_w, head_h, shaft_h = 24, 8, 22, 22
         pts = [
-            (cur_x,      cur_y),
-            (cur_x + 20, cur_y + 30),
-            (cur_x + 8,  cur_y + 22),
-            (cur_x + 8,  cur_y + 40),
-            (cur_x,      cur_y + 28),
-            (cur_x - 8,  cur_y + 40),
-            (cur_x - 8,  cur_y + 22),
-            (cur_x - 20, cur_y + 30),
+            (cur_x,             cur_y),
+            (cur_x + tip_w,     cur_y + head_h),
+            (cur_x + shaft_w,   cur_y + head_h),
+            (cur_x + shaft_w,   cur_y + head_h + shaft_h),
+            (cur_x - shaft_w,   cur_y + head_h + shaft_h),
+            (cur_x - shaft_w,   cur_y + head_h),
+            (cur_x - tip_w,     cur_y + head_h),
         ]
         pygame.draw.polygon(surface, cur_col, pts)
-        pygame.draw.polygon(surface, T["BG"], pts, 2)
+        pygame.draw.polygon(surface, cur_shadow, pts, 2)
 
         # Top HUD
         pygame.draw.rect(surface, T["PANEL"], (0, 0, GAME_W, 72))
@@ -360,20 +360,24 @@ class SteadyAimGame(FatigueMixin, BaseScreen):
         surface.blit(font_hud.render(
             f"STEADY AIM  ·  {self.difficulty.upper()}", True, diff_col), (80, 18))
         surface.blit(font_hud.render(
-            f"{self.score:02d} / {self.goal:02d}", True, T["ACCENT"]),
-            (GAME_W//2 - 60, 18))
+            f"Score: {self.score:02d}", True, T["ACCENT"]),
+            (GAME_W//2 - 80, 18))
         time_col = T["RED"] if self.time_left < 10 else T["TEXT"]
         surface.blit(font_hud.render(
             f"{max(0, int(self.time_left)):02d}s", True, time_col),
             (GAME_W - 160, 18))
 
-        # Pause button
+        # Pause button — two solid bars
         pb     = self._pause_btn_rect
         pb_col = T["ACCENT"]
-        pygame.draw.rect(surface, T["PANEL"], pb, border_radius=8)
+        pygame.draw.rect(surface, (15, 20, 36), pb, border_radius=8)
         pygame.draw.rect(surface, pb_col, pb, 2, border_radius=8)
-        pb_lbl = font_sm.render("II", True, pb_col)
-        surface.blit(pb_lbl, pb_lbl.get_rect(center=pb.center))
+        bw2, bh2 = 8, 22
+        by2 = pb.top + (pb.height - bh2) // 2
+        bx1 = pb.left + pb.width // 2 - bw2 - 4
+        bx2 = pb.left + pb.width // 2 + 4
+        pygame.draw.rect(surface, pb_col, (bx1, by2, bw2, bh2), border_radius=2)
+        pygame.draw.rect(surface, pb_col, (bx2, by2, bw2, bh2), border_radius=2)
 
         # Hold progress bar (below HUD)
         if inside:

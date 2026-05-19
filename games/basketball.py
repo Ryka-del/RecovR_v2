@@ -2,6 +2,9 @@
 Basketball — Grip Strength game (1920x1080)
 """
 
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import pygame
 import random
 import math
@@ -15,7 +18,6 @@ GOALS      = {"Easy": 10, "Medium": 15, "Hard": 20}
 ZONE_WIDTH = {"Easy": 0.25, "Medium": 0.16, "Hard": 0.09}
 ZONE_SPEED = {"Easy": 0.0,  "Medium": 0.18, "Hard": 0.28}
 TIME_START = {"Easy": 40,   "Medium": 35,   "Hard": 30}
-TIME_BONUS = {"Easy": 6,    "Medium": 5,    "Hard": 4}
 
 RAMP_UP = 0.6   # grip rises at 0.6 units/sec while squeezing
 
@@ -125,7 +127,6 @@ class BasketballGame(FatigueMixin, BaseScreen):
         self.goal       = GOALS[self.difficulty]
         self.zone_w     = ZONE_WIDTH[self.difficulty]
         self.zone_speed = ZONE_SPEED[self.difficulty]
-        self.time_bonus = TIME_BONUS[self.difficulty]
 
         dur = data.get("duration_sec")
         self.time_start = int(dur) if dur else TIME_START[self.difficulty]
@@ -392,7 +393,7 @@ class BasketballGame(FatigueMixin, BaseScreen):
         f_hint  = pygame.font.SysFont("monospace", 21, bold=True)
 
         diff_col = {"Easy": T["GREEN"], "Medium": T["YELLOW"], "Hard": T["RED"]}[self.difficulty]
-        title = f_title.render("BASKETBALL  --  How to Play", True, diff_col)
+        title = f_title.render("How to Play", True, diff_col)
         surface.blit(title, title.get_rect(centerx=GAME_W // 2, top=py + 26))
         pygame.draw.line(surface, T["ACCENT"], (px + 40, py + 78), (px + pw - 40, py + 78), 1)
 
@@ -404,8 +405,8 @@ class BasketballGame(FatigueMixin, BaseScreen):
                 "The ball must pass through the hoop to score a basket.",
             ]),
             ("CONTROLS", [
-                "Squeeze hand  -- raises the needle (grip bar).",
-                "Release hand  -- shoots when needle is in the GREEN zone.",
+                "Squeeze - pushes the needle up.",
+                "Release - stops the needle.",
             ]),
             ("THIS SESSION", [
                 f"Duration:   {self.time_start} seconds",
