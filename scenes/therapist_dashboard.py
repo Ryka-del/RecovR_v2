@@ -682,6 +682,16 @@ class TherapistDashboardScene:
         """
         # ── Edit patient modal ────────────────────────────────────────
         if self._ep_modal_open:
+            # Delete-confirm overlay sits on top — it must be handled first
+            if self.modal == "delete_patient_confirm":
+                yr, nr = self._confirm_rects()
+                if yr.collidepoint(pos):
+                    self._ep_delete()
+                    self._ep_modal_open = False
+                    self.modal = None
+                elif nr.collidepoint(pos):
+                    self.modal = None
+                return None
             self._ep_handle_click(pos); return None
 
         # ── Share modal (checked before everything else - highest priority) ──
@@ -2221,10 +2231,6 @@ class TherapistDashboardScene:
              (40,160,220), (25,130,190), self.rp_btn_hov, radius=12)
         self._rp_btn_rect = rb
 
-        auto_s = self.fnt["small_i"].render(
-            "A unique Patient ID will be auto-generated upon registration.",
-            True, (140,155,175))
-        surface.blit(auto_s, auto_s.get_rect(center=(pa.centerx, rb.y - int(18*H/1080))))
 
     # ──────────────────────────────────────────────────────────────────
     #  PANEL 1: SESSION HISTORY

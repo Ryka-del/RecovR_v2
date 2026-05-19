@@ -43,7 +43,7 @@ SENSOR_CFG = {
         "instruction": "Curl all fingers as far down as possible",
         "hold_hint":   "Curl fingers fully and HOLD!",
         "key_hint":    "[ Hold DOWN arrow to simulate flex ]",
-        "read":        lambda s: max(0.0, -s["tilt_y"]),
+        "read":        lambda s: max(0.0, s["tilt_y"]),
     },
     "Wrist Rotation": {
         "sensor_name": "Motion Sensor",
