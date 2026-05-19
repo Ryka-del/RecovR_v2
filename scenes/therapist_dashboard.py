@@ -644,8 +644,9 @@ class TherapistDashboardScene:
                 if self.modal in ("edit_profile","logout_confirm","register_success"):
                     self.modal = None
                 elif self.modal == "delete_confirm":
-                    # Going back from delete confirmation returns to edit profile
                     self.modal = "edit_profile"
+                elif self.modal == "delete_patient_confirm":
+                    self.modal = None
                 elif self.active_panel != -1:
                     # Going back from a panel returns to previous screen
                     self._go_back()
@@ -695,6 +696,16 @@ class TherapistDashboardScene:
             return None  # absorb all other clicks
 
         # ── Other modals ──────────────────────────────────────────────
+        if self.modal == "delete_patient_confirm":
+            yr, nr = self._confirm_rects()
+            if yr.collidepoint(pos):
+                self._ep_delete()
+                self._ep_modal_open = False
+                self.modal = None
+            if nr.collidepoint(pos):
+                self.modal = None
+            return None
+
         if self.modal == "delete_confirm":
             yr, nr = self._confirm_rects()
             if yr.collidepoint(pos):
@@ -885,14 +896,8 @@ class TherapistDashboardScene:
         if self._ep_save_rect.collidepoint(pos):
             self._ep_submit(); return
         if self._ep_delete_rect.collidepoint(pos):
-            if self._ep_confirm_del:
-                self._ep_delete()
-            else:
-                self._ep_confirm_del = True
+            self.modal = "delete_patient_confirm"
             return
-
-        # Any click outside delete resets confirm state
-        self._ep_confirm_del = False
 
         # Dropdown option selection
         for key, is_open in list(self._ep_drop_open.items()):
@@ -1097,9 +1102,9 @@ class TherapistDashboardScene:
         dw = int(160*(W/1920))
         self._ep_delete_rect = pygame.Rect(mr.x + int(16*W/1920),     btn_y, dw, bh)
 
-        del_col = (165, 28, 28) if self._ep_confirm_del else (200, 50, 50)
-        del_hov = (140, 15, 15) if self._ep_confirm_del else (165, 28, 28)
-        del_lbl = "Confirm Delete?" if self._ep_confirm_del else "Delete Patient"
+        del_col = (200, 50, 50)
+        del_hov = (165, 28, 28)
+        del_lbl = "Delete Patient"
 
         for rect, cn, ch, hov, lbl, fnt in [
             (self._ep_save_rect,   (40,160,220),(25,125,180), self._ep_save_hov,   "Save",   self.fnt["btn"]),
@@ -1489,7 +1494,7 @@ class TherapistDashboardScene:
             self._rp_ok_hov = self._rp_ok_rect.collidepoint(mouse_pos)
 
         # ── Confirmation modal hover ──
-        if self.modal in ("logout_confirm","delete_confirm"):
+        if self.modal in ("logout_confirm","delete_confirm","delete_patient_confirm"):
             yr, nr = self._confirm_rects()
             self.confirm_yes_hov = yr.collidepoint(mouse_pos)
             self.confirm_no_hov  = nr.collidepoint(mouse_pos)
@@ -1549,6 +1554,9 @@ class TherapistDashboardScene:
         if self._ep_modal_open:
             self._draw_overlay(surface)
             self._draw_edit_patient_modal(surface)
+            if self.modal == "delete_patient_confirm":
+                self._draw_overlay(surface)
+                self._draw_confirm_modal(surface)
 
         # Skill game picker modal (game config panel)
         if self.active_panel == 4 and self._gc_skill_modal_open:
@@ -2752,11 +2760,15 @@ class TherapistDashboardScene:
         ms=pygame.Surface((mw,mh),pygame.SRCALPHA); ms.fill((250,252,255,255))
         surface.blit(ms,mr.topleft)
         pygame.draw.rect(surface,(195,210,228),mr,1,border_radius=14)
-        is_logout=(self.modal=="logout_confirm")
-        title="Log out of RecovR?" if is_logout else "Delete your account?"
-        body=("You will be returned to the login screen." if is_logout
-              else "This action cannot be undone.")
-        yes_l="Logout" if is_logout else "Delete"
+        is_logout  = (self.modal == "logout_confirm")
+        is_del_pt  = (self.modal == "delete_patient_confirm")
+        pt_name    = (self._ep_patient or {}).get("full_name", "this patient") if is_del_pt else ""
+        title = ("Log out of RecovR?"         if is_logout else
+                 f"Delete {pt_name}?"         if is_del_pt else
+                 "Delete your account?")
+        body  = ("You will be returned to the login screen." if is_logout
+                 else "This action cannot be undone.")
+        yes_l = "Logout" if is_logout else "Delete"
         ts=self.fnt["modal_head"].render(title,True,(38,52,78))
         bs=self.fnt["modal_lbl"].render(body,True,(98,114,140))
         surface.blit(ts,ts.get_rect(center=(mr.centerx,my+int(52*H/1080))))
