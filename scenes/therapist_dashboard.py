@@ -296,6 +296,18 @@ class TherapistDashboardScene:
         self._calibrate_btn_rect  = pygame.Rect(0, 0, 1, 1)
         self._calibrate_hov       = False
 
+        # ── Calibration mismatch modal ─────────────────────────────────
+        self._mismatch_cal_rect    = pygame.Rect(0, 0, 1, 1)
+        self._mismatch_cancel_rect = pygame.Rect(0, 0, 1, 1)
+        self._mismatch_cal_hov     = False
+        self._mismatch_cancel_hov  = False
+
+        # ── Session Details dropdowns (panel 5) ────────────────────────
+        self._ss_open_param        = None   # ("duration"|"speed", opts) or None
+        self._ss_param_rects       = {}     # {"duration": Rect, "speed": Rect}
+        self._ss_custom_dur_active = False
+        self._ss_custom_dur_rect   = pygame.Rect(0, 0, 1, 1)
+
         # ── Interactive UI element rects ──
         # These store clickable areas for various buttons/interactive elements
         self._rp_btn_rect        = pygame.Rect(0, 0, 1, 1)  # Register patient submit button
@@ -645,6 +657,15 @@ class TherapistDashboardScene:
                 elif event.unicode.isdigit() and len(self._gc_custom_dur) < 4:
                     self._gc_custom_dur += event.unicode
                 return None
+            # Session Details custom duration input (panel 5)
+            if self.active_panel == 5 and self._ss_custom_dur_active:
+                if event.key == pygame.K_BACKSPACE:
+                    self._gc_custom_dur = self._gc_custom_dur[:-1]
+                elif event.key in (pygame.K_RETURN, pygame.K_ESCAPE):
+                    self._ss_custom_dur_active = False
+                elif event.unicode.isdigit() and len(self._gc_custom_dur) < 4:
+                    self._gc_custom_dur += event.unicode
+                return None
             # Register patient panel handles text input
             if self.active_panel == 6 and self.rp.get("active_key"):
                 self._rp_keydown(event)
@@ -707,6 +728,17 @@ class TherapistDashboardScene:
                     return None
 
             return None  # absorb all other clicks
+
+        # ── Calibration mismatch modal ────────────────────────────────
+        if self.modal == "calibration_mismatch":
+            if self._mismatch_cal_rect.collidepoint(pos):
+                self.modal = None
+                game_type  = (self.gc.get("selected_game") or (None, None))[1] or "Grip Strength"
+                self._cal_win = CalibrationWindow(self.WIDTH, self.HEIGHT, game_type)
+                return None
+            if self._mismatch_cancel_rect.collidepoint(pos):
+                self.modal = None
+            return None
 
         # ── Other modals ──────────────────────────────────────────────
         if self.modal == "delete_patient_confirm":
@@ -803,6 +835,26 @@ class TherapistDashboardScene:
 
         # ── Panel 5: Start Session ────────────────────────────────────
         if self.active_panel == 5:
+            # ── Session Details dropdown intercept (highest priority) ──
+            if self._ss_open_param:
+                open_key, open_opts = self._ss_open_param
+                pr = self._ss_param_rects.get(open_key)
+                if pr:
+                    opt_h = int(36 * self.HEIGHT / 1080)
+                    for j, opt_val in enumerate(open_opts):
+                        or_ = pygame.Rect(pr.x, pr.bottom + j * opt_h, pr.width, opt_h)
+                        if or_.collidepoint(pos):
+                            self.gc[open_key] = opt_val
+                            if opt_val == "Custom":
+                                self._gc_custom_dur     = ""
+                                self._ss_custom_dur_active = True
+                            else:
+                                self._ss_custom_dur_active = False
+                            self._ss_open_param = None
+                            return None
+                self._ss_open_param = None
+                return None   # consume click; dropdown closes
+
             if self._bypass_btn_rect.collidepoint(pos):
                 self.calibration_bypassed = not self.calibration_bypassed
                 return None
@@ -810,7 +862,28 @@ class TherapistDashboardScene:
                 game_type = (self.gc.get("selected_game") or (None, None))[1] or "Grip Strength"
                 self._cal_win = CalibrationWindow(self.WIDTH, self.HEIGHT, game_type)
                 return None
+
+            # ── Custom duration field ──────────────────────────────────
+            if self.gc.get("duration") == "Custom":
+                if self._ss_custom_dur_rect.collidepoint(pos):
+                    self._ss_custom_dur_active = True
+                    return None
+                else:
+                    self._ss_custom_dur_active = False
+
+            # ── Duration / Speed dropdown toggle ──────────────────────
+            DUR_OPTS = ["60 seconds", "120 seconds", "180 seconds", "Custom"]
+            SPD_OPTS = ["Slow", "Normal", "Fast"]
+            for pk, opts in [("duration", DUR_OPTS), ("speed", SPD_OPTS)]:
+                pr = self._ss_param_rects.get(pk)
+                if pr and pr.collidepoint(pos):
+                    self._ss_open_param = (pk, opts)
+                    return None
+
             if self._start_btn_rect.collidepoint(pos) and self._session_ready():
+                if self._calibration_mismatched():
+                    self.modal = "calibration_mismatch"
+                    return None
                 return self._launch_game()
 
         return None
@@ -835,6 +908,15 @@ class TherapistDashboardScene:
         return (self.selected_patient is not None and
                 self.gc["selected_game"] is not None and
                 (self.calibration_done or self.calibration_bypassed))
+
+    def _calibration_mismatched(self):
+        """True when calibration_done but the calibrated sensor type doesn't match
+        the currently selected game's exercise type."""
+        if not self.calibration_done or self.calibration_bypassed:
+            return False
+        cal_type  = (self.calibration_result or {}).get("game_type", "")
+        game_type = (self.gc.get("selected_game") or (None, ""))[1] or ""
+        return bool(cal_type) and cal_type != game_type
 
     # Maps the specific game name chosen in Game Config to a scene key in main.py
     _GAME_SCENE_MAP = {
@@ -1530,6 +1612,11 @@ class TherapistDashboardScene:
             self.confirm_yes_hov = yr.collidepoint(mouse_pos)
             self.confirm_no_hov  = nr.collidepoint(mouse_pos)
 
+        # ── Calibration mismatch modal hover ──
+        if self.modal == "calibration_mismatch":
+            self._mismatch_cal_hov    = self._mismatch_cal_rect.collidepoint(mouse_pos)
+            self._mismatch_cancel_hov = self._mismatch_cancel_rect.collidepoint(mouse_pos)
+
         # ── Page transition fade-in animation ──
         # Fade in over several frames (alpha goes from 0→255, +4 per frame = ~64 frames at 60FPS = 1 second)
         if self.alpha < 255:
@@ -1580,6 +1667,8 @@ class TherapistDashboardScene:
             self._draw_overlay(surface); self._draw_confirm_modal(surface)
         elif self.modal == "register_success":
             self._draw_overlay(surface); self._draw_register_success_modal(surface)
+        elif self.modal == "calibration_mismatch":
+            self._draw_overlay(surface); self._draw_calibration_mismatch_modal(surface)
 
         # Edit patient modal
         if self._ep_modal_open:
@@ -2520,25 +2609,30 @@ class TherapistDashboardScene:
         cx0 = pa.x + int(20*W/1920)
         cy0 = pa.y + int(20*H/1080)
 
-        cal_done = self.calibration_done or self.calibration_bypassed
+        cal_done     = self.calibration_done or self.calibration_bypassed
+        cal_mismatch = self._calibration_mismatched()
 
         steps = [
-            ("Patient selected",             True),
-            ("Game configured",              gc["selected_game"] is not None),
-            ("Calibration complete",         cal_done),
-            ("Session parameters confirmed", gc["selected_game"] is not None),
-            ("Ready to start",               self._session_ready()),
+            ("Patient selected",             True,                             False),
+            ("Game configured",              gc["selected_game"] is not None,  False),
+            ("Calibration complete",         cal_done,                         cal_mismatch),
+            ("Session parameters confirmed", gc["selected_game"] is not None,  False),
+            ("Ready to start",               self._session_ready(),            cal_mismatch),
         ]
         surface.blit(self.fnt["section"].render("Session Readiness Checklist", True, (75,95,125)),
                      (cx0, cy0))
-        for i, (lbl, done) in enumerate(steps):
+        for i, (lbl, done, warn) in enumerate(steps):
             sy  = cy0 + int(30*H/1080) + i*int(36*H/1080)
-            col = (55,175,75) if done else (195,205,220)
+            col = ((220,140,30) if warn else
+                   (55,175,75)  if done else
+                   (195,205,220))
             pygame.draw.circle(surface, col,
                                (cx0+int(10*W/1920), sy+int(10*H/1080)),
                                int(9*H/1080))
-            surface.blit(self.fnt["body"].render(lbl, True,
-                         (40,55,75) if done else (130,145,165)),
+            txt_col = ((170,105,15) if warn else
+                       (40,55,75)   if done else
+                       (130,145,165))
+            surface.blit(self.fnt["body"].render(lbl, True, txt_col),
                          (cx0+int(28*W/1920), sy))
 
         sum_r = pygame.Rect(pa.x+int(80*W/1920), cy0+int(225*H/1080),
@@ -2562,7 +2656,39 @@ class TherapistDashboardScene:
 
         cal_r = pygame.Rect(pa.x+int(610*W/1920), cy0+int(225*H/1080),
                             pa.width-int(630*W/1920), int(220*H/1080))
-        if self.calibration_done and not self.calibration_bypassed:
+        if cal_mismatch:
+            # ── Sensor mismatch warning ───────────────────────────────
+            res = self.calibration_result or {}
+            cal_type  = res.get("game_type", "—")
+            cal_sens  = res.get("sensor",    "—")
+            need_type = (gc.get("selected_game") or (None, "—"))[1] or "—"
+            SENSOR_FOR = {"Grip Strength": "Force Sensor",
+                          "Finger Flexion": "Flex Sensors",
+                          "Wrist Rotation": "Motion Sensor"}
+            need_sens = SENSOR_FOR.get(need_type, "—")
+            pygame.draw.rect(surface, (255,243,215), cal_r, border_radius=14)
+            pygame.draw.rect(surface, (220,145,30),  cal_r, 2, border_radius=14)
+            surface.blit(self.fnt["section"].render("⚠  Sensor Mismatch",
+                         True, (175,110,10)),
+                         (cal_r.x+int(12*W/1920), cal_r.y+int(12*H/1080)))
+            mismatch_lines = [
+                f"Calibrated for : {cal_type}  ({cal_sens})",
+                f"Required for   : {need_type}  ({need_sens})",
+                "Please recalibrate for the correct sensor.",
+            ]
+            for j, ln in enumerate(mismatch_lines):
+                surface.blit(self.fnt["small"].render(ln, True, (140,90,15)),
+                             (cal_r.x+int(12*W/1920),
+                              cal_r.y+int(50*H/1080)+j*int(26*H/1080)))
+            recal_r = pygame.Rect(cal_r.x+int(12*W/1920), cal_r.bottom-int(50*H/1080),
+                                  int(190*W/1920), int(36*H/1080))
+            rc_col = (180,110,10) if self._calibrate_hov else (220,145,30)
+            pygame.draw.rect(surface, rc_col, recal_r, border_radius=8)
+            surface.blit(self.fnt["small"].render("Calibrate Now", True, (255,255,255)),
+                         self.fnt["small"].render("Calibrate Now", True,
+                         (255,255,255)).get_rect(center=recal_r.center))
+            self._calibrate_btn_rect = recal_r
+        elif self.calibration_done and not self.calibration_bypassed:
             # ── Real calibration complete ─────────────────────────────
             res = self.calibration_result or {}
             pygame.draw.rect(surface, (215,248,225), cal_r, border_radius=14)
@@ -2580,7 +2706,6 @@ class TherapistDashboardScene:
                 surface.blit(self.fnt["small"].render(ln, True, (40,120,60)),
                              (cal_r.x+int(12*W/1920),
                               cal_r.y+int(50*H/1080)+j*int(26*H/1080)))
-            # Re-calibrate button (smaller)
             recal_r = pygame.Rect(cal_r.x+int(12*W/1920), cal_r.bottom-int(46*H/1080),
                                   int(172*W/1920), int(32*H/1080))
             rc_col = (40,150,70) if self._calibrate_hov else (55,185,85)
@@ -2826,6 +2951,85 @@ class TherapistDashboardScene:
         pygame.draw.rect(surface, ok_col, ok_r, border_radius=10)
         oks = self.fnt["btn"].render("OK", True, (255, 255, 255))
         surface.blit(oks, oks.get_rect(center=ok_r.center))
+
+    def _draw_calibration_mismatch_modal(self, surface):
+        W, H  = self.WIDTH, self.HEIGHT
+        mw    = int(W * 0.46)
+        mh    = int(H * 0.38)
+        mx    = (W - mw) // 2
+        my    = (H - mh) // 2
+        mr    = pygame.Rect(mx, my, mw, mh)
+
+        # background
+        ms = pygame.Surface((mw, mh), pygame.SRCALPHA)
+        ms.fill((255, 248, 235, 255))
+        surface.blit(ms, mr.topleft)
+        hl = pygame.Surface((mw, 3), pygame.SRCALPHA)
+        hl.fill((255, 255, 255, 200))
+        surface.blit(hl, mr.topleft)
+        pygame.draw.rect(surface, (220, 145, 30), mr, 2, border_radius=16)
+
+        # warning icon circle
+        ic_cx = mr.centerx
+        ic_cy = my + int(44 * H / 1080)
+        pygame.draw.circle(surface, (240, 165, 30), (ic_cx, ic_cy), int(22 * H / 1080))
+        ws = self.fnt["body_b"].render("!", True, (255, 255, 255))
+        surface.blit(ws, ws.get_rect(center=(ic_cx, ic_cy)))
+
+        # title
+        ts = self.fnt["modal_head"].render("Sensor Mismatch", True, (160, 100, 10))
+        surface.blit(ts, ts.get_rect(center=(mr.centerx, my + int(86 * H / 1080))))
+
+        # retrieve types
+        res       = self.calibration_result or {}
+        cal_type  = res.get("game_type", "—")
+        cal_sens  = res.get("sensor",    "—")
+        need_type = (self.gc.get("selected_game") or (None, "—"))[1] or "—"
+        SENSOR_FOR = {"Grip Strength":  "Force Sensor",
+                      "Finger Flexion": "Flex Sensors",
+                      "Wrist Rotation": "Motion Sensor"}
+        need_sens  = SENSOR_FOR.get(need_type, "—")
+
+        # body lines
+        body_lines = [
+            "The sensor calibration on file does not match the",
+            "selected exercise type. Please recalibrate.",
+            "",
+            f"Calibrated for :  {cal_type}",
+            f"                         ({cal_sens})",
+            f"Required for   :  {need_type}",
+            f"                         ({need_sens})",
+        ]
+        for k, line in enumerate(body_lines):
+            col = (90, 65, 20) if line.startswith("Calibrated") or line.startswith("Required") else (75, 85, 105)
+            ls  = self.fnt["modal_lbl"].render(line, True, col)
+            surface.blit(ls, ls.get_rect(
+                center=(mr.centerx, my + int(130 * H / 1080) + k * int(28 * H / 1080))))
+
+        # buttons
+        bw   = int(178 * W / 1920)
+        bh   = int(44  * H / 1080)
+        gap  = int(16  * W / 1920)
+        by2  = mr.bottom - int(60 * H / 1080)
+
+        cal_r = pygame.Rect(mr.centerx - bw - gap // 2, by2, bw, bh)
+        can_r = pygame.Rect(mr.centerx + gap // 2,       by2, bw, bh)
+
+        cal_col = (180, 110, 10) if self._mismatch_cal_hov    else (220, 145, 30)
+        can_col = (148, 162, 180) if self._mismatch_cancel_hov else (175, 190, 210)
+
+        pygame.draw.rect(surface, cal_col, cal_r, border_radius=10)
+        pygame.draw.rect(surface, can_col, can_r, border_radius=10)
+
+        surface.blit(self.fnt["btn"].render("Calibrate Now", True, (255, 255, 255)),
+                     self.fnt["btn"].render("Calibrate Now", True, (255, 255, 255))
+                     .get_rect(center=cal_r.center))
+        surface.blit(self.fnt["btn"].render("Cancel",        True, (255, 255, 255)),
+                     self.fnt["btn"].render("Cancel",        True, (255, 255, 255))
+                     .get_rect(center=can_r.center))
+
+        self._mismatch_cal_rect    = cal_r
+        self._mismatch_cancel_rect = can_r
 
     def _draw_confirm_modal(self, surface):
         W,H=self.WIDTH,self.HEIGHT
