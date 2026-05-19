@@ -39,18 +39,22 @@ class LoginScene:
         self.accounts = self.db.get_all_therapists()
 
         # --- FONTS ---
-        self.font_heading   = pygame.font.SysFont("georgia",    int(46  * (height / 1080)))
-        self.font_username  = pygame.font.SysFont("georgia",    int(18  * (height / 1080)))
-        self.font_add_lbl   = pygame.font.SysFont("georgia",    int(18  * (height / 1080)))
-        self.font_plus      = pygame.font.SysFont("arialblack", int(52  * (height / 1080)))
-        self.font_pin_lbl   = pygame.font.SysFont("georgia",    int(22  * (height / 1080)))
-        self.font_name_big  = pygame.font.SysFont("georgia",    int(26  * (height / 1080)), bold=True)
-        self.font_error     = pygame.font.SysFont("georgia",    int(17  * (height / 1080)), italic=True)
-        self.font_back      = pygame.font.SysFont("georgia",    int(18  * (height / 1080)), italic=True)
-        self.font_lock      = pygame.font.SysFont("arialblack", int(20  * (height / 1080)))
-        self.font_lock_sub  = pygame.font.SysFont("georgia",    int(15  * (height / 1080)), italic=True)
-        self.font_forgot    = pygame.font.SysFont("georgia",    int(15  * (height / 1080)), italic=True)
-        self.font_attempts  = pygame.font.SysFont("georgia",    int(14  * (height / 1080)))
+        _fd = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "assets", "font")
+        def _F(n): return os.path.join(_fd, n)
+        H = height
+        self.font_heading   = pygame.font.Font(_F("FjallaOne-Regular.ttf"),  int(44 * (H / 1080)))
+        self.font_username  = pygame.font.Font(_F("Lexend-Regular.ttf"),     int(18 * (H / 1080)))
+        self.font_add_lbl   = pygame.font.Font(_F("Lexend-Light.ttf"),       int(18 * (H / 1080)))
+        self.font_plus      = pygame.font.Font(_F("GravitasOne-Regular.ttf"),int(50 * (H / 1080)))
+        self.font_pin_lbl   = pygame.font.Font(_F("Lexend-Medium.ttf"),      int(22 * (H / 1080)))
+        self.font_name_big  = pygame.font.Font(_F("Lexend-SemiBold.ttf"),    int(26 * (H / 1080)))
+        self.font_error     = pygame.font.Font(_F("Lexend-Light.ttf"),       int(17 * (H / 1080)))
+        self.font_back      = pygame.font.Font(_F("Lexend-Light.ttf"),       int(18 * (H / 1080)))
+        self.font_lock      = pygame.font.Font(_F("Lexend-SemiBold.ttf"),    int(20 * (H / 1080)))
+        self.font_lock_sub  = pygame.font.Font(_F("Lexend-Light.ttf"),       int(15 * (H / 1080)))
+        self.font_forgot    = pygame.font.Font(_F("Lexend-Light.ttf"),       int(15 * (H / 1080)))
+        self.font_attempts  = pygame.font.Font(_F("Lexend-Light.ttf"),       int(14 * (H / 1080)))
 
         # --- BACKGROUND ---
         self.background_surface = self._create_gradient(width, height)

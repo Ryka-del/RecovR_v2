@@ -10,6 +10,7 @@
 # =============================================================================
 
 import pygame
+import os
 
 
 class PatientDashboardScene:
@@ -19,8 +20,11 @@ class PatientDashboardScene:
         self.WIDTH  = width
         self.HEIGHT = height
 
-        self.font_title = pygame.font.SysFont("arialblack", int(60 * (height / 1080)))
-        self.font_sub   = pygame.font.SysFont("georgia",    int(32 * (height / 1080)))
+        _fd = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "assets", "font")
+        def _F(n): return os.path.join(_fd, n)
+        self.font_title = pygame.font.Font(_F("GravitasOne-Regular.ttf"), int(58 * (height / 1080)))
+        self.font_sub   = pygame.font.Font(_F("Lexend-Regular.ttf"),      int(30 * (height / 1080)))
 
         # --- FADE-IN ---
         self.alpha        = 0

@@ -3,6 +3,7 @@
 # =============================================================================
 
 import pygame
+import os
 
 
 class TherapistWelcomeScene:
@@ -13,13 +14,16 @@ class TherapistWelcomeScene:
         self.HEIGHT = height
 
         # --- FONTS ---
+        _fd = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "assets", "font")
+        def _F(n): return os.path.join(_fd, n)
         title_size       = int(240 * (height / 1080))
-        subtitle_size    = int(45  * (height / 1080))
-        button_font_size = int(36  * (height / 1080))
+        subtitle_size    = int(43  * (height / 1080))
+        button_font_size = int(34  * (height / 1080))
 
         self.font_title    = pygame.font.SysFont("arialblack", title_size)
-        self.font_subtitle = pygame.font.SysFont("georgia", subtitle_size, bold=False, italic=False)
-        self.font_button   = pygame.font.SysFont("arial", button_font_size, bold=True)
+        self.font_subtitle = pygame.font.Font(_F("Sora-Light.ttf"),          subtitle_size)
+        self.font_button   = pygame.font.Font(_F("Lexend-SemiBold.ttf"),     button_font_size)
 
         # --- SPACING ---
         self.row_spacing = int(45 * (height / 1080))

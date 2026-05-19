@@ -35,15 +35,18 @@ class RegisterScene:
         self.db     = Database()
 
         # --- FONTS ---
-        self.font_title    = pygame.font.SysFont("georgia",  int(34 * (height / 1080)), bold=True)
-        self.font_label    = pygame.font.SysFont("georgia",  int(18 * (height / 1080)))
-        self.font_input    = pygame.font.SysFont("arial",    int(19 * (height / 1080)))
-        self.font_caption  = pygame.font.SysFont("georgia",  int(16 * (height / 1080)), italic=True)
-        self.font_btn      = pygame.font.SysFont("arial",    int(19 * (height / 1080)), bold=True)
-        self.font_back     = pygame.font.SysFont("georgia",  int(17 * (height / 1080)), italic=True)
-        self.font_login_ln = pygame.font.SysFont("georgia",  int(16 * (height / 1080)))
-        self.font_error    = pygame.font.SysFont("georgia",  int(15 * (height / 1080)), italic=True)
-        self.font_dropdown = pygame.font.SysFont("arial",    int(17 * (height / 1080)))
+        _fd = os.path.join(_ROOT, "assets", "font")
+        def _F(n): return os.path.join(_fd, n)
+        H = height
+        self.font_title    = pygame.font.Font(_F("FjallaOne-Regular.ttf"),  int(34 * (H / 1080)))
+        self.font_label    = pygame.font.Font(_F("Lexend-Regular.ttf"),     int(18 * (H / 1080)))
+        self.font_input    = pygame.font.Font(_F("Lexend-Regular.ttf"),     int(19 * (H / 1080)))
+        self.font_caption  = pygame.font.Font(_F("Sora-ExtraLight.ttf"),    int(16 * (H / 1080)))
+        self.font_btn      = pygame.font.Font(_F("Lexend-SemiBold.ttf"),    int(19 * (H / 1080)))
+        self.font_back     = pygame.font.Font(_F("Lexend-Light.ttf"),       int(17 * (H / 1080)))
+        self.font_login_ln = pygame.font.Font(_F("Lexend-Light.ttf"),       int(16 * (H / 1080)))
+        self.font_error    = pygame.font.Font(_F("Lexend-Light.ttf"),       int(15 * (H / 1080)))
+        self.font_dropdown = pygame.font.Font(_F("Lexend-Regular.ttf"),     int(17 * (H / 1080)))
 
         # --- BACKGROUND ---
         self.background_surface = self._create_gradient(width, height)

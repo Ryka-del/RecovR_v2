@@ -208,39 +208,41 @@ class TherapistDashboardScene:
             }
 
         # ── Font dictionary (all fonts scaled relative to screen height) ──
-        # Using H/1080 ratio ensures fonts scale proportionally with resolution
         H = height
+        _fd = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "assets", "font")
+        def _F(name): return os.path.join(_fd, name)
         self.fnt = {
-            "logo":        pygame.font.SysFont("arialblack",    int(51*(H/1080))),     # Large title font
-            "nav":         pygame.font.SysFont("georgia",        int(29*(H/1080))),     # Navigation menu text
-            "nav_sym":     pygame.font.SysFont("segoeuisymbol",  int(35*(H/1080))),     # Navigation emoji symbols
-            "welcome":     pygame.font.SysFont("georgia",        int(35*(H/1080)), italic=True),  # Welcome message
-            "dash_title":  pygame.font.SysFont("arialblack",    int(64*(H/1080))),    # Dashboard title
-            "panel_title": pygame.font.SysFont("arialblack",    int(38*(H/1080))),    # Panel section titles
-            "body":        pygame.font.SysFont("georgia",        int(29*(H/1080))),    # Main body text
-            "body_b":      pygame.font.SysFont("georgia",        int(29*(H/1080)), bold=True),  # Bold body text
-            "small":       pygame.font.SysFont("georgia",        int(26*(H/1080))),    # Smaller text for details
-            "small_i":     pygame.font.SysFont("georgia",        int(26*(H/1080)), italic=True),  # Italic small text
-            "label":       pygame.font.SysFont("georgia",        int(27*(H/1080))),    # Field labels
-            "input":       pygame.font.SysFont("arial",          int(27*(H/1080))),    # Input field text
-            "btn":         pygame.font.SysFont("arial",          int(29*(H/1080)), bold=True),   # Button text
-            "btn_lg":      pygame.font.SysFont("arial",          int(32*(H/1080)), bold=True),   # Large button text
-            "profile_nm":  pygame.font.SysFont("georgia",        int(26*(H/1080)), bold=True),   # Profile name
-            "profile":     pygame.font.SysFont("georgia",        int(24*(H/1080))),    # Profile details
-            "card_lbl":    pygame.font.SysFont("georgia",        int(27*(H/1080)), bold=True),   # Home card labels
-            "card_sym":    pygame.font.SysFont("segoeuisymbol",  int(51*(H/1080))),    # Home card symbols/emoji
-            "modal_head":  pygame.font.SysFont("georgia",        int(45*(H/1080))),    # Modal dialog title
-            "modal_lbl":   pygame.font.SysFont("georgia",        int(30*(H/1080))),    # Modal field labels
-            "modal_inp":   pygame.font.SysFont("arial",          int(30*(H/1080))),    # Modal input text
-            "modal_err":   pygame.font.SysFont("georgia",        int(26*(H/1080)), italic=True),  # Error messages
-            "empty_head":  pygame.font.SysFont("georgia",        int(35*(H/1080))),    # Empty state heading
-            "section":     pygame.font.SysFont("georgia",        int(26*(H/1080)), bold=True),   # Section titles
-            "tag":         pygame.font.SysFont("arial",          int(24*(H/1080)), bold=True),   # Tag/badge text
-            "time":        pygame.font.SysFont("arialblack",    int(21*(H/1080))),    # Time display
-            "header_date": pygame.font.SysFont("georgia",        int(18*(H/1080))),    # Date display in header
-            "breadcrumb":  pygame.font.SysFont("georgia",        int(26*(H/1080))),    # Navigation breadcrumb
-            "sym26":       pygame.font.SysFont("segoeuisymbol",  int(26*(H/1080))),    # Symbol glyphs at 26px
-            "sym29":       pygame.font.SysFont("segoeuisymbol",  int(29*(H/1080))),    # Symbol glyphs at 29px
+            "logo":        pygame.font.SysFont("arialblack",                 int(51*(H/1080))),
+            "nav":         pygame.font.Font(_F("Lexend-Medium.ttf"),         int(27*(H/1080))),
+            "nav_sym":     pygame.font.SysFont("segoeuisymbol",              int(35*(H/1080))),
+            "welcome":     pygame.font.Font(_F("Sora-Light.ttf"),            int(33*(H/1080))),
+            "dash_title":  pygame.font.Font(_F("GravitasOne-Regular.ttf"),   int(60*(H/1080))),
+            "panel_title": pygame.font.Font(_F("FjallaOne-Regular.ttf"),     int(36*(H/1080))),
+            "body":        pygame.font.Font(_F("Lexend-Regular.ttf"),        int(27*(H/1080))),
+            "body_b":      pygame.font.Font(_F("Lexend-SemiBold.ttf"),       int(27*(H/1080))),
+            "small":       pygame.font.Font(_F("Lexend-Light.ttf"),          int(25*(H/1080))),
+            "small_i":     pygame.font.Font(_F("Sora-ExtraLight.ttf"),       int(25*(H/1080))),
+            "label":       pygame.font.Font(_F("Lexend-Regular.ttf"),        int(25*(H/1080))),
+            "input":       pygame.font.Font(_F("Lexend-Regular.ttf"),        int(25*(H/1080))),
+            "btn":         pygame.font.Font(_F("Lexend-SemiBold.ttf"),       int(27*(H/1080))),
+            "btn_lg":      pygame.font.Font(_F("Lexend-Bold.ttf"),           int(30*(H/1080))),
+            "profile_nm":  pygame.font.Font(_F("Sora-SemiBold.ttf"),         int(24*(H/1080))),
+            "profile":     pygame.font.Font(_F("Lexend-Light.ttf"),          int(22*(H/1080))),
+            "card_lbl":    pygame.font.Font(_F("Sora-SemiBold.ttf"),         int(25*(H/1080))),
+            "card_sym":    pygame.font.SysFont("segoeuisymbol",              int(51*(H/1080))),
+            "modal_head":  pygame.font.Font(_F("FjallaOne-Regular.ttf"),     int(42*(H/1080))),
+            "modal_lbl":   pygame.font.Font(_F("Lexend-Medium.ttf"),         int(27*(H/1080))),
+            "modal_inp":   pygame.font.Font(_F("Lexend-Regular.ttf"),        int(27*(H/1080))),
+            "modal_err":   pygame.font.Font(_F("Lexend-Light.ttf"),          int(23*(H/1080))),
+            "empty_head":  pygame.font.Font(_F("Sora-SemiBold.ttf"),         int(33*(H/1080))),
+            "section":     pygame.font.Font(_F("Lexend-SemiBold.ttf"),       int(24*(H/1080))),
+            "tag":         pygame.font.Font(_F("Lexend-Medium.ttf"),         int(22*(H/1080))),
+            "time":        pygame.font.Font(_F("ZenDots-Regular.ttf"),       int(19*(H/1080))),
+            "header_date": pygame.font.Font(_F("Lexend-Light.ttf"),          int(16*(H/1080))),
+            "breadcrumb":  pygame.font.Font(_F("Lexend-Light.ttf"),          int(24*(H/1080))),
+            "sym26":       pygame.font.SysFont("segoeuisymbol",              int(26*(H/1080))),
+            "sym29":       pygame.font.SysFont("segoeuisymbol",              int(29*(H/1080))),
         }
 
         # Create gradient background surface for visual depth
@@ -2568,8 +2570,10 @@ class TherapistDashboardScene:
                              (40,160,220) if active else (185,205,228),
                              pr, 2 if active else 1, border_radius=8)
             val_display = pval
-            ts2 = self.fnt["input"].render(val_display + "  ▼", True, (40,55,80))
-            surface.blit(ts2, ts2.get_rect(midleft=(pr.x+int(8*W/1920), pr.centery)))
+            txt_s  = self.fnt["input"].render(val_display, True, (40,55,80))
+            chev_s = self.fnt["input"].render("▼", True, (90,110,140))
+            surface.blit(txt_s,  txt_s.get_rect(midleft=(pr.x + int(8*W/1920), pr.centery)))
+            surface.blit(chev_s, chev_s.get_rect(midright=(pr.right - int(8*W/1920), pr.centery)))
             self._ss_param_rects[pk] = pr
 
         cal_r = pygame.Rect(pa.x+int(610*W/1920), cy0+int(225*H/1080),
@@ -2695,7 +2699,7 @@ class TherapistDashboardScene:
                                int(260*W/1920), int(36*H/1080))
         byp_col  = (160, 60,  60) if cal_done else (100, 100, 120)
         byp_hcol = (130, 35,  35) if cal_done else ( 70,  70,  95)
-        byp_lbl  = "Disable Bypass" if cal_done else "Bypass Calibration (DEV)"
+        byp_lbl  = "Disable Bypass" if cal_done else "Bypass Calibration"
         _btn(surface, byp_r, byp_lbl, self.fnt["tag"],
              byp_col, byp_hcol, self._bypass_hov, radius=8)
         self._bypass_btn_rect = byp_r

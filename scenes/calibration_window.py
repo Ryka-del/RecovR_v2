@@ -20,6 +20,7 @@ Phases:
 import pygame
 import math
 import builtins
+import os
 
 from sensors.input_handler import input_handler
 
@@ -137,21 +138,24 @@ class CalibrationWindow:
 
         # ── fonts ─────────────────────────────────────────────────────
         H = height
+        _fd = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "assets", "font")
+        def _F(name): return os.path.join(_fd, name)
         self.fnt = {
-            "title":  pygame.font.SysFont("arialblack", int(44 * (H / 1080))),
-            "sub":    pygame.font.SysFont("georgia",    int(28 * (H / 1080)), italic=True),
-            "body":   pygame.font.SysFont("georgia",    int(26 * (H / 1080))),
-            "bold":   pygame.font.SysFont("georgia",    int(26 * (H / 1080)), bold=True),
-            "small":  pygame.font.SysFont("georgia",    int(22 * (H / 1080))),
-            "smallb": pygame.font.SysFont("georgia",    int(22 * (H / 1080)), bold=True),
-            "btn":    pygame.font.SysFont("arial",      int(25 * (H / 1080)), bold=True),
-            "big":    pygame.font.SysFont("arialblack", int(72 * (H / 1080))),
-            "med":    pygame.font.SysFont("arialblack", int(44 * (H / 1080))),
-            "tag":    pygame.font.SysFont("arial",      int(21 * (H / 1080)), bold=True),
-            "head2":  pygame.font.SysFont("arialblack", int(26 * (H / 1080))),
-            "sym44":  pygame.font.SysFont("segoeuisymbol", int(44 * (H / 1080))),
-            "sym25":  pygame.font.SysFont("segoeuisymbol", int(25 * (H / 1080))),
-            "sym22":  pygame.font.SysFont("segoeuisymbol", int(22 * (H / 1080))),
+            "title":  pygame.font.Font(_F("FjallaOne-Regular.ttf"),    int(44 * (H / 1080))),
+            "sub":    pygame.font.Font(_F("Sora-Light.ttf"),            int(27 * (H / 1080))),
+            "body":   pygame.font.Font(_F("Lexend-Regular.ttf"),        int(25 * (H / 1080))),
+            "bold":   pygame.font.Font(_F("Lexend-SemiBold.ttf"),       int(25 * (H / 1080))),
+            "small":  pygame.font.Font(_F("Lexend-Light.ttf"),          int(21 * (H / 1080))),
+            "smallb": pygame.font.Font(_F("Lexend-Medium.ttf"),         int(21 * (H / 1080))),
+            "btn":    pygame.font.Font(_F("Lexend-SemiBold.ttf"),       int(24 * (H / 1080))),
+            "big":    pygame.font.Font(_F("GravitasOne-Regular.ttf"),   int(68 * (H / 1080))),
+            "med":    pygame.font.Font(_F("FjallaOne-Regular.ttf"),     int(42 * (H / 1080))),
+            "tag":    pygame.font.Font(_F("Lexend-Medium.ttf"),         int(20 * (H / 1080))),
+            "head2":  pygame.font.Font(_F("Lexend-SemiBold.ttf"),       int(25 * (H / 1080))),
+            "sym44":  pygame.font.SysFont("segoeuisymbol",              int(44 * (H / 1080))),
+            "sym25":  pygame.font.SysFont("segoeuisymbol",              int(25 * (H / 1080))),
+            "sym22":  pygame.font.SysFont("segoeuisymbol",              int(22 * (H / 1080))),
         }
 
         # ── interaction rects (updated each draw) ─────────────────────
@@ -416,7 +420,7 @@ class CalibrationWindow:
         pygame.draw.rect(surface, C["border"],  sen_b, 1, border_radius=10)
         surface.blit(sen_s, sen_r)
 
-        tog_s = self.fnt["sym25"].render("☀ Light" if self.dark_mode else "☽ Dark", True, C["text"])
+        tog_s = self.fnt["sym25"].render("☀" if self.dark_mode else "☽", True, C["text"])
         tg_r  = pygame.Rect(W - int(148 * W / 1920), top_h // 2 - int(18 * H / 1080),
                             int(132 * W / 1920), int(36 * H / 1080))
         pygame.draw.rect(surface, C["panel2"], tg_r, border_radius=10)
@@ -424,7 +428,7 @@ class CalibrationWindow:
         surface.blit(tog_s, tog_s.get_rect(center=tg_r.center))
         self._toggle_rect = tg_r
 
-        cx_s  = self.fnt["sym25"].render("✕ Cancel", True, C["sub"])
+        cx_s  = self.fnt["sym25"].render("✕", True, C["sub"])
         cx_r  = pygame.Rect(W - int(296 * W / 1920), top_h // 2 - int(18 * H / 1080),
                             int(132 * W / 1920), int(36 * H / 1080))
         pygame.draw.rect(surface, C["panel2"], cx_r, border_radius=10)
