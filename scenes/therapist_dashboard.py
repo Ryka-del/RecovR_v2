@@ -2434,38 +2434,47 @@ class TherapistDashboardScene:
                 surf.blit(font.render(line, True, color), (x, y + k * lh))
             return len(lines)
 
-        tw = int(380*W/1920); th = int(80*H/1080); tg = int(16*W/1920)
+        tw = int(460*W/1920); th = int(120*H/1080); tg = int(16*W/1920)
 
-        game_y = pa.y+int(78*H/1080)
-        surface.blit(self.fnt["small"].render("Single Skill Games",True,(75,95,125)),
-                     (pa.x+int(16*W/1920),game_y))
-        ty = game_y+int(30*H/1080)
-        for i,(gname,gtype) in enumerate(SINGLE_SKILL_GAMES):
-            tx  = pa.x+int(16*W/1920)+i*(tw+tg)
-            tr  = pygame.Rect(tx,ty,tw,th)
-            sel = gc["selected_game"] and gc["selected_game"][1]==gtype
-            bc  = PANEL_COLORS.get(i,(180,200,220)) if sel else (210,220,235)
-            _card_bg(surface,tr,alpha=245 if sel else 200,border_col=bc,border_w=2 if sel else 1)
-            lbl_s = self.fnt["body_b"].render(gtype, True, bc if sel else (55,72,95))
-            surface.blit(lbl_s, lbl_s.get_rect(midleft=(tr.x+int(12*W/1920), tr.centery)))
+        game_y = pa.y + int(78*H/1080)
+        surface.blit(self.fnt["small"].render("Single Skill Games", True, (75,95,125)),
+                     (pa.x + int(16*W/1920), game_y))
+        ty = game_y + int(32*H/1080)
+
+        ss_total_w = len(SINGLE_SKILL_GAMES) * tw + (len(SINGLE_SKILL_GAMES) - 1) * tg
+        ss_start_x = pa.x + (pa.width - ss_total_w) // 2
+        for i, (gname, gtype) in enumerate(SINGLE_SKILL_GAMES):
+            tx  = ss_start_x + i * (tw + tg)
+            tr  = pygame.Rect(tx, ty, tw, th)
+            sel = gc["selected_game"] and gc["selected_game"][1] == gtype
+            bc  = PANEL_COLORS.get(i, (180,200,220)) if sel else (210,220,235)
+            _card_bg(surface, tr, alpha=245 if sel else 200, border_col=bc, border_w=2 if sel else 1)
             if sel and gc["selected_game"]:
+                lbl_s = self.fnt["body_b"].render(gtype, True, bc)
+                surface.blit(lbl_s, lbl_s.get_rect(midleft=(tr.x + int(14*W/1920), tr.y + int(36*H/1080))))
                 sub = self.fnt["small"].render(gc["selected_game"][0], True, bc)
-                surface.blit(sub, sub.get_rect(midleft=(tr.x+int(12*W/1920), tr.centery+int(22*H/1080))))
-            self._game_tiles.append((tr,(gname,gtype)))
+                surface.blit(sub, sub.get_rect(midleft=(tr.x + int(14*W/1920), tr.y + int(82*H/1080))))
+            else:
+                lbl_s = self.fnt["body_b"].render(gtype, True, (55,72,95))
+                surface.blit(lbl_s, lbl_s.get_rect(midleft=(tr.x + int(14*W/1920), tr.centery)))
+            self._game_tiles.append((tr, (gname, gtype)))
 
-        gy2 = ty+th+int(58*H/1080)
-        surface.blit(self.fnt["small"].render("Integrated Games",True,(75,95,125)),
-                     (pa.x+int(16*W/1920),gy2-int(28*H/1080)))
-        for i,(gname,gtype) in enumerate(INTEGRATED_GAMES):
-            tx  = pa.x+int(16*W/1920)+i*(tw+tg)
-            tr  = pygame.Rect(tx,gy2,tw,th)
-            sel = gc["selected_game"] and gc["selected_game"][0]==gname
-            bc  = PANEL_COLORS.get(i+3,(180,200,220)) if sel else (210,220,235)
-            _card_bg(surface,tr,alpha=245 if sel else 200,border_col=bc,border_w=2 if sel else 1)
-            # Display gname (e.g. "Dual Skill") centered — no secondary text
+        ig_label_y = ty + th + int(50*H/1080)
+        surface.blit(self.fnt["small"].render("Integrated Games", True, (75,95,125)),
+                     (pa.x + int(16*W/1920), ig_label_y))
+        gy2 = ig_label_y + int(32*H/1080)
+
+        ig_total_w = len(INTEGRATED_GAMES) * tw + (len(INTEGRATED_GAMES) - 1) * tg
+        ig_start_x = pa.x + (pa.width - ig_total_w) // 2
+        for i, (gname, gtype) in enumerate(INTEGRATED_GAMES):
+            tx  = ig_start_x + i * (tw + tg)
+            tr  = pygame.Rect(tx, gy2, tw, th)
+            sel = gc["selected_game"] and gc["selected_game"][0] == gname
+            bc  = PANEL_COLORS.get(i + 3, (180,200,220)) if sel else (210,220,235)
+            _card_bg(surface, tr, alpha=245 if sel else 200, border_col=bc, border_w=2 if sel else 1)
             lbl_s = self.fnt["body_b"].render(gname, True, bc if sel else (55,72,95))
-            surface.blit(lbl_s, lbl_s.get_rect(midleft=(tr.x+int(12*W/1920), tr.centery)))
-            self._game_tiles.append((tr,(gname,gtype)))
+            surface.blit(lbl_s, lbl_s.get_rect(center=(tr.centerx, tr.centery)))
+            self._game_tiles.append((tr, (gname, gtype)))
 
         # ── Proceed to Start Calibration button ───────────────────────
         game_chosen = gc["selected_game"] is not None
@@ -2543,9 +2552,9 @@ class TherapistDashboardScene:
         dd_y0 = sum_r.y + int(46*H/1080) + 2 * int(34*H/1080) + int(10*H/1080)
         self._ss_param_rects = {}
         for i, (pk, plbl, pval, _) in enumerate(ss_params):
-            field_y = dd_y0 + i * int(52*H/1080)
+            field_y = dd_y0 + i * int(80*H/1080)
             lbl_s   = self.fnt["small"].render(plbl, True, (88,108,138))
-            surface.blit(lbl_s, (dd_x, field_y - int(18*H/1080)))
+            surface.blit(lbl_s, (dd_x, field_y - int(34*H/1080)))
             pr = pygame.Rect(dd_x, field_y, dd_w, dd_h)
             active = (self._ss_open_param is not None and
                       self._ss_open_param[0] == pk)
