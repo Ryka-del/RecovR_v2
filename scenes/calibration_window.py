@@ -293,12 +293,6 @@ class CalibrationWindow:
                         return
                     else:
                         self.adv_dur_active = False
-                # difficulty buttons
-                for val, r in self._adv_rects.get("difficulty", []):
-                    if r.collidepoint(pos):
-                        self.adv_difficulty  = val
-                        self.selected_preset = "Custom"
-                        return
 
             if self._accept_rect.collidepoint(pos):
                 self._accept()
@@ -377,6 +371,7 @@ class CalibrationWindow:
             "average":     round(avg, 4),
             "threshold":   threshold,
             "preset":      self.selected_preset,
+            "dark_mode":   self.dark_mode,
             "params": {
                 "threshold":     threshold,
                 "threshold_pct": self.adv_threshold_pct,
@@ -793,8 +788,7 @@ class CalibrationWindow:
         pygame.draw.rect(surface, C["panel"],  r, border_radius=12)
         pygame.draw.rect(surface, C["border"], r, 1, border_radius=12)
 
-        self._adv_rects = {"threshold_pct": [], "speed": [],
-                           "duration": [], "difficulty": []}
+        self._adv_rects = {"threshold_pct": [], "speed": [], "duration": []}
 
         row_h   = int(46 * H / 1080)
         col_lbl = int(180 * W / 1920)      # label column width
@@ -867,10 +861,6 @@ class CalibrationWindow:
             self._adv_dur_rect = fi_r
         cy += row_gap
 
-        # difficulty
-        row_label("Difficulty:", cy)
-        option_buttons("difficulty", DIFFICULTY_OPTS, self.adv_difficulty, cy,
-                       btn_w_override=int(108 * W / 1920))
 
     # ── sensor diagrams ───────────────────────────────────────────────────────
 

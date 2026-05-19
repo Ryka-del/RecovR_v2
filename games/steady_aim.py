@@ -149,6 +149,14 @@ class SteadyAimGame(FatigueMixin, BaseScreen):
             if pos is None:
                 return
             if self.vol_active:
+                _bx = GAME_W // 2 - (10*30 + 9*6) // 2
+                _by = GAME_H // 2 - 160 + 2 * 96 + 52
+                for si in range(10):
+                    sx = _bx + si * (30 + 6)
+                    if pygame.Rect(sx, _by - 8, 30, 44).collidepoint(pos):
+                        self.pause_vol = (si + 1) / 10
+                        self._apply_vol()
+                        return
                 self.vol_active = False
                 return
             opts_actions = [

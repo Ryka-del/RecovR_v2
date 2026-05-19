@@ -72,17 +72,23 @@ class FatigueMixin:
             surface.blit(lbl, (GAME_W // 2 - lbl.get_width() // 2,
                                GAME_H // 2 - 160 + i * 96))
             if opt == "VOLUME" and (i == self.pause_sel or self.vol_active):
-                bw, bh = 360, 12
-                bx = GAME_W // 2 - bw // 2
-                by = GAME_H // 2 - 160 + i * 96 + 52
-                pygame.draw.rect(surface, T["PANEL"], (bx, by, bw, bh), border_radius=6)
-                pygame.draw.rect(surface, T["GREEN"],
-                                 (bx, by, int(bw * self.pause_vol), bh), border_radius=6)
+                n_segs  = 10
+                seg_w   = 30
+                seg_h   = 28
+                gap     = 6
+                total_w = n_segs * seg_w + (n_segs - 1) * gap
+                bx      = GAME_W // 2 - total_w // 2
+                by      = GAME_H // 2 - 160 + i * 96 + 52
+                filled  = round(self.pause_vol * n_segs)
+                for si in range(n_segs):
+                    sx  = bx + si * (seg_w + gap)
+                    col = T["GREEN"] if si < filled else T["PANEL"]
+                    pygame.draw.rect(surface, col,
+                                     (sx, by, seg_w, seg_h), border_radius=5)
+                    pygame.draw.rect(surface, T["GRAY"],
+                                     (sx, by, seg_w, seg_h), 1, border_radius=5)
                 pct = font_sm.render(f"{int(self.pause_vol * 100)}%", True, T["GREEN"])
-                surface.blit(pct, (bx + bw + 10, by - 4))
-                if self.vol_active:
-                    hint = font_sm.render("← → adjust  ENTER done", True, T["GRAY"])
-                    surface.blit(hint, (GAME_W // 2 - hint.get_width() // 2, by + 20))
+                surface.blit(pct, (bx + total_w + 12, by + 4))
 
     def _draw_fatigue_overlay(self, surface):
         if not self.fatigue_paused:

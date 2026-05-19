@@ -951,6 +951,7 @@ class TherapistDashboardScene:
             "duration_sec": dur_sec,
             "speed":        self.gc.get("speed", "Normal"),
             "calibration":  self.calibration_result or {},
+            "dark_mode":    (self.calibration_result or {}).get("dark_mode", True),
         }
         # Re-set pending_account so the dashboard gets the right therapist when recreated
         builtins.pending_account = self.account
