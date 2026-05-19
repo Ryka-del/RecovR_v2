@@ -38,7 +38,7 @@ class InputHandler:
         if keys[pygame.K_SPACE]:
             self._grip = min(1.0, self._grip + self.RAMP_UP * dt)
         else:
-            self._grip = max(0.0, self._grip - self.RAMP_DOWN * dt)
+            self._grip = 0.0
 
     def was_pressed(self, event, action):
         """True if the action key was just pressed (KEYDOWN)."""
