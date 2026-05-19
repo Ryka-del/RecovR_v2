@@ -420,19 +420,19 @@ class CalibrationWindow:
         pygame.draw.rect(surface, C["border"],  sen_b, 1, border_radius=10)
         surface.blit(sen_s, sen_r)
 
+        _bw = int(40 * W / 1920)
+        _bh = int(36 * H / 1080)
         tog_s = self.fnt["sym25"].render("☀" if self.dark_mode else "☽", True, C["text"])
-        tg_r  = pygame.Rect(W - int(148 * W / 1920), top_h // 2 - int(18 * H / 1080),
-                            int(132 * W / 1920), int(36 * H / 1080))
-        pygame.draw.rect(surface, C["panel2"], tg_r, border_radius=10)
-        pygame.draw.rect(surface, C["border"], tg_r, 1, border_radius=10)
+        tg_r  = pygame.Rect(W - int(52 * W / 1920), top_h // 2 - _bh // 2, _bw, _bh)
+        pygame.draw.rect(surface, C["panel2"], tg_r, border_radius=8)
+        pygame.draw.rect(surface, C["border"], tg_r, 1, border_radius=8)
         surface.blit(tog_s, tog_s.get_rect(center=tg_r.center))
         self._toggle_rect = tg_r
 
         cx_s  = self.fnt["sym25"].render("✕", True, C["sub"])
-        cx_r  = pygame.Rect(W - int(296 * W / 1920), top_h // 2 - int(18 * H / 1080),
-                            int(132 * W / 1920), int(36 * H / 1080))
-        pygame.draw.rect(surface, C["panel2"], cx_r, border_radius=10)
-        pygame.draw.rect(surface, C["border"], cx_r, 1, border_radius=10)
+        cx_r  = pygame.Rect(W - int(100 * W / 1920), top_h // 2 - _bh // 2, _bw, _bh)
+        pygame.draw.rect(surface, C["panel2"], cx_r, border_radius=8)
+        pygame.draw.rect(surface, C["border"], cx_r, 1, border_radius=8)
         surface.blit(cx_s, cx_s.get_rect(center=cx_r.center))
         self._cancel_rect = cx_r
 

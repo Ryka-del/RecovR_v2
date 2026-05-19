@@ -1114,10 +1114,10 @@ class TherapistDashboardScene:
         rx   = mx + mw // 2 + int(mw * 0.04)
 
         left_fields = [
-            ("full_name",     "Full Name",                   "e.g. Maria Santos", False, []),
-            ("age",           "Age",                         "e.g. 62",           False, []),
-            ("date_of_stroke","Date of Stroke",              "YYYY-MM-DD",        False, []),
-            ("months_stroke", "Months Since Stroke",         "e.g. 6",            False, []),
+            ("full_name",     "Full Name",                   "Enter Full Name",   False, []),
+            ("age",           "Age",                         "Enter Age",         False, []),
+            ("date_of_stroke","Date of Stroke",              "MM-DD-YY",          False, []),
+            ("months_stroke", "Stroke Onset Date",           "MM-DD-YY",          False, []),
             ("sex",           "Sex",                         "",                  True,  SEX_OPTS),
             ("dominant_hand", "Dominant Hand",               "",                  True,  HAND_OPTS),
             ("affected_hand", "Affected Hand (Stroke Side)", "",                  True,  HAND_OPTS),
@@ -1146,10 +1146,12 @@ class TherapistDashboardScene:
 
             val = self._ep.get(key, "")
             if is_drop:
-                disp = val or "Select ▼"
+                disp = val or "Select"
                 tc   = (40, 50, 65) if val else (170, 185, 205)
                 ts   = self.fnt["input"].render(disp, True, tc)
                 surface.blit(ts, ts.get_rect(midleft=(fr.x + int(10*W/1920), fr.centery)))
+                chev = self.fnt["sym26"].render("▼", True, (90, 110, 140))
+                surface.blit(chev, chev.get_rect(midright=(fr.right - int(10*W/1920), fr.centery)))
             else:
                 ts = (self.fnt["input"].render(val, True, (40, 50, 65)) if val
                       else self.fnt["input"].render(placeholder, True, (185, 198, 215)))
@@ -2141,10 +2143,10 @@ class TherapistDashboardScene:
             field_defs.append((key, lbl, fr, placeholder, is_drop, opts or []))
             self._rp_drop_rects[key] = (fr, [], opts or [])
 
-        _register_field("full_name",     "Full Name",                   col1_x, 0, "e.g. Maria Santos")
-        _register_field("age",           "Age",                         col1_x, 1, "e.g. 62")
-        _register_field("date_of_stroke","Date of Stroke",              col1_x, 2, "YYYY-MM-DD")
-        _register_field("months_stroke", "Months Since Stroke",         col1_x, 3, "e.g. 6")
+        _register_field("full_name",     "Full Name",                   col1_x, 0, "Enter Full Name")
+        _register_field("age",           "Age",                         col1_x, 1, "Enter Age")
+        _register_field("date_of_stroke","Date of Stroke",              col1_x, 2, "MM-DD-YY")
+        _register_field("months_stroke", "Stroke Onset Date",           col1_x, 3, "MM-DD-YY")
         _register_field("sex",           "Sex",                         col1_x, 4, is_drop=True, opts=SEX_OPTS)
         _register_field("dominant_hand", "Dominant Hand",               col1_x, 5, is_drop=True, opts=HAND_OPTS)
         _register_field("affected_hand", "Affected Hand (Stroke Side)", col1_x, 6, is_drop=True, opts=HAND_OPTS)
@@ -2177,11 +2179,11 @@ class TherapistDashboardScene:
                              fr, 2 if active else 1, border_radius=8)
             val = rp.get(key, "")
             if is_drop:
-                disp = val or "Select ▼"
+                disp = val or "Select"
                 tc   = (40,50,65) if val else (175,188,205)
                 ts   = self.fnt["input"].render(disp, True, tc)
                 surface.blit(ts, ts.get_rect(midleft=(fr.x+int(10*W/1920), fr.centery)))
-                chev = self.fnt["input"].render("▼", True, (90,110,140))
+                chev = self.fnt["sym26"].render("▼", True, (90,110,140))
                 surface.blit(chev, chev.get_rect(midright=(fr.right-int(10*W/1920), fr.centery)))
             else:
                 ts = (self.fnt["input"].render(val, True, (40,50,65)) if val
@@ -2571,7 +2573,7 @@ class TherapistDashboardScene:
                              pr, 2 if active else 1, border_radius=8)
             val_display = pval
             txt_s  = self.fnt["input"].render(val_display, True, (40,55,80))
-            chev_s = self.fnt["input"].render("▼", True, (90,110,140))
+            chev_s = self.fnt["sym26"].render("▼", True, (90,110,140))
             surface.blit(txt_s,  txt_s.get_rect(midleft=(pr.x + int(8*W/1920), pr.centery)))
             surface.blit(chev_s, chev_s.get_rect(midright=(pr.right - int(8*W/1920), pr.centery)))
             self._ss_param_rects[pk] = pr
@@ -2787,7 +2789,7 @@ class TherapistDashboardScene:
                 val=field["value"] or field["placeholder"]
                 ts=self.fnt["modal_inp"].render(val,True,(40,50,65) if field["value"] else (175,188,205))
                 surface.blit(ts,ts.get_rect(midleft=(rect.x+int(10*W/1920),rect.centery)))
-                chev=self.fnt["modal_inp"].render("▼",True,(95,115,145))
+                chev=self.fnt["sym26"].render("▼",True,(95,115,145))
                 surface.blit(chev,chev.get_rect(midright=(rect.right-int(12*W/1920),rect.centery)))
             else:
                 val=field["value"]
