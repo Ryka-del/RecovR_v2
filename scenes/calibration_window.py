@@ -674,7 +674,7 @@ class CalibrationWindow:
         rec_s = self.fnt["head2"].render("Recommended Parameters", True, C["text"])
         surface.blit(rec_s, (rx, ry))
 
-        ry2 = ry + rec_s.get_height() + int(14 * H / 1080)
+        ry2 = ry + rec_s.get_height() + int(30 * H / 1080)
         self._draw_preset_cards(surface, rx, ry2, rw, C, avg)
 
         # advanced settings toggle button
@@ -736,14 +736,14 @@ class CalibrationWindow:
             bg_surf.fill(bg_col)
             surface.blit(bg_surf, cr.topleft)
 
+            if sel:
+                # Glow: draw a slightly larger blurred outline behind the card
+                glow = pygame.Surface((cw + 8, ch + 8), pygame.SRCALPHA)
+                pygame.draw.rect(glow, (*base_col, 80),
+                                 (0, 0, cw + 8, ch + 8), border_radius=16)
+                surface.blit(glow, (cr.x - 4, cr.y - 4))
             border_w = 3 if sel else 1
             pygame.draw.rect(surface, base_col, cr, border_w, border_radius=14)
-
-            if sel:
-                tick_s = self.fnt["smallb"].render("● Selected", True, base_col)
-                surface.blit(tick_s, tick_s.get_rect(
-                    topright=(cr.right - int(10 * W / 1920),
-                              cr.y + int(10 * H / 1080))))
 
             # difficulty label
             nm_s = self.fnt["head2"].render(name.upper(), True,
@@ -788,12 +788,6 @@ class CalibrationWindow:
 
             self._preset_card_rects[name] = cr
 
-        # "Custom" indicator when in custom mode
-        if self.selected_preset == "Custom":
-            cust_s = self.fnt["smallb"].render(
-                "● Custom settings active", True, C["orange"])
-            surface.blit(cust_s, cust_s.get_rect(
-                midtop=(rx + rw // 2, ry + ch + int(6 * H / 1080))))
 
     def _draw_advanced_panel(self, surface, r, C, avg):
         W, H = self.W, self.H

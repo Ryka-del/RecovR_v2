@@ -133,11 +133,9 @@ SMART_PRESETS   = {
 def _card_bg(surface, rect, alpha=200, radius=14,
              border_col=(200, 218, 240), border_w=1):
     bg = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
-    bg.fill((232, 242, 255, alpha))
+    pygame.draw.rect(bg, (232, 242, 255, alpha),
+                     (0, 0, rect.width, rect.height), border_radius=radius)
     surface.blit(bg, rect.topleft)
-    hl = pygame.Surface((rect.width, 3), pygame.SRCALPHA)
-    hl.fill((255, 255, 255, 190))
-    surface.blit(hl, rect.topleft)
     pygame.draw.rect(surface, border_col, rect, border_w, border_radius=radius)
 
 
@@ -645,9 +643,7 @@ class TherapistDashboardScene:
                 return self._handle_edit_key(event)
             # Patient search field
             if self.active_panel == 0 and self._pt_search_active:
-                if event.key == pygame.K_ESCAPE:
-                    self._pt_search_active = False
-                elif event.key == pygame.K_BACKSPACE:
+                if event.key == pygame.K_BACKSPACE:
                     self._pt_search_text = self._pt_search_text[:-1]
                 elif event.unicode and len(self._pt_search_text) < 40:
                     self._pt_search_text += event.unicode
@@ -656,7 +652,7 @@ class TherapistDashboardScene:
             if self.active_panel == 4 and self._gc_custom_dur_active:
                 if event.key == pygame.K_BACKSPACE:
                     self._gc_custom_dur = self._gc_custom_dur[:-1]
-                elif event.key in (pygame.K_RETURN, pygame.K_ESCAPE):
+                elif event.key == pygame.K_RETURN:
                     self._gc_custom_dur_active = False
                 elif event.unicode.isdigit() and len(self._gc_custom_dur) < 4:
                     self._gc_custom_dur += event.unicode
@@ -665,7 +661,7 @@ class TherapistDashboardScene:
             if self.active_panel == 5 and self._ss_custom_dur_active:
                 if event.key == pygame.K_BACKSPACE:
                     self._gc_custom_dur = self._gc_custom_dur[:-1]
-                elif event.key in (pygame.K_RETURN, pygame.K_ESCAPE):
+                elif event.key == pygame.K_RETURN:
                     self._ss_custom_dur_active = False
                 elif event.unicode.isdigit() and len(self._gc_custom_dur) < 4:
                     self._gc_custom_dur += event.unicode
@@ -674,20 +670,7 @@ class TherapistDashboardScene:
             if self.active_panel == 6 and self.rp.get("active_key"):
                 self._rp_keydown(event)
                 return None
-            # ESC key closes modals or goes back
-            if event.key == pygame.K_ESCAPE:
-                if self.active_panel == 4 and self._gc_skill_modal_open:
-                    self._gc_skill_modal_open = False
-                    return None
-                if self.modal in ("edit_profile","logout_confirm","register_success"):
-                    self.modal = None
-                elif self.modal == "delete_confirm":
-                    self.modal = "edit_profile"
-                elif self.modal == "delete_patient_confirm":
-                    self.modal = None
-                elif self.active_panel != -1:
-                    # Going back from a panel returns to previous screen
-                    self._go_back()
+            # (no ESC navigation — use mouse/touch only)
 
         return None
 
@@ -1093,9 +1076,8 @@ class TherapistDashboardScene:
 
         # Glass background
         ms = pygame.Surface((mw, mh), pygame.SRCALPHA)
-        ms.fill((228, 238, 252, 252)); surface.blit(ms, mr.topleft)
-        hl = pygame.Surface((mw, 3), pygame.SRCALPHA)
-        hl.fill((255, 255, 255, 210)); surface.blit(hl, mr.topleft)
+        pygame.draw.rect(ms, (228, 238, 252, 252), (0, 0, mw, mh), border_radius=16)
+        surface.blit(ms, mr.topleft)
         pygame.draw.rect(surface, (175, 205, 235), mr, 1, border_radius=16)
 
         # Title
@@ -1690,9 +1672,9 @@ class TherapistDashboardScene:
         pc_y = int(H*0.11); pc_h = int(H*0.18)
         pc_r = pygame.Rect(int(sw*0.05), pc_y, int(sw*0.90), pc_h)
         glass_pc = pygame.Surface((pc_r.width, pc_r.height), pygame.SRCALPHA)
-        glass_pc.fill((195, 220, 255, 130)); surface.blit(glass_pc, pc_r.topleft)
-        hl_pc = pygame.Surface((pc_r.width, 3), pygame.SRCALPHA)
-        hl_pc.fill((255, 255, 255, 210)); surface.blit(hl_pc, pc_r.topleft)
+        pygame.draw.rect(glass_pc, (195, 220, 255, 130),
+                         (0, 0, pc_r.width, pc_r.height), border_radius=12)
+        surface.blit(glass_pc, pc_r.topleft)
         pygame.draw.rect(surface, (175, 208, 240), pc_r, 1, border_radius=12)
         ir = int(34*(H/1080)); ix = pc_r.x+int(sw*0.10); iy = pc_r.centery
         draw_icon(surface, self.account.get("icon_index",1), ix, iy, ir, shadow=False)
@@ -1993,9 +1975,8 @@ class TherapistDashboardScene:
 
         # Glass background
         ms = pygame.Surface((mw, mh), pygame.SRCALPHA)
-        ms.fill((228, 238, 252, 252)); surface.blit(ms, mr.topleft)
-        hl = pygame.Surface((mw, 3), pygame.SRCALPHA)
-        hl.fill((255, 255, 255, 210)); surface.blit(hl, mr.topleft)
+        pygame.draw.rect(ms, (228, 238, 252, 252), (0, 0, mw, mh), border_radius=14)
+        surface.blit(ms, mr.topleft)
         pygame.draw.rect(surface, (175, 205, 235), mr, 1, border_radius=14)
 
         pt_name = (self.share_modal_patient or {}).get("full_name", "Patient")
@@ -2764,9 +2745,8 @@ class TherapistDashboardScene:
         W, H = self.WIDTH, self.HEIGHT
         mr   = self.edit_modal_rect
         ms   = pygame.Surface((mr.width,mr.height), pygame.SRCALPHA)
-        ms.fill((228, 238, 252, 252)); surface.blit(ms, mr.topleft)
-        hl_m = pygame.Surface((mr.width, 3), pygame.SRCALPHA)
-        hl_m.fill((255, 255, 255, 210)); surface.blit(hl_m, mr.topleft)
+        pygame.draw.rect(ms, (228, 238, 252, 252), (0, 0, mr.width, mr.height), border_radius=16)
+        surface.blit(ms, mr.topleft)
         pygame.draw.rect(surface,(175,205,235),mr,1,border_radius=16)
         hs = self.fnt["modal_head"].render("Edit Profile",True,(38,52,78))
         surface.blit(hs,hs.get_rect(midleft=(mr.x+int(18*W/1920),mr.y+int(35*H/1080))))
@@ -2844,11 +2824,8 @@ class TherapistDashboardScene:
         mr      = pygame.Rect(mx, my, mw, mh)
 
         ms = pygame.Surface((mw, mh), pygame.SRCALPHA)
-        ms.fill((245, 249, 255, 255))
+        pygame.draw.rect(ms, (245, 249, 255, 255), (0, 0, mw, mh), border_radius=14)
         surface.blit(ms, mr.topleft)
-        hl = pygame.Surface((mw, 3), pygame.SRCALPHA)
-        hl.fill((255, 255, 255, 200))
-        surface.blit(hl, mr.topleft)
         pygame.draw.rect(surface, (100, 160, 220), mr, 2, border_radius=14)
 
         # Title
@@ -2898,11 +2875,8 @@ class TherapistDashboardScene:
         mr = pygame.Rect(mx, my, mw, mh)
 
         ms = pygame.Surface((mw, mh), pygame.SRCALPHA)
-        ms.fill((245, 252, 248, 255))
+        pygame.draw.rect(ms, (245, 252, 248, 255), (0, 0, mw, mh), border_radius=16)
         surface.blit(ms, mr.topleft)
-        hl = pygame.Surface((mw, 3), pygame.SRCALPHA)
-        hl.fill((255, 255, 255, 200))
-        surface.blit(hl, mr.topleft)
         pygame.draw.rect(surface, (80, 190, 120), mr, 2, border_radius=16)
 
         # Checkmark circle
