@@ -2525,8 +2525,10 @@ class TherapistDashboardScene:
             surface.blit(self.fnt["body"].render(lbl, True, txt_col),
                          (cx0+int(28*W/1920), sy))
 
+        custom_active = gc.get("duration") == "Custom"
+        custom_extra  = int(44*H/1080) if custom_active else 0
         sum_r = pygame.Rect(pa.x+int(80*W/1920), cy0+int(225*H/1080),
-                            int(480*W/1920), int(248*H/1080))
+                            int(480*W/1920), int(288*H/1080) + custom_extra)
         _card_bg(surface, sum_r, alpha=235, border_col=(185,210,240), border_w=1)
         surface.blit(self.fnt["section"].render("Session Details", True, (75,95,125)),
                      (sum_r.x+int(12*W/1920), sum_r.y+int(12*H/1080)))
@@ -2549,10 +2551,11 @@ class TherapistDashboardScene:
         dd_w  = sum_r.width - int(24*W/1920)
         dd_h  = int(36*H/1080)
         dd_x  = sum_r.x + int(12*W/1920)
-        dd_y0 = sum_r.y + int(46*H/1080) + 2 * int(34*H/1080) + int(10*H/1080)
+        dd_y0 = sum_r.y + int(158*H/1080)
         self._ss_param_rects = {}
         for i, (pk, plbl, pval, _) in enumerate(ss_params):
-            field_y = dd_y0 + i * int(80*H/1080)
+            extra   = custom_extra if i > 0 else 0
+            field_y = dd_y0 + i * int(84*H/1080) + extra
             lbl_s   = self.fnt["small"].render(plbl, True, (88,108,138))
             surface.blit(lbl_s, (dd_x, field_y - int(34*H/1080)))
             pr = pygame.Rect(dd_x, field_y, dd_w, dd_h)
