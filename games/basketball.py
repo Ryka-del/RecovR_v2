@@ -64,21 +64,23 @@ def _draw_hoop_back(surface, hx, hy):
     hcx = hx + HOOP_RX
     hcy = hy
 
-    # Backboard — right of rim
-    bw, bh = 90, 110
-    bx = hcx + HOOP_RX + 6
-    by = hcy - bh
-    pygame.draw.rect(surface, _BOARD_COL, (bx, by, bw, bh), border_radius=3)
-    pygame.draw.rect(surface, _BOARD_EDG, (bx, by, bw, bh), 3, border_radius=3)
-    sq_m = 12
-    pygame.draw.rect(surface, _BOARD_EDG,
-                     (bx + sq_m, by + bh // 2, bw - sq_m * 2, bh // 2 - sq_m), 2)
+    # Backboard — centered ABOVE the rim
+    bw, bh = 150, 75
+    bx = hcx - bw // 2
+    by = hcy - bh - HOOP_RY - 8   # 8 px gap above top of rim arc
+    pygame.draw.rect(surface, _BOARD_COL, (bx, by, bw, bh), border_radius=4)
+    pygame.draw.rect(surface, _BOARD_EDG, (bx, by, bw, bh), 3, border_radius=4)
+    sq_m = 14
+    sq_by = by + bh // 2
+    sq_bh = bh // 2 - sq_m
+    pygame.draw.rect(surface, _BOARD_EDG, (bx + sq_m, sq_by, bw - sq_m * 2, sq_bh), 2)
 
-    # Bracket arm
-    arm_x = hcx + HOOP_RX - 2
-    arm_y = hcy - 5
+    # Vertical bracket connecting backboard bottom to rim top
+    brkt_top = by + bh
+    brkt_bot = hcy - HOOP_RY
     pygame.draw.rect(surface, _BRKT_COL,
-                     (arm_x, arm_y, bx - arm_x + 4, 10), border_radius=3)
+                     (hcx - 5, brkt_top, 10, max(2, brkt_bot - brkt_top + 2)),
+                     border_radius=2)
 
     # Net
     net_h   = 55
@@ -175,7 +177,7 @@ class BasketballGame(FatigueMixin, BaseScreen):
         self.ball_active = False
 
         self.hoop_x     = random.randint(300, GAME_W - 500)
-        self.hoop_y     = random.randint(140, 400)
+        self.hoop_y     = random.randint(200, 400)
         self._next_hoop = None
 
         self.feedback    = None
@@ -283,6 +285,7 @@ class BasketballGame(FatigueMixin, BaseScreen):
                     self.feedback = ("MISSED — release in the GREEN zone!", (255, 60, 80), 1.5)
                     play_error()
                 self._cooldown = 0.6
+                self._grip = 0.0   # reset needle immediately after shot or miss
 
         if self._cooldown > 0:
             self._cooldown -= dt
@@ -293,11 +296,10 @@ class BasketballGame(FatigueMixin, BaseScreen):
             if self.zone_pos > 0.55: self.zone_dir = -1
             if self.zone_pos < 0.10: self.zone_dir =  1
 
-        # Update grip AFTER release detection — drop immediately on release
+        # Needle: rises while squeezing, freezes when released
         if raw > 0.1:
             self._grip = min(1.0, self._grip + RAMP_UP * dt)
-        else:
-            self._grip = 0.0
+        # else: no change — needle stays at current position
 
         # Ball physics
         if self.ball_active:
@@ -308,7 +310,7 @@ class BasketballGame(FatigueMixin, BaseScreen):
             hcx = self.hoop_x + HOOP_RX
             hcy = self.hoop_y
             if (abs(self.ball_x - hcx) < HOOP_RX and
-                    abs(self.ball_y - hcy) < 35 and self.ball_vy > 0):
+                    abs(self.ball_y - hcy) < BALL_R + HOOP_RY):
                 if self._pending_score:
                     self.score      += 1
                     self.reps       += 1
@@ -357,7 +359,7 @@ class BasketballGame(FatigueMixin, BaseScreen):
         self.ball_active = True
 
         self._next_hoop = (random.randint(300, GAME_W - 500),
-                           random.randint(140, 400))
+                           random.randint(200, 400))
         self.zone_pos   = random.uniform(0.15, 0.50)
 
     # ------------------------------------------------------------------ #
