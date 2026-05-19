@@ -338,8 +338,6 @@ class BasketballGame(FatigueMixin, BaseScreen):
                 self.ball_active    = False
                 self._advance_hoop()
 
-        if self.score >= self.goal:
-            self._end_game()
 
         if self.feedback:
             self.feedback = (self.feedback[0], self.feedback[1], self.feedback[2] - dt)
@@ -410,9 +408,8 @@ class BasketballGame(FatigueMixin, BaseScreen):
                 "Release hand  -- shoots when needle is in the GREEN zone.",
             ]),
             ("THIS SESSION", [
-                f"Goal:          Score {self.goal} baskets",
-                f"Starting time: {self.time_start} seconds",
-                f"Difficulty:    {self.difficulty}",
+                f"Duration:   {self.time_start} seconds",
+                f"Difficulty: {self.difficulty}",
             ]),
         ]:
             surface.blit(f_head.render(header, True, T["ACCENT"]), (px + 48, y))
@@ -479,7 +476,7 @@ class BasketballGame(FatigueMixin, BaseScreen):
         title = f_big.render("Session Complete!", True, T["YELLOW"])
         surface.blit(title, title.get_rect(center=(mr.centerx, my + 60)))
 
-        sc_s = f_mid.render(f"Score:    {self.game_over_score} / {self.goal}", True, T["WHITE"])
+        sc_s = f_mid.render(f"Score:    {self.game_over_score}", True, T["WHITE"])
         surface.blit(sc_s, sc_s.get_rect(midleft=(mx + 80, my + 140)))
 
         mins, secs = divmod(self.game_over_duration, 60)
@@ -567,7 +564,7 @@ class BasketballGame(FatigueMixin, BaseScreen):
         surface.blit(font_hud.render(
             f"BASKETBALL  ·  {self.difficulty.upper()}", True, diff_col), (80, 18))
         surface.blit(font_hud.render(
-            f"{self.score:02d} / {self.goal:02d}", True, T["ACCENT"]),
+            f"Score: {self.score:02d}", True, T["ACCENT"]),
             (GAME_W // 2 - 60, 18))
         time_col = T["RED"] if self.time_left < 10 else T["TEXT"]
         surface.blit(font_hud.render(
