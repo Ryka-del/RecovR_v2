@@ -894,7 +894,9 @@ class TherapistDashboardScene:
         elif self.active_panel == 5: self.active_panel = 4
 
     def _open_panel(self, idx):
-        self.active_panel = idx
+        self.active_panel      = idx
+        self._ss_open_param    = None   # close any open session-detail dropdown
+        self._ss_custom_dur_active = False
         if idx == 0:
             self._pt_search_active = False
             self._pt_search_text   = ""
@@ -1483,14 +1485,6 @@ class TherapistDashboardScene:
             self._gc_skill_modal_open = False
             return
 
-        if self._preset_btn_rect.collidepoint(pos):
-            sev = (self.selected_patient or {}).get("severity","Moderate")
-            p   = SMART_PRESETS.get(sev, SMART_PRESETS["Moderate"])
-            gc.update({"duration": p["duration"], "speed": p["speed"],
-                       "sensitivity": p["sensitivity"],
-                       "difficulty": p["difficulty"], "preset_applied": True})
-            return
-
         for (tr, game_tuple) in self._game_tiles:
             if tr.collidepoint(pos):
                 skill_type = game_tuple[1]
@@ -1500,42 +1494,6 @@ class TherapistDashboardScene:
                     self._gc_skill_modal_rects = []
                 else:
                     gc["selected_game"] = game_tuple
-                    gc["preset_applied"] = False
-                return
-
-        # Custom duration input field click
-        if gc["duration"] == "Custom" and self._gc_custom_dur_rect.collidepoint(pos):
-            self._gc_custom_dur_active = True
-            return
-        self._gc_custom_dur_active = False
-
-        params_cfg = [
-            ("duration",    GAME_DURATION),
-            ("speed",       ["Slow","Normal","Fast"]),
-            ("sensitivity", ["Low","Medium","High"]),
-        ]
-        if self._gc_open_param:
-            open_key, open_opts = self._gc_open_param
-            pr = self._param_rects.get(open_key)
-            if pr:
-                opt_h = int(36*(self.HEIGHT/1080))
-                for j, opt_val in enumerate(open_opts):
-                    or_ = pygame.Rect(pr.x, pr.bottom + j*opt_h, pr.width, opt_h)
-                    if or_.collidepoint(pos):
-                        gc[open_key] = opt_val
-                        if opt_val == "Custom":
-                            self._gc_custom_dur = ""
-                            self._gc_custom_dur_active = True
-                        self._gc_open_param = None
-                        gc["preset_applied"] = False
-                        return
-            self._gc_open_param = None
-            return
-
-        for (pk, opts) in params_cfg:
-            pr = self._param_rects.get(pk)
-            if pr and pr.collidepoint(pos):
-                self._gc_open_param = (pk, opts)
                 return
 
     # ──────────────────────────────────────────────────────────────────
@@ -2509,71 +2467,7 @@ class TherapistDashboardScene:
             surface.blit(lbl_s, lbl_s.get_rect(midleft=(tr.x+int(12*W/1920), tr.centery)))
             self._game_tiles.append((tr,(gname,gtype)))
 
-        # ── Session Parameters + Smart Preset (aligned together) ──────
-        param_y = gy2+th+int(56*H/1080)
-        surface.blit(self.fnt["section"].render("Session Parameters",True,(75,95,125)),
-                     (pa.x+int(16*W/1920),param_y))
-        preset_r = pygame.Rect(pa.right-int(176*W/1920), param_y-int(4*H/1080),
-                               int(160*W/1920), int(34*H/1080))
-        pc = (55,160,100) if gc["preset_applied"] else (40,130,210)
-        ph_col = (35,130,78) if gc["preset_applied"] else (25,105,175)
-        pl = "Preset Applied" if gc["preset_applied"] else "Smart Preset"
-        _btn(surface,preset_r,pl,self.fnt["tag"],pc,ph_col,self.preset_hov,radius=20)
-        self._preset_btn_rect = preset_r
-
-        params = [
-            ("duration",   "Duration",     gc["duration"],   GAME_DURATION),
-            ("speed",      "Speed",        gc["speed"],      ["Slow","Normal","Fast"]),
-            ("sensitivity","Sensitivity",  gc["sensitivity"],["Low","Medium","High"]),
-        ]
-        pw = int(170*W/1920); ph2 = int(46*H/1080); pgap = int(20*W/1920)
-        py = param_y+int(64*H/1080)
-        self._param_rects = {}
-        for i,(pk,plbl,pval,opts) in enumerate(params):
-            px  = pa.x+int(16*W/1920)+i*(pw+pgap)
-            pr  = pygame.Rect(px,py,pw,ph2)
-            surface.blit(self.fnt["label"].render(plbl,True,(88,108,138)),(px,py-int(32*H/1080)))
-            pygame.draw.rect(surface,(255,255,255),pr,border_radius=8)
-            pygame.draw.rect(surface,(185,205,228),pr,1,border_radius=8)
-            ts2 = self.fnt["input"].render(pval+" ▾",True,(40,55,80))
-            surface.blit(ts2, ts2.get_rect(midleft=(pr.x+int(8*W/1920),pr.centery)))
-            self._param_rects[pk] = pr
-            if self._gc_open_param and self._gc_open_param[0]==pk:
-                opt_h  = int(36*H/1080)
-                dp_bg  = pygame.Rect(pr.x,pr.bottom-1,pw,len(opts)*opt_h+4)
-                pygame.draw.rect(surface,(248,251,255),dp_bg,border_radius=8)
-                pygame.draw.rect(surface,(40,160,220),dp_bg,2,border_radius=8)
-                for j,ov in enumerate(opts):
-                    or_ = pygame.Rect(pr.x,pr.bottom+j*opt_h,pw,opt_h)
-                    ts3 = self.fnt["input"].render(ov,True,(40,50,65))
-                    surface.blit(ts3,ts3.get_rect(midleft=(or_.x+int(8*W/1920),or_.centery)))
-
-        # ── Custom duration input (shown when "Custom" is selected) ───
-        if gc["duration"] == "Custom":
-            cust_pr = self._param_rects.get("duration")
-            if cust_pr:
-                cust_r = pygame.Rect(cust_pr.x, cust_pr.bottom + int(8*H/1080), pw, ph2)
-                self._gc_custom_dur_rect = cust_r
-                active_c = self._gc_custom_dur_active
-                pygame.draw.rect(surface, (255,255,255), cust_r, border_radius=8)
-                pygame.draw.rect(surface,
-                                 (40,160,220) if active_c else (185,205,228),
-                                 cust_r, 2 if active_c else 1, border_radius=8)
-                disp_val = self._gc_custom_dur if self._gc_custom_dur else ""
-                placeholder_c = (185,198,215)
-                text_c = (40,50,65)
-                if disp_val:
-                    label_s = self.fnt["input"].render(disp_val + " sec", True, text_c)
-                else:
-                    label_s = self.fnt["input"].render("Enter seconds...", True, placeholder_c)
-                surface.blit(label_s, label_s.get_rect(midleft=(cust_r.x+int(8*W/1920), cust_r.centery)))
-                if active_c and disp_val:
-                    cx_cur = cust_r.x + int(8*W/1920) + self.fnt["input"].size(disp_val + " sec")[0] + 2
-                    pygame.draw.line(surface, (40,160,220),
-                                     (cx_cur, cust_r.centery - int(9*H/1080)),
-                                     (cx_cur, cust_r.centery + int(9*H/1080)), 2)
-
-        # ── Start Calibration button ──────────────────────────────────
+        # ── Proceed to Start Calibration button ───────────────────────
         game_chosen = gc["selected_game"] is not None
         next_r = pygame.Rect(pa.right-int(260*W/1920), pa.bottom-int(60*H/1080),
                              int(244*W/1920), int(46*H/1080))
@@ -2582,19 +2476,6 @@ class TherapistDashboardScene:
         _btn(surface,next_r,"Start Calibration",self.fnt["btn"],
              nc,nh,self.gc_next_hov and game_chosen,radius=12)
         self._gc_next_rect = next_r if game_chosen else pygame.Rect(0,0,1,1)
-
-        # ── Adaptive Difficulty info box — sits just above Start Calibration ──
-        adp_h = int(74*H/1080)
-        adp_y = next_r.y - adp_h - int(14*H/1080)
-        adp_r = pygame.Rect(pa.x+int(16*W/1920), adp_y, pa.width-int(32*W/1920), adp_h)
-        pygame.draw.rect(surface,(235,245,255),adp_r,border_radius=8)
-        pygame.draw.rect(surface,(150,195,240),adp_r,1,border_radius=8)
-        surface.blit(self.fnt["small"].render(
-            "Adaptive Difficulty: After calibration, the system normalises patient max effort to 100%.",
-            True,(65,105,165)),(adp_r.x+int(10*W/1920),adp_r.y+int(10*H/1080)))
-        surface.blit(self.fnt["small"].render(
-            "Therapist adjusts speed/difficulty as a % of that calibrated maximum.",
-            True,(65,105,165)),(adp_r.x+int(10*W/1920),adp_r.y+int(42*H/1080)))
 
     # ──────────────────────────────────────────────────────────────────
     #  PANEL 5: START SESSION
@@ -2636,23 +2517,49 @@ class TherapistDashboardScene:
                          (cx0+int(28*W/1920), sy))
 
         sum_r = pygame.Rect(pa.x+int(80*W/1920), cy0+int(225*H/1080),
-                            int(480*W/1920), int(220*H/1080))
+                            int(480*W/1920), int(248*H/1080))
         _card_bg(surface, sum_r, alpha=235, border_col=(185,210,240), border_w=1)
         surface.blit(self.fnt["section"].render("Session Details", True, (75,95,125)),
                      (sum_r.x+int(12*W/1920), sum_r.y+int(12*H/1080)))
         gname = gc["selected_game"][0] if gc["selected_game"] else "—"
-        dur_display = (self._gc_custom_dur + " sec" if self._gc_custom_dur else "Custom")  \
-            if gc["duration"] == "Custom" else gc["duration"]
-        lines = [
+
+        # ── Static rows: Patient and Game ─────────────────────────────
+        for k, line in enumerate([
             f"Patient  : {pt.get('full_name','—')}",
             f"Game     : {gname}",
-            f"Duration : {dur_display}",
-            f"Speed    : {gc['speed']}",
-            f"Sensitivity: {gc['sensitivity']}",
-        ]
-        for k, line in enumerate(lines):
+        ]):
             surface.blit(self.fnt["body"].render(line, True, (50,65,90)),
                          (sum_r.x+int(12*W/1920), sum_r.y+int(46*H/1080)+k*int(34*H/1080)))
+
+        # ── Interactive dropdown rows: Duration and Speed ─────────────
+        ss_params = [
+            ("duration", "Duration", gc["duration"],
+             ["60 seconds", "120 seconds", "180 seconds", "Custom"]),
+            ("speed",    "Speed",    gc["speed"],    ["Slow", "Normal", "Fast"]),
+        ]
+        dd_w  = sum_r.width - int(24*W/1920)
+        dd_h  = int(36*H/1080)
+        dd_x  = sum_r.x + int(12*W/1920)
+        dd_y0 = sum_r.y + int(46*H/1080) + 2 * int(34*H/1080) + int(10*H/1080)
+        self._ss_param_rects = {}
+        for i, (pk, plbl, pval, _) in enumerate(ss_params):
+            field_y = dd_y0 + i * int(52*H/1080)
+            lbl_s   = self.fnt["small"].render(plbl, True, (88,108,138))
+            surface.blit(lbl_s, (dd_x, field_y - int(18*H/1080)))
+            pr = pygame.Rect(dd_x, field_y, dd_w, dd_h)
+            active = (self._ss_open_param is not None and
+                      self._ss_open_param[0] == pk)
+            pygame.draw.rect(surface, (255,255,255), pr, border_radius=8)
+            pygame.draw.rect(surface,
+                             (40,160,220) if active else (185,205,228),
+                             pr, 2 if active else 1, border_radius=8)
+            val_display = pval
+            if pk == "duration" and pval == "Custom":
+                val_display = (self._gc_custom_dur + " sec"
+                               if self._gc_custom_dur else "Custom")
+            ts2 = self.fnt["input"].render(val_display + "  ▾", True, (40,55,80))
+            surface.blit(ts2, ts2.get_rect(midleft=(pr.x+int(8*W/1920), pr.centery)))
+            self._ss_param_rects[pk] = pr
 
         cal_r = pygame.Rect(pa.x+int(610*W/1920), cy0+int(225*H/1080),
                             pa.width-int(630*W/1920), int(220*H/1080))
@@ -2756,8 +2663,24 @@ class TherapistDashboardScene:
                          (255,255,255)).get_rect(center=gc_btn.center))
             self._calibrate_btn_rect = gc_btn
 
-        # DEV bypass toggle
-        byp_r    = pygame.Rect(pa.x+int(16*W/1920), pa.bottom-int(120*H/1080),
+        # ── Adaptive Difficulty info box (above DEV bypass) ──────────
+        adp_h = int(74*H/1080)
+        adp_y = pa.bottom - int(170*H/1080)
+        adp_r = pygame.Rect(pa.x+int(16*W/1920), adp_y,
+                            pa.width-int(32*W/1920), adp_h)
+        pygame.draw.rect(surface, (235,245,255), adp_r, border_radius=8)
+        pygame.draw.rect(surface, (150,195,240), adp_r, 1, border_radius=8)
+        surface.blit(self.fnt["small"].render(
+            "Adaptive Difficulty: After calibration, the system normalises patient max effort to 100%.",
+            True, (65,105,165)),
+            (adp_r.x+int(10*W/1920), adp_r.y+int(10*H/1080)))
+        surface.blit(self.fnt["small"].render(
+            "Therapist adjusts speed/difficulty as a % of that calibrated maximum.",
+            True, (65,105,165)),
+            (adp_r.x+int(10*W/1920), adp_r.y+int(42*H/1080)))
+
+        # ── DEV bypass toggle ─────────────────────────────────────────
+        byp_r    = pygame.Rect(pa.x+int(16*W/1920), pa.bottom-int(82*H/1080),
                                int(260*W/1920), int(36*H/1080))
         byp_col  = (160, 60,  60) if cal_done else (100, 100, 120)
         byp_hcol = (130, 35,  35) if cal_done else ( 70,  70,  95)
@@ -2767,13 +2690,48 @@ class TherapistDashboardScene:
         self._bypass_btn_rect = byp_r
 
         ready = self._session_ready()
-        btn_r = pygame.Rect(pa.centerx-int(140*W/1920), pa.bottom-int(70*H/1080),
-                            int(280*W/1920), int(54*H/1080))
+        btn_r = pygame.Rect(pa.centerx-int(140*W/1920), pa.bottom-int(56*H/1080),
+                            int(280*W/1920), int(48*H/1080))
         bc = (40,160,80)  if ready else (175,188,202)
         bh = (28,130,62)  if ready else (155,168,182)
         _btn(surface, btn_r, "Start Session", self.fnt["btn"],
              bc, bh, self.start_hov and ready, radius=14)
         self._start_btn_rect = btn_r if ready else pygame.Rect(0, 0, 1, 1)
+
+        # ── Custom duration text input (drawn AFTER other content) ────
+        if gc.get("duration") == "Custom":
+            dur_pr = self._ss_param_rects.get("duration")
+            if dur_pr:
+                cust_r  = pygame.Rect(dur_pr.x, dur_pr.bottom + int(6*H/1080),
+                                      dur_pr.width, int(34*H/1080))
+                act_c   = self._ss_custom_dur_active
+                pygame.draw.rect(surface, (255,255,255), cust_r, border_radius=6)
+                pygame.draw.rect(surface,
+                                 (40,160,220) if act_c else (185,205,228),
+                                 cust_r, 2 if act_c else 1, border_radius=6)
+                dv = self._gc_custom_dur
+                fi_s = (self.fnt["input"].render(dv + " sec", True, (40,50,65))
+                        if dv else
+                        self.fnt["input"].render("Enter seconds…", True, (185,198,215)))
+                surface.blit(fi_s, fi_s.get_rect(
+                    midleft=(cust_r.x+int(8*W/1920), cust_r.centery)))
+                self._ss_custom_dur_rect = cust_r
+
+        # ── Open dropdown list (drawn LAST — renders on top of everything) ──
+        if self._ss_open_param:
+            open_key, open_opts = self._ss_open_param
+            pr = self._ss_param_rects.get(open_key)
+            if pr:
+                opt_h = int(36*H/1080)
+                dp_r  = pygame.Rect(pr.x, pr.bottom, pr.width,
+                                    len(open_opts) * opt_h + 4)
+                pygame.draw.rect(surface, (248,251,255), dp_r, border_radius=8)
+                pygame.draw.rect(surface, (40,160,220),  dp_r, 2, border_radius=8)
+                for j, ov in enumerate(open_opts):
+                    or_   = pygame.Rect(pr.x, pr.bottom + j * opt_h, pr.width, opt_h)
+                    ts3   = self.fnt["input"].render(ov, True, (40,50,65))
+                    surface.blit(ts3, ts3.get_rect(
+                        midleft=(or_.x+int(8*W/1920), or_.centery)))
 
     # ──────────────────────────────────────────────────────────────────
     #  EDIT PROFILE MODAL
