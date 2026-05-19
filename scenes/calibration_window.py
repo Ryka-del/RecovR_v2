@@ -21,6 +21,9 @@ import pygame
 import math
 import builtins
 import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sensors.input_handler import input_handler
 
@@ -306,6 +309,7 @@ class CalibrationWindow:
 
     def update(self, dt_ms):
         dt    = dt_ms / 1000.0
+        input_handler.update(dt)
         state = input_handler.get_state()
 
         if self.phase == "countdown":
@@ -406,19 +410,6 @@ class CalibrationWindow:
         title_s = self.fnt["title"].render("Sensor Calibration", True, C["text"])
         surface.blit(title_s, (int(32 * W / 1920),
                                 top_h // 2 - title_s.get_height() // 2))
-
-        gt_s  = self.fnt["tag"].render(f"  {self.game_type}  ", True, C["white"])
-        gt_r  = gt_s.get_rect(midleft=(int(380 * W / 1920), top_h // 2))
-        badge = gt_r.inflate(10, 8)
-        pygame.draw.rect(surface, C["accent2"], badge, border_radius=10)
-        surface.blit(gt_s, gt_r)
-
-        sen_s = self.fnt["tag"].render(f"  {self.cfg['sensor_name']}  ", True, C["text"])
-        sen_r = sen_s.get_rect(midleft=(badge.right + int(12 * W / 1920), top_h // 2))
-        sen_b = sen_r.inflate(10, 8)
-        pygame.draw.rect(surface, C["panel2"], sen_b, border_radius=10)
-        pygame.draw.rect(surface, C["border"],  sen_b, 1, border_radius=10)
-        surface.blit(sen_s, sen_r)
 
         _bw = int(40 * W / 1920)
         _bh = int(36 * H / 1080)

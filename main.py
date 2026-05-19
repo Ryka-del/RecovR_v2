@@ -75,8 +75,9 @@ from scenes.patient_dashboard   import PatientDashboardScene
 from scenes.game_scene          import make_game_scene
 
 # --- IMPORT GAMES ---
-from games.steady_aim  import SteadyAimGame
-from games.basketball  import BasketballGame
+from games.steady_aim   import SteadyAimGame
+from games.basketball   import BasketballGame
+from games.piano_tiles  import PianoTilesGame
 
 SCENES = {
     "therapist_welcome"  : TherapistWelcomeScene,
@@ -88,6 +89,7 @@ SCENES = {
     # Games
     "steady_aim"         : make_game_scene(SteadyAimGame),
     "basketball"         : make_game_scene(BasketballGame),
+    "piano_tiles"        : make_game_scene(PianoTilesGame),
 }
 
 # --- CROSSFADE ---

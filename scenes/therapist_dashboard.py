@@ -928,6 +928,7 @@ class TherapistDashboardScene:
     _GAME_SCENE_MAP = {
         "Basketball": "basketball",
         "Steady Aim": "steady_aim",
+        "Piano Tiles": "piano_tiles",
     }
 
     def _launch_game(self):
@@ -958,6 +959,8 @@ class TherapistDashboardScene:
             "duration_sec": dur_sec,
             "calibration":  {},
         }
+        # Re-set pending_account so the dashboard gets the right therapist when recreated
+        builtins.pending_account = self.account
         self.action_triggered = True
         return scene_key
 
