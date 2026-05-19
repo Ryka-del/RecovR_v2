@@ -149,6 +149,9 @@ class CalibrationWindow:
             "med":    pygame.font.SysFont("arialblack", int(44 * (H / 1080))),
             "tag":    pygame.font.SysFont("arial",      int(21 * (H / 1080)), bold=True),
             "head2":  pygame.font.SysFont("arialblack", int(26 * (H / 1080))),
+            "sym44":  pygame.font.SysFont("segoeuisymbol", int(44 * (H / 1080))),
+            "sym25":  pygame.font.SysFont("segoeuisymbol", int(25 * (H / 1080))),
+            "sym22":  pygame.font.SysFont("segoeuisymbol", int(22 * (H / 1080))),
         }
 
         # ── interaction rects (updated each draw) ─────────────────────
@@ -413,7 +416,7 @@ class CalibrationWindow:
         pygame.draw.rect(surface, C["border"],  sen_b, 1, border_radius=10)
         surface.blit(sen_s, sen_r)
 
-        tog_s = self.fnt["btn"].render("☀ Light" if self.dark_mode else "☽ Dark", True, C["text"])
+        tog_s = self.fnt["sym25"].render("☀ Light" if self.dark_mode else "☽ Dark", True, C["text"])
         tg_r  = pygame.Rect(W - int(148 * W / 1920), top_h // 2 - int(18 * H / 1080),
                             int(132 * W / 1920), int(36 * H / 1080))
         pygame.draw.rect(surface, C["panel2"], tg_r, border_radius=10)
@@ -421,7 +424,7 @@ class CalibrationWindow:
         surface.blit(tog_s, tog_s.get_rect(center=tg_r.center))
         self._toggle_rect = tg_r
 
-        cx_s  = self.fnt["btn"].render("✕ Cancel", True, C["sub"])
+        cx_s  = self.fnt["sym25"].render("✕ Cancel", True, C["sub"])
         cx_r  = pygame.Rect(W - int(296 * W / 1920), top_h // 2 - int(18 * H / 1080),
                             int(132 * W / 1920), int(36 * H / 1080))
         pygame.draw.rect(surface, C["panel2"], cx_r, border_radius=10)
@@ -624,7 +627,7 @@ class CalibrationWindow:
         ly = area.y + int(18 * H / 1080)
 
         # heading
-        hd = self.fnt["title"].render("✓  Calibration Complete!", True, C["green"])
+        hd = self.fnt["sym44"].render("✓  Calibration Complete!", True, C["green"])
         surface.blit(hd, (lx, ly))
 
         # trial bars
@@ -706,14 +709,14 @@ class CalibrationWindow:
 
         pygame.draw.rect(surface, C["panel2"], retry_r,  border_radius=13)
         pygame.draw.rect(surface, C["border"], retry_r,  1, border_radius=13)
-        surface.blit(self.fnt["btn"].render("↺  Retry", True, C["sub"]),
-                     self.fnt["btn"].render("↺  Retry", True, C["sub"])
+        surface.blit(self.fnt["sym25"].render("↺  Retry", True, C["sub"]),
+                     self.fnt["sym25"].render("↺  Retry", True, C["sub"])
                      .get_rect(center=retry_r.center))
         self._retry_rect = retry_r
 
         pygame.draw.rect(surface, C["green"],  accept_r, border_radius=13)
-        surface.blit(self.fnt["btn"].render("✓  Accept & Continue", True, C["white"]),
-                     self.fnt["btn"].render("✓  Accept & Continue", True, C["white"])
+        surface.blit(self.fnt["sym25"].render("✓  Accept & Continue", True, C["white"]),
+                     self.fnt["sym25"].render("✓  Accept & Continue", True, C["white"])
                      .get_rect(center=accept_r.center))
         self._accept_rect = accept_r
 
@@ -1027,7 +1030,7 @@ class CalibrationWindow:
                      (arc_cx - arc_r2 - max_s.get_width() - int(4 * W / 1920),
                       arc_cy - max_s.get_height() // 2))
 
-        rot_s = self.fnt["small"].render("◄  ROTATE WRIST  ►", True, C["sub"])
+        rot_s = self.fnt["sym22"].render("◄  ROTATE WRIST  ►", True, C["sub"])
         surface.blit(rot_s, rot_s.get_rect(
             midtop=(cx, arc_cy + arc_r2 + int(8 * H / 1080))))
 

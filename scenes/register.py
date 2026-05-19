@@ -394,7 +394,7 @@ class RegisterScene:
                 surface.blit(ts, ts.get_rect(
                     midleft=(rect.x + int(14 * W / 1920), rect.centery)
                 ))
-                chev = self.font_dropdown.render("▾", True, (90, 110, 140))
+                chev = self.font_dropdown.render("▼", True, (90, 110, 140))
                 surface.blit(chev, chev.get_rect(
                     midright=(rect.right - int(14 * W / 1920), rect.centery)
                 ))

@@ -239,6 +239,8 @@ class TherapistDashboardScene:
             "time":        pygame.font.SysFont("arialblack",    int(21*(H/1080))),    # Time display
             "header_date": pygame.font.SysFont("georgia",        int(18*(H/1080))),    # Date display in header
             "breadcrumb":  pygame.font.SysFont("georgia",        int(26*(H/1080))),    # Navigation breadcrumb
+            "sym26":       pygame.font.SysFont("segoeuisymbol",  int(26*(H/1080))),    # Symbol glyphs at 26px
+            "sym29":       pygame.font.SysFont("segoeuisymbol",  int(29*(H/1080))),    # Symbol glyphs at 29px
         }
 
         # Create gradient background surface for visual depth
@@ -1142,7 +1144,7 @@ class TherapistDashboardScene:
 
             val = self._ep.get(key, "")
             if is_drop:
-                disp = val or "Select ▾"
+                disp = val or "Select ▼"
                 tc   = (40, 50, 65) if val else (170, 185, 205)
                 ts   = self.fnt["input"].render(disp, True, tc)
                 surface.blit(ts, ts.get_rect(midleft=(fr.x + int(10*W/1920), fr.centery)))
@@ -2173,11 +2175,11 @@ class TherapistDashboardScene:
                              fr, 2 if active else 1, border_radius=8)
             val = rp.get(key, "")
             if is_drop:
-                disp = val or "Select ▾"
+                disp = val or "Select ▼"
                 tc   = (40,50,65) if val else (175,188,205)
                 ts   = self.fnt["input"].render(disp, True, tc)
                 surface.blit(ts, ts.get_rect(midleft=(fr.x+int(10*W/1920), fr.centery)))
-                chev = self.fnt["input"].render("▾", True, (90,110,140))
+                chev = self.fnt["input"].render("▼", True, (90,110,140))
                 surface.blit(chev, chev.get_rect(midright=(fr.right-int(10*W/1920), fr.centery)))
             else:
                 ts = (self.fnt["input"].render(val, True, (40,50,65)) if val
@@ -2385,7 +2387,7 @@ class TherapistDashboardScene:
                              pa.width-int(32*W/1920),int(64*H/1080))
         pygame.draw.rect(surface,(235,245,255),info_r,border_radius=8)
         pygame.draw.rect(surface,(180,210,240),info_r,1,border_radius=8)
-        surface.blit(self.fnt["small"].render(
+        surface.blit(self.fnt["sym26"].render(
             "ℹ  Calibration values (Raw, Average Max, Resting, Threshold) are recorded "
             "per patient at the start of each session.",
             True,(65,105,165)),(info_r.x+int(14*W/1920),info_r.y+int(18*H/1080)))
@@ -2566,10 +2568,7 @@ class TherapistDashboardScene:
                              (40,160,220) if active else (185,205,228),
                              pr, 2 if active else 1, border_radius=8)
             val_display = pval
-            if pk == "duration" and pval == "Custom":
-                val_display = (self._gc_custom_dur + " sec"
-                               if self._gc_custom_dur else "Custom")
-            ts2 = self.fnt["input"].render(val_display + "  ▾", True, (40,55,80))
+            ts2 = self.fnt["input"].render(val_display + "  ▼", True, (40,55,80))
             surface.blit(ts2, ts2.get_rect(midleft=(pr.x+int(8*W/1920), pr.centery)))
             self._ss_param_rects[pk] = pr
 
@@ -2587,7 +2586,7 @@ class TherapistDashboardScene:
             need_sens = SENSOR_FOR.get(need_type, "—")
             pygame.draw.rect(surface, (255,243,215), cal_r, border_radius=14)
             pygame.draw.rect(surface, (220,145,30),  cal_r, 2, border_radius=14)
-            surface.blit(self.fnt["section"].render("⚠  Sensor Mismatch",
+            surface.blit(self.fnt["sym26"].render("⚠  Sensor Mismatch",
                          True, (175,110,10)),
                          (cal_r.x+int(12*W/1920), cal_r.y+int(12*H/1080)))
             mismatch_lines = [
@@ -2612,7 +2611,7 @@ class TherapistDashboardScene:
             res = self.calibration_result or {}
             pygame.draw.rect(surface, (215,248,225), cal_r, border_radius=14)
             pygame.draw.rect(surface, (55,185,85),   cal_r, 1, border_radius=14)
-            surface.blit(self.fnt["section"].render("✓  Calibration Complete",
+            surface.blit(self.fnt["sym26"].render("✓  Calibration Complete",
                          True, (30,140,60)),
                          (cal_r.x+int(12*W/1920), cal_r.y+int(12*H/1080)))
             details = [
@@ -2784,7 +2783,7 @@ class TherapistDashboardScene:
                 val=field["value"] or field["placeholder"]
                 ts=self.fnt["modal_inp"].render(val,True,(40,50,65) if field["value"] else (175,188,205))
                 surface.blit(ts,ts.get_rect(midleft=(rect.x+int(10*W/1920),rect.centery)))
-                chev=self.fnt["modal_inp"].render("▾",True,(95,115,145))
+                chev=self.fnt["modal_inp"].render("▼",True,(95,115,145))
                 surface.blit(chev,chev.get_rect(midright=(rect.right-int(12*W/1920),rect.centery)))
             else:
                 val=field["value"]
@@ -2900,7 +2899,7 @@ class TherapistDashboardScene:
 
         # Checkmark circle
         pygame.draw.circle(surface, (60, 185, 100), (mr.centerx, my + int(52*H/1080)), int(22*H/1080))
-        ck = self.fnt["body_b"].render("✓", True, (255, 255, 255))
+        ck = self.fnt["sym29"].render("✓", True, (255, 255, 255))
         surface.blit(ck, ck.get_rect(center=(mr.centerx, my + int(52*H/1080))))
 
         # Title
