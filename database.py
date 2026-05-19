@@ -120,20 +120,29 @@ class Database:
             )
         """)
 
+        # Add game_name column if it doesn't exist yet (migration for existing DBs)
+        try:
+            self.conn.execute(
+                "ALTER TABLE calibrations ADD COLUMN game_name TEXT DEFAULT ''")
+            self.conn.commit()
+        except Exception:
+            pass
+
         self.conn.commit()
 
     # ── CALIBRATION RECORDS ───────────────────────────────────────────
 
-    def save_calibration(self, patient_id, therapist_id, result):
+    def save_calibration(self, patient_id, therapist_id, result, game_name=""):
         p = result.get("params", {})
         self.conn.execute("""
             INSERT INTO calibrations
-              (patient_id, therapist_id, game_type, sensor, sensitivity,
+              (patient_id, therapist_id, game_type, game_name, sensor, sensitivity,
                average, threshold, threshold_pct, speed, duration, difficulty, preset)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             patient_id, therapist_id,
             result.get("game_type",   ""),
+            game_name,
             result.get("sensor",      ""),
             result.get("sensitivity", ""),
             result.get("average",     0.0),
@@ -148,23 +157,29 @@ class Database:
 
     def get_calibrations(self, therapist_id, patient_id=None):
         if patient_id is not None:
+            # Show ALL calibrations for this patient regardless of which therapist did them
             cur = self.conn.execute("""
                 SELECT c.*, p.full_name AS patient_name, t.full_name AS therapist_name
                 FROM calibrations c
-                LEFT JOIN patients p ON c.patient_id = p.id
+                LEFT JOIN patients   p ON c.patient_id   = p.id
                 LEFT JOIN therapists t ON c.therapist_id = t.id
-                WHERE c.therapist_id = ? AND c.patient_id = ?
+                WHERE c.patient_id = ?
                 ORDER BY c.calibrated_at DESC
-            """, (therapist_id, patient_id))
+            """, (patient_id,))
         else:
+            # Show calibrations for all patients accessible to this therapist
             cur = self.conn.execute("""
                 SELECT c.*, p.full_name AS patient_name, t.full_name AS therapist_name
                 FROM calibrations c
-                LEFT JOIN patients p ON c.patient_id = p.id
+                LEFT JOIN patients   p ON c.patient_id   = p.id
                 LEFT JOIN therapists t ON c.therapist_id = t.id
-                WHERE c.therapist_id = ?
+                WHERE c.patient_id IN (
+                    SELECT id FROM patients WHERE therapist_id = ?
+                    UNION
+                    SELECT patient_id FROM patient_shares WHERE therapist_id = ?
+                )
                 ORDER BY c.calibrated_at DESC
-            """, (therapist_id,))
+            """, (therapist_id, therapist_id))
         return [dict(r) for r in cur.fetchall()]
 
     # ── SESSION RECORDS ───────────────────────────────────────────────
@@ -178,15 +193,16 @@ class Database:
 
     def get_sessions(self, therapist_id, patient_id=None):
         if patient_id is not None:
+            # Show ALL sessions for this patient regardless of which therapist ran them
             cur = self.conn.execute("""
                 SELECT s.id, s.played_at, s.game, s.score, s.duration_sec, s.difficulty,
                        p.full_name AS patient_name, t.full_name AS therapist_name
                 FROM sessions s
                 LEFT JOIN patients   p ON s.patient_id   = p.id
                 LEFT JOIN therapists t ON s.therapist_id = t.id
-                WHERE s.therapist_id = ? AND s.patient_id = ?
+                WHERE s.patient_id = ?
                 ORDER BY s.played_at DESC
-            """, (therapist_id, patient_id))
+            """, (patient_id,))
         else:
             cur = self.conn.execute("""
                 SELECT s.id, s.played_at, s.game, s.score, s.duration_sec, s.difficulty,

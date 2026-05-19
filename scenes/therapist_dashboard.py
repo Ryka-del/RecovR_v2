@@ -1540,8 +1540,11 @@ class TherapistDashboardScene:
                 self._cal_win           = None
                 pt_id = (self.selected_patient or {}).get("id")
                 if pt_id and hasattr(self.db, "save_calibration"):
+                    game_name = (self.gc.get("selected_game") or (None,))[0] or ""
                     self.db.save_calibration(
-                        pt_id, self.account["id"], self.calibration_result
+                        pt_id, self.account["id"],
+                        self.calibration_result,
+                        game_name=game_name,
                     )
             elif self._cal_win.cancelled:
                 self._cal_win = None
@@ -2379,7 +2382,7 @@ class TherapistDashboardScene:
                              (sx + int(8*W/1920), cy + int(8*H/1080)))
                 surface.blit(self.fnt["body_b"].render(val, True, bar_col),
                              (sx + int(8*W/1920), cy + int(34*H/1080)))
-            cy += int(80*H/1080)
+            cy += int(92*H/1080)
 
             # Mini bar chart — last 8 sessions
             recent = g_sessions[:8][::-1]
@@ -2387,6 +2390,7 @@ class TherapistDashboardScene:
                 max_s     = max(s.get("score", 1) for s in recent) or 1
                 bar_w     = int((pa.width - int(64*W/1920)) // len(recent))
                 bar_h_max = int(60*H/1080)
+                lbl_h     = int(20*H/1080)
                 for i, s in enumerate(recent):
                     bh = max(4, int(bar_h_max * s.get("score", 0) / max_s))
                     bx = lx + i * (bar_w + 4)
@@ -2395,8 +2399,8 @@ class TherapistDashboardScene:
                     sc_s = self.fnt["time"].render(str(s.get("score", 0)),
                                                    True, (80, 100, 130))
                     surface.blit(sc_s, sc_s.get_rect(
-                        center=(br.centerx, cy + bar_h_max - bh - int(14*H/1080))))
-            cy += int(60*H/1080) + section_gap
+                        midtop=(br.centerx, cy + bar_h_max + int(4*H/1080))))
+            cy += int(60*H/1080) + lbl_h + section_gap
 
     # ──────────────────────────────────────────────────────────────────
     #  PANEL 3: CALIBRATION RECORDS
@@ -2407,25 +2411,36 @@ class TherapistDashboardScene:
         _card_bg(surface, pa, alpha=220)
         table_y = pa.y + int(28*H/1080)
 
-        cols   = ["Patient", "Game", "Sensor", "Avg", "Threshold", "Sensitivity", "Date"]
-        col_xs = [pa.x+int(16*W/1920),  pa.x+int(220*W/1920), pa.x+int(430*W/1920),
-                  pa.x+int(600*W/1920), pa.x+int(730*W/1920),  pa.x+int(880*W/1920),
-                  pa.x+int(1060*W/1920)]
+        pt = self.selected_patient
+        if not pt:
+            _empty_state(surface,
+                         pygame.Rect(pa.x, table_y+int(48*H/1080), pa.width,
+                                     pa.bottom-table_y-int(48*H/1080)),
+                         "👤", "No patient selected",
+                         "Select a patient from the Patient List to view calibration records.",
+                         self.fnt["empty_head"], self.fnt["small_i"])
+            return
+
+        records = (self.db.get_calibrations(self.account["id"],
+                                             patient_id=pt["id"])
+                   if hasattr(self.db, "get_calibrations") else [])
+
+        cols   = ["Game", "Sensor", "Avg", "Threshold", "Sensitivity", "Date", "Therapist"]
+        col_xs = [pa.x+int(16*W/1920),  pa.x+int(230*W/1920), pa.x+int(430*W/1920),
+                  pa.x+int(570*W/1920), pa.x+int(720*W/1920),  pa.x+int(880*W/1920),
+                  pa.x+int(1040*W/1920)]
         for cx, c in zip(col_xs, cols):
             surface.blit(self.fnt["section"].render(c, True, (85,105,135)), (cx, table_y))
         pygame.draw.line(surface, (210,218,230),
                          (pa.x+int(16*W/1920), table_y+int(32*H/1080)),
                          (pa.right-int(16*W/1920), table_y+int(32*H/1080)), 1)
 
-        records = (self.db.get_calibrations(self.account["id"])
-                   if hasattr(self.db, "get_calibrations") else [])
-
         if not records:
             _empty_state(surface,
                          pygame.Rect(pa.x, table_y+int(48*H/1080), pa.width,
                                      pa.bottom-table_y-int(48*H/1080)),
                          "🎯", "No calibration records yet",
-                         "Calibration data will appear here after the first session calibration.",
+                         f"No calibration data found for {pt.get('full_name', 'this patient')}.",
                          self.fnt["empty_head"], self.fnt["small_i"])
             return
 
@@ -2441,14 +2456,15 @@ class TherapistDashboardScene:
                 surface.blit(bg, row_r.topleft)
 
             date_str = str(rec.get("calibrated_at", ""))[:10]
+            game_disp = rec.get("game_name") or rec.get("game_type", "—")
             vals = [
-                rec.get("patient_name", "—"),
-                rec.get("game_type", "—"),
+                game_disp,
                 rec.get("sensor", "—"),
                 f"{rec.get('average', 0):.3f}",
                 f"{rec.get('threshold', 0):.3f}",
                 rec.get("sensitivity", "—"),
                 date_str,
+                rec.get("therapist_name", "—"),
             ]
             for cx, v in zip(col_xs, vals):
                 surface.blit(self.fnt["body"].render(v, True, (40,55,75)), (cx, ry+int(9*H/1080)))
@@ -3052,11 +3068,12 @@ class TherapistDashboardScene:
 
     def _draw_confirm_modal(self, surface):
         W,H=self.WIDTH,self.HEIGHT
-        mw,mh=int(W*0.36),int(H*0.28); mx,my=(W-mw)//2,(H-mh)//2
+        mw,mh=int(W*0.26),int(H*0.26); mx,my=(W-mw)//2,(H-mh)//2
         mr=pygame.Rect(mx,my,mw,mh)
-        ms=pygame.Surface((mw,mh),pygame.SRCALPHA); ms.fill((250,252,255,255))
+        ms=pygame.Surface((mw,mh),pygame.SRCALPHA)
+        pygame.draw.rect(ms,(250,252,255,255),(0,0,mw,mh),border_radius=16)
         surface.blit(ms,mr.topleft)
-        pygame.draw.rect(surface,(195,210,228),mr,1,border_radius=14)
+        pygame.draw.rect(surface,(195,210,228),mr,2,border_radius=16)
         is_logout  = (self.modal == "logout_confirm")
         is_del_pt  = (self.modal == "delete_patient_confirm")
         pt_name    = (self._ep_patient or {}).get("full_name", "this patient") if is_del_pt else ""
@@ -3068,8 +3085,8 @@ class TherapistDashboardScene:
         yes_l = "Logout" if is_logout else "Delete"
         ts=self.fnt["modal_head"].render(title,True,(38,52,78))
         bs=self.fnt["modal_lbl"].render(body,True,(98,114,140))
-        surface.blit(ts,ts.get_rect(center=(mr.centerx,my+int(52*H/1080))))
-        surface.blit(bs,bs.get_rect(center=(mr.centerx,my+int(90*H/1080))))
+        surface.blit(ts,ts.get_rect(center=(mr.centerx,my+int(48*H/1080))))
+        surface.blit(bs,bs.get_rect(center=(mr.centerx,my+int(108*H/1080))))
         yr,nr=self._confirm_rects()
         yc=(175,25,25) if self.confirm_yes_hov else (205,45,45)
         nc=(148,162,180) if self.confirm_no_hov else (175,190,210)
