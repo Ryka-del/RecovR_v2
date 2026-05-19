@@ -124,9 +124,10 @@ class BasketballGame(FatigueMixin, BaseScreen):
         self.difficulty = data.get("difficulty", "Easy")
         self.cal        = data.get("calibration", {})
 
-        self.goal       = GOALS[self.difficulty]
-        self.zone_w     = ZONE_WIDTH[self.difficulty]
-        self.zone_speed = ZONE_SPEED[self.difficulty]
+        self.goal   = GOALS[self.difficulty]
+        self.zone_w = ZONE_WIDTH[self.difficulty]
+        _spd_map    = {"Slow": 0.07, "Normal": 0.18, "Fast": 0.32}
+        self.zone_speed = _spd_map.get(data.get("speed", "Normal"), 0.18)
 
         dur = data.get("duration_sec")
         self.time_start = int(dur) if dur else TIME_START[self.difficulty]
@@ -232,31 +233,29 @@ class BasketballGame(FatigueMixin, BaseScreen):
             self.paused = True
 
     def _pause_handle(self, event):
-        if self.vol_active:
-            if input_handler.was_pressed(event, "left"):
-                self.pause_vol = max(0.0, self.pause_vol - 0.1); self._apply_vol()
-            elif input_handler.was_pressed(event, "right"):
-                self.pause_vol = min(1.0, self.pause_vol + 0.1); self._apply_vol()
-            elif (input_handler.was_pressed(event, "action") or
-                  input_handler.was_pressed(event, "back")):
-                self.vol_active = False
+        pos = None
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            pos = event.pos
+        elif event.type == pygame.FINGERDOWN:
+            pos = (int(event.x * GAME_W), int(event.y * GAME_H))
+        if pos is None:
             return
-        if input_handler.was_pressed(event, "up"):
-            self.pause_sel = max(0, self.pause_sel - 1)
-        elif input_handler.was_pressed(event, "down"):
-            self.pause_sel = min(3, self.pause_sel + 1)
-        elif input_handler.was_pressed(event, "action"):
-            if self.pause_sel == 0:
-                self.paused = False
-            elif self.pause_sel == 1:
-                self._reset()
-                self._show_instructions = False
-                self.paused = False
-                start_music(game_music_path("Basketball", self.difficulty))
-            elif self.pause_sel == 2:
-                self.vol_active = True
-            else:
-                self._exit_to_game_config()
+        if self.vol_active:
+            self.vol_active = False
+            return
+        opts_actions = [
+            lambda: setattr(self, "paused", False),
+            lambda: (self._reset(), setattr(self, "_show_instructions", False),
+                     setattr(self, "paused", False),
+                     start_music(game_music_path("Basketball", self.difficulty))),
+            lambda: setattr(self, "vol_active", True),
+            self._exit_to_game_config,
+        ]
+        for i, action in enumerate(opts_actions):
+            oy = GAME_H // 2 - 160 + i * 96
+            if pygame.Rect(GAME_W // 2 - 200, oy, 400, 80).collidepoint(pos):
+                action()
+                return
 
     # ------------------------------------------------------------------ #
 

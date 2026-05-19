@@ -949,7 +949,8 @@ class TherapistDashboardScene:
             "patient":      self.selected_patient,
             "difficulty":   game_diff,
             "duration_sec": dur_sec,
-            "calibration":  {},
+            "speed":        self.gc.get("speed", "Normal"),
+            "calibration":  self.calibration_result or {},
         }
         # Re-set pending_account so the dashboard gets the right therapist when recreated
         builtins.pending_account = self.account
@@ -2616,11 +2617,15 @@ class TherapistDashboardScene:
                          (sum_r.x+int(12*W/1920), sum_r.y+int(46*H/1080)+k*int(34*H/1080)))
 
         # ── Interactive dropdown rows: Duration and Speed ─────────────
+        _game_type = (gc.get("selected_game") or (None, ""))[1] or ""
         ss_params = [
             ("duration", "Duration", gc["duration"],
              ["60 seconds", "120 seconds", "180 seconds", "Custom"]),
-            ("speed",    "Speed",    gc["speed"],    ["Slow", "Normal", "Fast"]),
         ]
+        if _game_type != "Wrist Rotation":
+            ss_params.append(
+                ("speed", "Speed", gc["speed"], ["Slow", "Normal", "Fast"])
+            )
         dd_w  = sum_r.width - int(24*W/1920)
         dd_h  = int(36*H/1080)
         dd_x  = sum_r.x + int(12*W/1920)

@@ -65,9 +65,17 @@ class PianoTilesGame(FatigueMixin, BaseScreen):
         self.cal        = data.get("calibration", {})
 
         dur = data.get("duration_sec")
-        self.duration   = int(dur) if dur else 60
-        self.speed      = BASE_SPEED.get(self.difficulty, 420)
-        self.spawn_rate = BASE_SPAWN.get(self.difficulty, 0.7)
+        self.duration  = int(dur) if dur else 60
+
+        # Tile fall speed from Session Details speed setting
+        _spd_map   = {"Slow": 280, "Normal": 420, "Fast": 580}
+        self.speed = _spd_map.get(data.get("speed", "Normal"), 420)
+
+        # Spawn rate from calibration difficulty
+        cal_diff        = ((data.get("calibration") or {})
+                           .get("params", {}).get("difficulty", self.difficulty))
+        _spawn_map      = {"Easy": 1.0, "Medium": 0.7, "Hard": 0.45}
+        self.spawn_rate = _spawn_map.get(cal_diff, 0.7)
 
         self.game_over           = False
         self.game_over_score     = 0
@@ -159,31 +167,29 @@ class PianoTilesGame(FatigueMixin, BaseScreen):
             self._hit_lane(FINGER_KEYS.index(event.key))
 
     def _pause_handle(self, event):
-        if self.vol_active:
-            if input_handler.was_pressed(event, "left"):
-                self.pause_vol = max(0.0, self.pause_vol - 0.1); self._apply_vol()
-            elif input_handler.was_pressed(event, "right"):
-                self.pause_vol = min(1.0, self.pause_vol + 0.1); self._apply_vol()
-            elif (input_handler.was_pressed(event, "action") or
-                  input_handler.was_pressed(event, "back")):
-                self.vol_active = False
+        pos = None
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            pos = event.pos
+        elif event.type == pygame.FINGERDOWN:
+            pos = (int(event.x * GAME_W), int(event.y * GAME_H))
+        if pos is None:
             return
-        if input_handler.was_pressed(event, "up"):
-            self.pause_sel = max(0, self.pause_sel - 1)
-        elif input_handler.was_pressed(event, "down"):
-            self.pause_sel = min(3, self.pause_sel + 1)
-        elif input_handler.was_pressed(event, "action"):
-            if self.pause_sel == 0:
-                self.paused = False
-            elif self.pause_sel == 1:
-                self._reset()
-                self._show_instructions = False
-                self.paused = False
-                start_music(game_music_path("Piano Tiles", self.difficulty))
-            elif self.pause_sel == 2:
-                self.vol_active = True
-            else:
-                self._exit_to_game_config()
+        if self.vol_active:
+            self.vol_active = False
+            return
+        opts_actions = [
+            lambda: setattr(self, "paused", False),
+            lambda: (self._reset(), setattr(self, "_show_instructions", False),
+                     setattr(self, "paused", False),
+                     start_music(game_music_path("Piano Tiles", self.difficulty))),
+            lambda: setattr(self, "vol_active", True),
+            self._exit_to_game_config,
+        ]
+        for i, action in enumerate(opts_actions):
+            oy = GAME_H // 2 - 160 + i * 96
+            if pygame.Rect(GAME_W // 2 - 200, oy, 400, 80).collidepoint(pos):
+                action()
+                return
 
     # ── hit detection ──────────────────────────────────────────────────
 
@@ -209,6 +215,11 @@ class PianoTilesGame(FatigueMixin, BaseScreen):
         for i, pressed in enumerate(state["fingers"]):
             if pressed:
                 self._hit_lane(i)
+
+        # Keyboard presses count as activity so Take a Break doesn't trigger mid-game
+        keys = pygame.key.get_pressed()
+        if any(keys[k] for k in FINGER_KEYS):
+            self.fatigue_timer = 0.0
 
         self._update_fatigue(dt, state)
         if self.fatigue_paused or self.paused:

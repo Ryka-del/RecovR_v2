@@ -53,8 +53,13 @@ class SteadyAimGame(FatigueMixin, BaseScreen):
         dur_override    = data.get("duration_sec")
         self.duration   = dur_override if dur_override else DURATION[self.difficulty]
         self.circle_r   = CIRCLE_R[self.difficulty]
-        self.hold_time  = HOLD_TIME[self.difficulty]
         self.cursor_spd = CURSOR_SPD[self.difficulty]
+
+        # Hold time driven by calibration difficulty (ignores session Speed)
+        cal_diff        = ((data.get("calibration") or {})
+                           .get("params", {}).get("difficulty", self.difficulty))
+        _hold_map       = {"Easy": 1.5, "Medium": 2.0, "Hard": 2.5}
+        self.hold_time  = _hold_map.get(cal_diff, 2.0)
 
         self.game_over           = False
         self.game_over_score     = 0
@@ -136,25 +141,28 @@ class SteadyAimGame(FatigueMixin, BaseScreen):
             if input_handler.was_pressed(event, "action"): self._resume_fatigue()
             return
         if self.paused:
-            if self.vol_active:
-                if input_handler.was_pressed(event, "left"):
-                    self.pause_vol = max(0.0, self.pause_vol - 0.1); self._apply_vol()
-                elif input_handler.was_pressed(event, "right"):
-                    self.pause_vol = min(1.0, self.pause_vol + 0.1); self._apply_vol()
-                elif input_handler.was_pressed(event, "action") or input_handler.was_pressed(event, "back"):
-                    self.vol_active = False
+            pos = None
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                pos = event.pos
+            elif event.type == pygame.FINGERDOWN:
+                pos = (int(event.x * GAME_W), int(event.y * GAME_H))
+            if pos is None:
                 return
-            if input_handler.was_pressed(event, "up"):
-                self.pause_sel = max(0, self.pause_sel - 1)
-            elif input_handler.was_pressed(event, "down"):
-                self.pause_sel = min(3, self.pause_sel + 1)
-            elif input_handler.was_pressed(event, "action"):
-                if self.pause_sel == 0: self.paused = False
-                elif self.pause_sel == 1:
-                    self._reset(); self.paused = False
-                    start_music(game_music_path("Steady Aim", self.difficulty))
-                elif self.pause_sel == 2: self.vol_active = True
-                else: self._exit_to_game_config()
+            if self.vol_active:
+                self.vol_active = False
+                return
+            opts_actions = [
+                lambda: setattr(self, "paused", False),
+                lambda: (self._reset(), setattr(self, "paused", False),
+                         start_music(game_music_path("Steady Aim", self.difficulty))),
+                lambda: setattr(self, "vol_active", True),
+                self._exit_to_game_config,
+            ]
+            for i, action in enumerate(opts_actions):
+                oy = GAME_H // 2 - 160 + i * 96
+                if pygame.Rect(GAME_W // 2 - 200, oy, 400, 80).collidepoint(pos):
+                    action()
+                    return
             return
         if (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
                 and self._pause_btn_rect.collidepoint(event.pos)):

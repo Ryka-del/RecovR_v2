@@ -677,7 +677,7 @@ class CalibrationWindow:
         self._draw_preset_cards(surface, rx, ry2, rw, C, avg)
 
         # advanced settings toggle button
-        adv_y = ry2 + int(290 * H / 1080)
+        adv_y = ry2 + int(328 * H / 1080)
         adv_lbl = ("▲  Advanced Settings (Custom)" if self.advanced_open
                    else "▼  Advanced Settings")
         adv_col = C["accent2"] if self.advanced_open else C["panel2"]
@@ -719,7 +719,7 @@ class CalibrationWindow:
         n     = len(PRESET_ORDER)
         gap   = int(14 * W / 1920)
         cw    = (rw - gap * (n - 1)) // n
-        ch    = int(272 * H / 1080)
+        ch    = int(310 * H / 1080)
 
         self._preset_card_rects = {}
         for i, name in enumerate(PRESET_ORDER):
