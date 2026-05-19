@@ -14,7 +14,7 @@ Usage by TherapistDashboardScene:
     if win.cancelled:  close without saving
 
 Phases:
-    sensitivity  →  countdown  →  recording  →  trial_done  →  (×3)  →  results
+    sensitivity → countdown → recording → trial_done → (×3) → results
 """
 
 import pygame
@@ -56,9 +56,43 @@ SENSITIVITY_DESCS = {
     "High":   "For full range of motion. Higher threshold for more precision.",
 }
 
-RECORD_DURATION  = 3.0   # seconds per trial
-COUNTDOWN_STEPS  = 3     # 3 → 2 → 1
-TRIAL_DONE_PAUSE = 1.5   # pause (s) between trials
+# Difficulty presets — threshold_pct is applied to the calibrated average
+DIFFICULTY_PRESETS = {
+    "Easy": {
+        "threshold_pct": 40,
+        "speed":         "Slow",
+        "duration":      "60 seconds",
+        "difficulty":    "Easy",
+        "desc":          "Wide range, slow pace — ideal for early rehabilitation",
+        "color":         (60, 180, 100),
+    },
+    "Moderate": {
+        "threshold_pct": 60,
+        "speed":         "Normal",
+        "duration":      "120 seconds",
+        "difficulty":    "Moderate",
+        "desc":          "Balanced challenge — recommended for most patients",
+        "color":         (60, 130, 220),
+    },
+    "Hard": {
+        "threshold_pct": 80,
+        "speed":         "Fast",
+        "duration":      "180 seconds",
+        "difficulty":    "Hard",
+        "desc":          "High precision, faster pace — for advanced recovery",
+        "color":         (220, 90, 60),
+    },
+}
+
+PRESET_ORDER     = ["Easy", "Moderate", "Hard"]
+SPEED_OPTS       = ["Slow", "Normal", "Fast"]
+DIFFICULTY_OPTS  = ["Easy", "Moderate", "Hard"]
+DURATION_OPTS    = ["60 seconds", "120 seconds", "180 seconds", "Custom"]
+THRESHOLD_PCTS   = [30, 40, 50, 60, 70, 80, 90]
+
+RECORD_DURATION  = 3.0
+COUNTDOWN_STEPS  = 3
+TRIAL_DONE_PAUSE = 1.5
 
 
 # ── CalibrationWindow ──────────────────────────────────────────────────────────
@@ -73,16 +107,28 @@ class CalibrationWindow:
         self.cfg       = SENSOR_CFG.get(game_type, SENSOR_CFG["Grip Strength"])
 
         # ── phase state ───────────────────────────────────────────────
-        self.phase         = "sensitivity"   # sensitivity|countdown|recording|trial_done|results
+        self.phase         = "sensitivity"
         self.sensitivity   = "Medium"
-        self.current_trial = 0               # 0-indexed (0, 1, 2)
-        self.trial_results = []              # list of peak floats
+        self.current_trial = 0
+        self.trial_results = []
         self.countdown     = COUNTDOWN_STEPS
         self.countdown_t   = 0.0
         self.record_t      = 0.0
         self.peak_value    = 0.0
         self.pause_t       = 0.0
         self.live_value    = 0.0
+
+        # ── results-phase: preset & advanced settings ─────────────────
+        self.selected_preset   = "Moderate"   # Easy / Moderate / Hard / Custom
+        self.advanced_open     = False
+
+        # advanced settings (start at Moderate defaults)
+        self.adv_threshold_pct = 60           # int, one of THRESHOLD_PCTS
+        self.adv_speed         = "Normal"
+        self.adv_duration      = "120 seconds"
+        self.adv_difficulty    = "Moderate"
+        self.adv_custom_dur    = ""           # text when duration == "Custom"
+        self.adv_dur_active    = False        # custom duration field focused
 
         # ── outcome ───────────────────────────────────────────────────
         self.done               = False
@@ -92,25 +138,31 @@ class CalibrationWindow:
         # ── fonts ─────────────────────────────────────────────────────
         H = height
         self.fnt = {
-            "title":  pygame.font.SysFont("arialblack", int(46 * (H / 1080))),
-            "sub":    pygame.font.SysFont("georgia",    int(30 * (H / 1080)), italic=True),
-            "body":   pygame.font.SysFont("georgia",    int(28 * (H / 1080))),
-            "bold":   pygame.font.SysFont("georgia",    int(28 * (H / 1080)), bold=True),
-            "small":  pygame.font.SysFont("georgia",    int(23 * (H / 1080))),
-            "smallb": pygame.font.SysFont("georgia",    int(23 * (H / 1080)), bold=True),
-            "btn":    pygame.font.SysFont("arial",      int(27 * (H / 1080)), bold=True),
-            "big":    pygame.font.SysFont("arialblack", int(76 * (H / 1080))),
-            "med":    pygame.font.SysFont("arialblack", int(46 * (H / 1080))),
-            "tag":    pygame.font.SysFont("arial",      int(22 * (H / 1080)), bold=True),
+            "title":  pygame.font.SysFont("arialblack", int(44 * (H / 1080))),
+            "sub":    pygame.font.SysFont("georgia",    int(28 * (H / 1080)), italic=True),
+            "body":   pygame.font.SysFont("georgia",    int(26 * (H / 1080))),
+            "bold":   pygame.font.SysFont("georgia",    int(26 * (H / 1080)), bold=True),
+            "small":  pygame.font.SysFont("georgia",    int(22 * (H / 1080))),
+            "smallb": pygame.font.SysFont("georgia",    int(22 * (H / 1080)), bold=True),
+            "btn":    pygame.font.SysFont("arial",      int(25 * (H / 1080)), bold=True),
+            "big":    pygame.font.SysFont("arialblack", int(72 * (H / 1080))),
+            "med":    pygame.font.SysFont("arialblack", int(44 * (H / 1080))),
+            "tag":    pygame.font.SysFont("arial",      int(21 * (H / 1080)), bold=True),
+            "head2":  pygame.font.SysFont("arialblack", int(26 * (H / 1080))),
         }
 
         # ── interaction rects (updated each draw) ─────────────────────
-        self._sens_rects  = {}
-        self._begin_rect  = pygame.Rect(0, 0, 1, 1)
-        self._cancel_rect = pygame.Rect(0, 0, 1, 1)
-        self._accept_rect = pygame.Rect(0, 0, 1, 1)
-        self._retry_rect  = pygame.Rect(0, 0, 1, 1)
-        self._toggle_rect = pygame.Rect(0, 0, 1, 1)
+        self._sens_rects       = {}
+        self._begin_rect       = pygame.Rect(0, 0, 1, 1)
+        self._cancel_rect      = pygame.Rect(0, 0, 1, 1)
+        self._accept_rect      = pygame.Rect(0, 0, 1, 1)
+        self._retry_rect       = pygame.Rect(0, 0, 1, 1)
+        self._toggle_rect      = pygame.Rect(0, 0, 1, 1)
+        self._preset_card_rects = {}          # {"Easy": Rect, ...}
+        self._adv_toggle_rect  = pygame.Rect(0, 0, 1, 1)
+        # advanced settings button groups: key → list of (value, Rect)
+        self._adv_rects        = {}
+        self._adv_dur_rect     = pygame.Rect(0, 0, 1, 1)
 
     # ── colour palette ────────────────────────────────────────────────────────
 
@@ -154,6 +206,16 @@ class CalibrationWindow:
     # ── event handling ────────────────────────────────────────────────────────
 
     def handle_event(self, event):
+        # ── keyboard: custom duration field ──────────────────────────
+        if event.type == pygame.KEYDOWN and self.adv_dur_active:
+            if event.key == pygame.K_BACKSPACE:
+                self.adv_custom_dur = self.adv_custom_dur[:-1]
+            elif event.key == pygame.K_RETURN:
+                self.adv_dur_active = False
+            elif event.unicode.isdigit() and len(self.adv_custom_dur) < 4:
+                self.adv_custom_dur += event.unicode
+            return
+
         pos = None
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             raw = event.pos
@@ -164,10 +226,10 @@ class CalibrationWindow:
         if pos is None:
             return
 
+        # top-bar controls always available
         if self._toggle_rect.collidepoint(pos):
             self.dark_mode = not self.dark_mode
             return
-
         if self._cancel_rect.collidepoint(pos):
             self.cancelled = True
             return
@@ -181,6 +243,53 @@ class CalibrationWindow:
                 self._start_countdown()
 
         elif self.phase == "results":
+            # preset card selection
+            for name, r in self._preset_card_rects.items():
+                if r.collidepoint(pos):
+                    self._apply_preset(name)
+                    return
+
+            # advanced toggle
+            if self._adv_toggle_rect.collidepoint(pos):
+                self.advanced_open = not self.advanced_open
+                return
+
+            # advanced settings buttons
+            if self.advanced_open:
+                # threshold % buttons
+                for val, r in self._adv_rects.get("threshold_pct", []):
+                    if r.collidepoint(pos):
+                        self.adv_threshold_pct = val
+                        self.selected_preset   = "Custom"
+                        return
+                # speed buttons
+                for val, r in self._adv_rects.get("speed", []):
+                    if r.collidepoint(pos):
+                        self.adv_speed       = val
+                        self.selected_preset = "Custom"
+                        return
+                # duration buttons
+                for val, r in self._adv_rects.get("duration", []):
+                    if r.collidepoint(pos):
+                        self.adv_duration    = val
+                        self.selected_preset = "Custom"
+                        if val != "Custom":
+                            self.adv_dur_active = False
+                        return
+                # custom duration text field
+                if self.adv_duration == "Custom":
+                    if self._adv_dur_rect.collidepoint(pos):
+                        self.adv_dur_active = True
+                        return
+                    else:
+                        self.adv_dur_active = False
+                # difficulty buttons
+                for val, r in self._adv_rects.get("difficulty", []):
+                    if r.collidepoint(pos):
+                        self.adv_difficulty  = val
+                        self.selected_preset = "Custom"
+                        return
+
             if self._accept_rect.collidepoint(pos):
                 self._accept()
             elif self._retry_rect.collidepoint(pos):
@@ -196,7 +305,7 @@ class CalibrationWindow:
             self.countdown_t += dt
             if self.countdown_t >= 1.0:
                 self.countdown_t -= 1.0
-                self.countdown  -= 1
+                self.countdown   -= 1
                 if self.countdown <= 0:
                     self.phase      = "recording"
                     self.record_t   = 0.0
@@ -208,7 +317,7 @@ class CalibrationWindow:
             self.record_t   += dt
             if self.record_t >= RECORD_DURATION:
                 self.trial_results.append(round(self.peak_value, 4))
-                self.phase  = "trial_done"
+                self.phase   = "trial_done"
                 self.pause_t = 0.0
 
         elif self.phase == "trial_done":
@@ -216,7 +325,7 @@ class CalibrationWindow:
             if self.pause_t >= TRIAL_DONE_PAUSE:
                 self.current_trial += 1
                 if self.current_trial >= 3:
-                    self.phase = "results"
+                    self._enter_results()
                 else:
                     self._start_countdown()
 
@@ -227,21 +336,51 @@ class CalibrationWindow:
         self.countdown   = COUNTDOWN_STEPS
         self.countdown_t = 0.0
 
+    def _enter_results(self):
+        self.phase = "results"
+        # seed advanced settings from Moderate preset scaled to actual average
+        self._apply_preset("Moderate")
+
+    def _apply_preset(self, name):
+        self.selected_preset = name
+        if name in DIFFICULTY_PRESETS:
+            p = DIFFICULTY_PRESETS[name]
+            self.adv_threshold_pct = p["threshold_pct"]
+            self.adv_speed         = p["speed"]
+            self.adv_duration      = p["duration"]
+            self.adv_difficulty    = p["difficulty"]
+            self.adv_custom_dur    = ""
+            self.adv_dur_active    = False
+
     def _accept(self):
         avg = sum(self.trial_results) / len(self.trial_results) if self.trial_results else 0.0
+        threshold = round(avg * self.adv_threshold_pct / 100.0, 4)
+        dur_display = (self.adv_custom_dur + " seconds"
+                       if self.adv_duration == "Custom" and self.adv_custom_dur
+                       else self.adv_duration)
         self.calibration_result = {
             "game_type":   self.game_type,
             "sensor":      self.cfg["sensor_name"],
             "sensitivity": self.sensitivity,
             "trials":      list(self.trial_results),
             "average":     round(avg, 4),
-            "threshold":   round(avg * 0.60, 4),
+            "threshold":   threshold,
+            "preset":      self.selected_preset,
+            "params": {
+                "threshold":     threshold,
+                "threshold_pct": self.adv_threshold_pct,
+                "speed":         self.adv_speed,
+                "duration":      dur_display,
+                "difficulty":    self.adv_difficulty,
+                "sensitivity":   self.sensitivity,
+            },
         }
         self.done = True
 
     def _retry(self):
         self.current_trial = 0
         self.trial_results = []
+        self.advanced_open = False
         self.phase         = "sensitivity"
 
     # ── draw ─────────────────────────────────────────────────────────────────
@@ -261,34 +400,27 @@ class CalibrationWindow:
         surface.blit(title_s, (int(32 * W / 1920),
                                 top_h // 2 - title_s.get_height() // 2))
 
-        # game-type badge
-        gt_s = self.fnt["tag"].render(f"  {self.game_type}  ", True, C["white"])
-        gt_r = gt_s.get_rect()
-        gt_r.midleft = (int(380 * W / 1920), top_h // 2)
-        badge_r = gt_r.inflate(10, 8)
-        pygame.draw.rect(surface, C["accent2"], badge_r, border_radius=10)
+        gt_s  = self.fnt["tag"].render(f"  {self.game_type}  ", True, C["white"])
+        gt_r  = gt_s.get_rect(midleft=(int(380 * W / 1920), top_h // 2))
+        badge = gt_r.inflate(10, 8)
+        pygame.draw.rect(surface, C["accent2"], badge, border_radius=10)
         surface.blit(gt_s, gt_r)
 
-        # sensor badge
         sen_s = self.fnt["tag"].render(f"  {self.cfg['sensor_name']}  ", True, C["text"])
-        sen_r = sen_s.get_rect()
-        sen_r.midleft = (badge_r.right + int(12 * W / 1920), top_h // 2)
-        sen_bg = sen_r.inflate(10, 8)
-        pygame.draw.rect(surface, C["panel2"], sen_bg, border_radius=10)
-        pygame.draw.rect(surface, C["border"],  sen_bg, 1, border_radius=10)
+        sen_r = sen_s.get_rect(midleft=(badge.right + int(12 * W / 1920), top_h // 2))
+        sen_b = sen_r.inflate(10, 8)
+        pygame.draw.rect(surface, C["panel2"], sen_b, border_radius=10)
+        pygame.draw.rect(surface, C["border"],  sen_b, 1, border_radius=10)
         surface.blit(sen_s, sen_r)
 
-        # dark/light mode toggle
-        tog_lbl = "☀ Light" if self.dark_mode else "☽ Dark"
-        tg_s  = self.fnt["btn"].render(tog_lbl, True, C["text"])
+        tog_s = self.fnt["btn"].render("☀ Light" if self.dark_mode else "☽ Dark", True, C["text"])
         tg_r  = pygame.Rect(W - int(148 * W / 1920), top_h // 2 - int(18 * H / 1080),
                             int(132 * W / 1920), int(36 * H / 1080))
         pygame.draw.rect(surface, C["panel2"], tg_r, border_radius=10)
         pygame.draw.rect(surface, C["border"], tg_r, 1, border_radius=10)
-        surface.blit(tg_s, tg_s.get_rect(center=tg_r.center))
+        surface.blit(tog_s, tog_s.get_rect(center=tg_r.center))
         self._toggle_rect = tg_r
 
-        # cancel button
         cx_s  = self.fnt["btn"].render("✕ Cancel", True, C["sub"])
         cx_r  = pygame.Rect(W - int(296 * W / 1920), top_h // 2 - int(18 * H / 1080),
                             int(132 * W / 1920), int(36 * H / 1080))
@@ -297,7 +429,7 @@ class CalibrationWindow:
         surface.blit(cx_s, cx_s.get_rect(center=cx_r.center))
         self._cancel_rect = cx_r
 
-        # ── content area ──────────────────────────────────────────────
+        # ── content ───────────────────────────────────────────────────
         content = pygame.Rect(0, top_h + int(14 * H / 1080),
                               W, H - top_h - int(14 * H / 1080))
         {
@@ -322,21 +454,20 @@ class CalibrationWindow:
         surface.blit(sen_s, sen_s.get_rect(center=(cx, area.y + int(76 * H / 1080))))
 
         ins_s = self.fnt["body"].render(self.cfg["instruction"], True, C["sub"])
-        surface.blit(ins_s, ins_s.get_rect(center=(cx, area.y + int(124 * H / 1080))))
+        surface.blit(ins_s, ins_s.get_rect(center=(cx, area.y + int(122 * H / 1080))))
 
-        # diagram (left) + sensitivity panel (right)
-        diag_r = pygame.Rect(int(60 * W / 1920),   area.y + int(162 * H / 1080),
-                             int(520 * W / 1920),   int(370 * H / 1080))
+        diag_r = pygame.Rect(int(60 * W / 1920),  area.y + int(158 * H / 1080),
+                             int(520 * W / 1920),  int(370 * H / 1080))
         self._draw_sensor_diagram(surface, diag_r, C, live=False)
 
-        sens_r = pygame.Rect(int(660 * W / 1920),  area.y + int(162 * H / 1080),
-                             int(780 * W / 1920),   int(370 * H / 1080))
+        sens_r = pygame.Rect(int(660 * W / 1920), area.y + int(158 * H / 1080),
+                             int(780 * W / 1920),  int(370 * H / 1080))
         self._draw_sensitivity_panel(surface, sens_r, C)
 
         kh_s = self.fnt["small"].render(self.cfg["key_hint"], True, C["sub"])
-        surface.blit(kh_s, kh_s.get_rect(center=(cx, area.y + int(578 * H / 1080))))
+        surface.blit(kh_s, kh_s.get_rect(center=(cx, area.y + int(570 * H / 1080))))
 
-        begin_r = pygame.Rect(cx - int(170 * W / 1920), area.y + int(628 * H / 1080),
+        begin_r = pygame.Rect(cx - int(170 * W / 1920), area.y + int(620 * H / 1080),
                               int(340 * W / 1920),       int(54 * H / 1080))
         pygame.draw.rect(surface, C["accent"], begin_r, border_radius=14)
         b_s = self.fnt["btn"].render("Begin Calibration  →", True, C["white"])
@@ -349,15 +480,15 @@ class CalibrationWindow:
         pygame.draw.rect(surface, C["border"], r, 1, border_radius=16)
 
         head_s = self.fnt["bold"].render("Select Sensitivity", True, C["text"])
-        surface.blit(head_s, head_s.get_rect(midtop=(r.centerx, r.y + int(16 * H / 1080))))
+        surface.blit(head_s, head_s.get_rect(midtop=(r.centerx, r.y + int(14 * H / 1080))))
 
-        opts   = ["Low", "Medium", "High"]
-        btn_w  = int(186 * W / 1920)
-        btn_h  = int(48  * H / 1080)
-        gap    = int(18  * W / 1920)
-        total  = len(opts) * btn_w + (len(opts) - 1) * gap
-        sx     = r.centerx - total // 2
-        by     = r.y + int(74 * H / 1080)
+        opts  = ["Low", "Medium", "High"]
+        btn_w = int(182 * W / 1920)
+        btn_h = int(46  * H / 1080)
+        gap   = int(16  * W / 1920)
+        total = len(opts) * btn_w + (len(opts) - 1) * gap
+        sx    = r.centerx - total // 2
+        by    = r.y + int(68 * H / 1080)
 
         self._sens_rects = {}
         for i, opt in enumerate(opts):
@@ -370,7 +501,6 @@ class CalibrationWindow:
             surface.blit(ls, ls.get_rect(center=br.center))
             self._sens_rects[opt] = br
 
-        # description of selected sensitivity
         desc  = SENSITIVITY_DESCS.get(self.sensitivity, "")
         words = desc.split()
         lines, cur = [], ""
@@ -385,26 +515,24 @@ class CalibrationWindow:
         if cur:
             lines.append(cur)
 
-        dy = by + btn_h + int(22 * H / 1080)
+        dy = by + btn_h + int(20 * H / 1080)
         for line in lines:
             ls = self.fnt["small"].render(line, True, C["sub"])
             surface.blit(ls, ls.get_rect(midtop=(r.centerx, dy)))
-            dy += int(28 * H / 1080)
+            dy += int(26 * H / 1080)
 
-        # info box
-        iy = r.y + int(210 * H / 1080)
+        iy = r.y + int(200 * H / 1080)
         surface.blit(self.fnt["smallb"].render("What calibration does:", True, C["text"]),
-                     (r.x + int(18 * W / 1920), iy))
-        info_lines = [
+                     (r.x + int(16 * W / 1920), iy))
+        for k, ln in enumerate([
             "• Runs 3 trials — measures your maximum effort",
             "• Calculates the average of all 3 trials",
+            "• Recommends parameters per difficulty level",
             "• Sets a personalised activation threshold",
-            "• Threshold = 60 % of your calibrated average",
-        ]
-        for k, ln in enumerate(info_lines):
+        ]):
             surface.blit(self.fnt["small"].render(ln, True, C["sub"]),
-                         (r.x + int(18 * W / 1920),
-                          iy + int(34 * H / 1080) + k * int(28 * H / 1080)))
+                         (r.x + int(16 * W / 1920),
+                          iy + int(30 * H / 1080) + k * int(26 * H / 1080)))
 
     # ── phase: countdown ──────────────────────────────────────────────────────
 
@@ -412,19 +540,19 @@ class CalibrationWindow:
         W, H = self.W, self.H
         cx   = area.centerx
 
-        diag_r = pygame.Rect(cx - int(300 * W / 1920), area.y + int(30 * H / 1080),
-                             int(600 * W / 1920),       int(320 * H / 1080))
+        diag_r = pygame.Rect(cx - int(300 * W / 1920), area.y + int(28 * H / 1080),
+                             int(600 * W / 1920),       int(310 * H / 1080))
         self._draw_sensor_diagram(surface, diag_r, C, live=False)
 
         tl_s = self.fnt["bold"].render(
             f"Trial {self.current_trial + 1} of 3 — Get Ready!", True, C["text"])
-        surface.blit(tl_s, tl_s.get_rect(center=(cx, area.y + int(398 * H / 1080))))
+        surface.blit(tl_s, tl_s.get_rect(center=(cx, area.y + int(388 * H / 1080))))
 
         num_s = self.fnt["big"].render(str(self.countdown), True, C["yellow"])
-        surface.blit(num_s, num_s.get_rect(center=(cx, area.y + int(510 * H / 1080))))
+        surface.blit(num_s, num_s.get_rect(center=(cx, area.y + int(496 * H / 1080))))
 
         ins_s = self.fnt["body"].render(self.cfg["instruction"], True, C["sub"])
-        surface.blit(ins_s, ins_s.get_rect(center=(cx, area.y + int(628 * H / 1080))))
+        surface.blit(ins_s, ins_s.get_rect(center=(cx, area.y + int(612 * H / 1080))))
 
     # ── phase: recording ──────────────────────────────────────────────────────
 
@@ -432,30 +560,30 @@ class CalibrationWindow:
         W, H = self.W, self.H
         cx   = area.centerx
 
-        diag_r = pygame.Rect(cx - int(310 * W / 1920), area.y + int(20 * H / 1080),
-                             int(620 * W / 1920),       int(290 * H / 1080))
+        diag_r = pygame.Rect(cx - int(310 * W / 1920), area.y + int(18 * H / 1080),
+                             int(620 * W / 1920),       int(280 * H / 1080))
         self._draw_sensor_diagram(surface, diag_r, C, live=True, value=self.live_value)
 
         tl_s = self.fnt["bold"].render(
             f"Trial {self.current_trial + 1} of 3 — Recording", True, C["text"])
-        surface.blit(tl_s, tl_s.get_rect(center=(cx, area.y + int(348 * H / 1080))))
+        surface.blit(tl_s, tl_s.get_rect(center=(cx, area.y + int(336 * H / 1080))))
 
         hi_s = self.fnt["title"].render(self.cfg["hold_hint"], True, C["yellow"])
-        surface.blit(hi_s, hi_s.get_rect(center=(cx, area.y + int(400 * H / 1080))))
+        surface.blit(hi_s, hi_s.get_rect(center=(cx, area.y + int(388 * H / 1080))))
 
         bx = int(180 * W / 1920)
-        by = area.y + int(468 * H / 1080)
+        by = area.y + int(452 * H / 1080)
         bw = W - int(360 * W / 1920)
-        bh = int(38  * H / 1080)
+        bh = int(38 * H / 1080)
         self._draw_bar(surface, bx, by, bw, bh, self.live_value, C,
                        label=f"Live: {self.live_value:.2f}   Peak: {self.peak_value:.2f}")
 
         remaining = max(0.0, RECORD_DURATION - self.record_t)
         tim_s = self.fnt["body"].render(
             f"Recording…  {remaining:.1f} s remaining", True, C["sub"])
-        surface.blit(tim_s, tim_s.get_rect(center=(cx, area.y + int(536 * H / 1080))))
+        surface.blit(tim_s, tim_s.get_rect(center=(cx, area.y + int(520 * H / 1080))))
 
-        self._draw_trial_dots(surface, cx, area.y + int(598 * H / 1080), C,
+        self._draw_trial_dots(surface, cx, area.y + int(580 * H / 1080), C,
                               current=self.current_trial)
 
     # ── phase: trial_done ─────────────────────────────────────────────────────
@@ -468,83 +596,290 @@ class CalibrationWindow:
 
         done_s = self.fnt["bold"].render(
             f"Trial {trial} of 3 — Complete!", True, C["green"])
-        surface.blit(done_s, done_s.get_rect(center=(cx, area.centery - int(100 * H / 1080))))
+        surface.blit(done_s, done_s.get_rect(center=(cx, area.centery - int(96 * H / 1080))))
 
         val_s = self.fnt["big"].render(f"{val:.3f}", True, C["text"])
-        surface.blit(val_s, val_s.get_rect(center=(cx, area.centery - int(10 * H / 1080))))
+        surface.blit(val_s, val_s.get_rect(center=(cx, area.centery - int(4 * H / 1080))))
 
         bx = int(220 * W / 1920)
-        by = area.centery + int(66 * H / 1080)
-        bw = W - int(440 * W / 1920)
-        self._draw_bar(surface, bx, by, bw, int(32 * H / 1080), val, C)
+        by = area.centery + int(68 * H / 1080)
+        self._draw_bar(surface, bx, by, W - int(440 * W / 1920),
+                       int(32 * H / 1080), val, C)
 
         nxt = "→ Preparing next trial…" if trial < 3 else "→ Calculating results…"
-        ns  = self.fnt["body"].render(nxt, True, C["sub"])
-        surface.blit(ns, ns.get_rect(center=(cx, by + int(52 * H / 1080))))
+        surface.blit(self.fnt["body"].render(nxt, True, C["sub"]),
+                     self.fnt["body"].render(nxt, True, C["sub"])
+                     .get_rect(center=(cx, by + int(54 * H / 1080))))
 
     # ── phase: results ────────────────────────────────────────────────────────
 
     def _draw_results(self, surface, area, C):
-        W, H  = self.W, self.H
-        cx    = area.centerx
-        avg   = (sum(self.trial_results) / len(self.trial_results)
-                 if self.trial_results else 0.0)
-        thresh = avg * 0.60
+        W, H = self.W, self.H
+        avg  = (sum(self.trial_results) / len(self.trial_results)
+                if self.trial_results else 0.0)
 
-        hd_s = self.fnt["title"].render("Calibration Complete!", True, C["green"])
-        surface.blit(hd_s, hd_s.get_rect(center=(cx, area.y + int(32 * H / 1080))))
+        # ─── LEFT column: trial summary ──────────────────────────────
+        lx = int(40 * W / 1920)
+        lw = int(800 * W / 1920)
+        ly = area.y + int(18 * H / 1080)
+
+        # heading
+        hd = self.fnt["title"].render("✓  Calibration Complete!", True, C["green"])
+        surface.blit(hd, (lx, ly))
 
         # trial bars
-        bar_x = int(240 * W / 1920)
-        bar_w = int(1000 * W / 1920)
-        bar_h = int(30 * H / 1080)
+        bar_x  = lx + int(80 * W / 1920)
+        bar_w  = lw - int(160 * W / 1920)
+        bar_h  = int(28 * H / 1080)
+        by_cur = ly + int(72 * H / 1080)
         for i, val in enumerate(self.trial_results):
-            ty = area.y + int(110 * H / 1080) + i * int(82 * H / 1080)
-            lbl_s = self.fnt["bold"].render(f"Trial {i + 1}:", True, C["text"])
-            surface.blit(lbl_s, lbl_s.get_rect(midright=(bar_x - int(12 * W / 1920),
-                                                          ty + bar_h // 2)))
-            self._draw_bar(surface, bar_x, ty, bar_w, bar_h, val, C,
+            lbl = self.fnt["bold"].render(f"Trial {i + 1}:", True, C["text"])
+            surface.blit(lbl, lbl.get_rect(midright=(bar_x - int(10 * W / 1920),
+                                                      by_cur + bar_h // 2)))
+            self._draw_bar(surface, bar_x, by_cur, bar_w, bar_h, val, C,
                            label=f"{val:.3f}")
+            by_cur += int(56 * H / 1080)
 
-        # average box
-        av_r = pygame.Rect(cx - int(380 * W / 1920), area.y + int(370 * H / 1080),
-                           int(760 * W / 1920),       int(116 * H / 1080))
-        pygame.draw.rect(surface, C["panel"],  av_r, border_radius=14)
-        pygame.draw.rect(surface, C["accent"], av_r, 2, border_radius=14)
+        # average / sensitivity summary box
+        sum_r = pygame.Rect(lx, by_cur + int(12 * H / 1080),
+                            lw, int(120 * H / 1080))
+        pygame.draw.rect(surface, C["panel"],  sum_r, border_radius=14)
+        pygame.draw.rect(surface, C["accent"], sum_r, 2,  border_radius=14)
 
-        surface.blit(self.fnt["bold"].render("Average:", True, C["sub"]),
-                     (av_r.x + int(20 * W / 1920), av_r.y + int(14 * H / 1080)))
         av_s = self.fnt["med"].render(f"{avg:.3f}", True, C["text"])
         surface.blit(av_s, av_s.get_rect(
-            midright=(av_r.centerx - int(14 * W / 1920), av_r.centery)))
+            midright=(sum_r.centerx - int(16 * W / 1920), sum_r.centery)))
+        surface.blit(self.fnt["bold"].render("Average", True, C["sub"]),
+                     self.fnt["bold"].render("Average", True, C["sub"])
+                     .get_rect(midright=(sum_r.centerx - int(16 * W / 1920),
+                                         sum_r.centery + int(30 * H / 1080))))
 
         pygame.draw.line(surface, C["border"],
-                         (av_r.centerx, av_r.y + int(10 * H / 1080)),
-                         (av_r.centerx, av_r.bottom - int(10 * H / 1080)), 1)
+                         (sum_r.centerx, sum_r.y + int(10 * H / 1080)),
+                         (sum_r.centerx, sum_r.bottom - int(10 * H / 1080)), 1)
 
-        surface.blit(self.fnt["bold"].render(
-            f"Sensitivity: {self.sensitivity}", True, C["sub"]),
-            (av_r.centerx + int(14 * W / 1920), av_r.y + int(14 * H / 1080)))
-        thr_s = self.fnt["body"].render(f"Threshold: {thresh:.3f}", True, C["accent"])
-        surface.blit(thr_s, (av_r.centerx + int(14 * W / 1920),
-                              av_r.y + int(58 * H / 1080)))
+        surface.blit(self.fnt["bold"].render(f"Sensitivity: {self.sensitivity}",
+                                              True, C["sub"]),
+                     (sum_r.centerx + int(16 * W / 1920),
+                      sum_r.y + int(22 * H / 1080)))
+        thr_now = round(avg * self.adv_threshold_pct / 100.0, 3)
+        surface.blit(self.fnt["body"].render(f"Active threshold: {thr_now:.3f}",
+                                              True, C["accent"]),
+                     (sum_r.centerx + int(16 * W / 1920),
+                      sum_r.y + int(60 * H / 1080)))
 
-        # buttons
-        retry_r  = pygame.Rect(cx - int(340 * W / 1920), area.y + int(528 * H / 1080),
-                               int(240 * W / 1920),       int(52 * H / 1080))
-        accept_r = pygame.Rect(cx + int(96 * W / 1920),  area.y + int(528 * H / 1080),
-                               int(260 * W / 1920),       int(52 * H / 1080))
+        # ─── RIGHT column: preset + advanced ─────────────────────────
+        rx = int(880 * W / 1920)
+        rw = W - rx - int(40 * W / 1920)
+        ry = area.y + int(18 * H / 1080)
+
+        rec_s = self.fnt["head2"].render("Recommended Parameters", True, C["text"])
+        surface.blit(rec_s, (rx, ry))
+
+        ry2 = ry + rec_s.get_height() + int(14 * H / 1080)
+        self._draw_preset_cards(surface, rx, ry2, rw, C, avg)
+
+        # advanced settings toggle button
+        adv_y = ry2 + int(230 * H / 1080)
+        adv_lbl = ("▲  Advanced Settings (Custom)" if self.advanced_open
+                   else "▼  Advanced Settings")
+        adv_col = C["accent2"] if self.advanced_open else C["panel2"]
+        adv_r   = pygame.Rect(rx, adv_y, rw, int(40 * H / 1080))
+        pygame.draw.rect(surface, adv_col, adv_r, border_radius=10)
+        pygame.draw.rect(surface, C["border"], adv_r, 1, border_radius=10)
+        adv_s = self.fnt["btn"].render(adv_lbl, True, C["text"])
+        surface.blit(adv_s, adv_s.get_rect(midleft=(adv_r.x + int(16 * W / 1920),
+                                                      adv_r.centery)))
+        self._adv_toggle_rect = adv_r
+
+        if self.advanced_open:
+            ap_r = pygame.Rect(rx, adv_y + int(46 * H / 1080),
+                               rw, int(224 * H / 1080))
+            self._draw_advanced_panel(surface, ap_r, C, avg)
+
+        # ─── bottom buttons ───────────────────────────────────────────
+        btn_y    = area.bottom - int(72 * H / 1080)
+        retry_r  = pygame.Rect(W // 2 - int(340 * W / 1920), btn_y,
+                               int(240 * W / 1920), int(52 * H / 1080))
+        accept_r = pygame.Rect(W // 2 + int(96 * W / 1920),  btn_y,
+                               int(260 * W / 1920), int(52 * H / 1080))
 
         pygame.draw.rect(surface, C["panel2"], retry_r,  border_radius=13)
         pygame.draw.rect(surface, C["border"], retry_r,  1, border_radius=13)
-        rs = self.fnt["btn"].render("↺  Retry", True, C["sub"])
-        surface.blit(rs, rs.get_rect(center=retry_r.center))
+        surface.blit(self.fnt["btn"].render("↺  Retry", True, C["sub"]),
+                     self.fnt["btn"].render("↺  Retry", True, C["sub"])
+                     .get_rect(center=retry_r.center))
         self._retry_rect = retry_r
 
         pygame.draw.rect(surface, C["green"],  accept_r, border_radius=13)
-        ac = self.fnt["btn"].render("✓  Accept & Continue", True, C["white"])
-        surface.blit(ac, ac.get_rect(center=accept_r.center))
+        surface.blit(self.fnt["btn"].render("✓  Accept & Continue", True, C["white"]),
+                     self.fnt["btn"].render("✓  Accept & Continue", True, C["white"])
+                     .get_rect(center=accept_r.center))
         self._accept_rect = accept_r
+
+    def _draw_preset_cards(self, surface, rx, ry, rw, C, avg):
+        W, H  = self.W, self.H
+        n     = len(PRESET_ORDER)
+        gap   = int(14 * W / 1920)
+        cw    = (rw - gap * (n - 1)) // n
+        ch    = int(212 * H / 1080)
+
+        self._preset_card_rects = {}
+        for i, name in enumerate(PRESET_ORDER):
+            p   = DIFFICULTY_PRESETS[name]
+            cx2 = rx + i * (cw + gap)
+            cr  = pygame.Rect(cx2, ry, cw, ch)
+            sel = (self.selected_preset == name)
+
+            # card background
+            base_col = p["color"]
+            bg_col   = (*base_col, 55) if not sel else (*base_col, 120)
+            bg_surf  = pygame.Surface((cw, ch), pygame.SRCALPHA)
+            bg_surf.fill(bg_col)
+            surface.blit(bg_surf, cr.topleft)
+
+            border_w = 3 if sel else 1
+            pygame.draw.rect(surface, base_col, cr, border_w, border_radius=14)
+
+            if sel:
+                tick_s = self.fnt["smallb"].render("● Selected", True, base_col)
+                surface.blit(tick_s, tick_s.get_rect(
+                    topright=(cr.right - int(10 * W / 1920),
+                              cr.y + int(10 * H / 1080))))
+
+            # difficulty label
+            nm_s = self.fnt["head2"].render(name.upper(), True,
+                                             base_col if sel else C["text"])
+            surface.blit(nm_s, (cr.x + int(14 * W / 1920),
+                                 cr.y + int(14 * H / 1080)))
+
+            # parameters table
+            thr_val = round(avg * p["threshold_pct"] / 100.0, 3)
+            rows = [
+                ("Threshold",  f"{p['threshold_pct']}% = {thr_val:.3f}"),
+                ("Speed",      p["speed"]),
+                ("Duration",   p["duration"]),
+                ("Difficulty", p["difficulty"]),
+            ]
+            ty = cr.y + int(56 * H / 1080)
+            for label, val in rows:
+                lbl_s = self.fnt["smallb"].render(f"{label}:", True, C["sub"])
+                val_s = self.fnt["small"].render(val, True, C["text"])
+                surface.blit(lbl_s, (cr.x + int(14 * W / 1920), ty))
+                surface.blit(val_s, (cr.x + int(14 * W / 1920) + lbl_s.get_width() + int(6 * W / 1920), ty))
+                ty += int(36 * H / 1080)
+
+            # description
+            desc_words = p["desc"].split()
+            desc_lines, cur = [], ""
+            for w in desc_words:
+                test = (cur + " " + w).strip()
+                if self.fnt["small"].size(test)[0] > cw - int(28 * W / 1920):
+                    if cur:
+                        desc_lines.append(cur)
+                    cur = w
+                else:
+                    cur = test
+            if cur:
+                desc_lines.append(cur)
+            dy2 = cr.bottom - int(14 * H / 1080) - len(desc_lines) * int(22 * H / 1080)
+            for dl in desc_lines:
+                ds = self.fnt["small"].render(dl, True, C["sub"])
+                surface.blit(ds, (cr.x + int(14 * W / 1920), dy2))
+                dy2 += int(22 * H / 1080)
+
+            self._preset_card_rects[name] = cr
+
+        # "Custom" indicator when in custom mode
+        if self.selected_preset == "Custom":
+            cust_s = self.fnt["smallb"].render(
+                "● Custom settings active", True, C["orange"])
+            surface.blit(cust_s, cust_s.get_rect(
+                midtop=(rx + rw // 2, ry + ch + int(6 * H / 1080))))
+
+    def _draw_advanced_panel(self, surface, r, C, avg):
+        W, H = self.W, self.H
+        pygame.draw.rect(surface, C["panel"],  r, border_radius=12)
+        pygame.draw.rect(surface, C["border"], r, 1, border_radius=12)
+
+        self._adv_rects = {"threshold_pct": [], "speed": [],
+                           "duration": [], "difficulty": []}
+
+        row_h   = int(46 * H / 1080)
+        col_lbl = int(180 * W / 1920)      # label column width
+        lx      = r.x + int(14 * W / 1920)
+        rx2     = r.x + col_lbl + int(22 * W / 1920)
+        gap_btn = int(8 * W / 1920)
+        row_gap = int(52 * H / 1080)
+        cy      = r.y + int(14 * H / 1080)
+
+        def row_label(text, y):
+            s = self.fnt["smallb"].render(text, True, C["sub"])
+            surface.blit(s, s.get_rect(midleft=(lx, y + row_h // 2)))
+
+        def option_buttons(key, opts, current, y, btn_w_override=None):
+            bw = btn_w_override or int(78 * W / 1920)
+            bh = int(34 * H / 1080)
+            x  = rx2
+            rects = []
+            for opt in opts:
+                br  = pygame.Rect(x, y + (row_h - bh) // 2, bw, bh)
+                sel = (str(current) == str(opt))
+                pygame.draw.rect(surface, C["accent"] if sel else C["panel2"],
+                                 br, border_radius=8)
+                pygame.draw.rect(surface, C["accent"] if sel else C["border"],
+                                 br, 1, border_radius=8)
+                s = self.fnt["tag"].render(str(opt), True,
+                                            C["white"] if sel else C["sub"])
+                surface.blit(s, s.get_rect(center=br.center))
+                rects.append((opt, br))
+                x += bw + gap_btn
+            self._adv_rects[key] = rects
+
+        # threshold %
+        row_label("Threshold %:", cy)
+        option_buttons("threshold_pct", THRESHOLD_PCTS,
+                       self.adv_threshold_pct, cy, btn_w_override=int(64 * W / 1920))
+        # live preview of threshold
+        thr_val = round(avg * self.adv_threshold_pct / 100.0, 3)
+        pv_s = self.fnt["small"].render(f"= {thr_val:.3f}", True, C["accent"])
+        last_r = self._adv_rects["threshold_pct"][-1][1] if self._adv_rects["threshold_pct"] else None
+        if last_r:
+            surface.blit(pv_s, (last_r.right + int(12 * W / 1920),
+                                  cy + row_h // 2 - pv_s.get_height() // 2))
+        cy += row_gap
+
+        # speed
+        row_label("Speed:", cy)
+        option_buttons("speed", SPEED_OPTS, self.adv_speed, cy,
+                       btn_w_override=int(90 * W / 1920))
+        cy += row_gap
+
+        # duration
+        row_label("Duration:", cy)
+        option_buttons("duration", DURATION_OPTS, self.adv_duration, cy,
+                       btn_w_override=int(112 * W / 1920))
+        if self.adv_duration == "Custom":
+            # custom text field
+            last_dur_r = self._adv_rects["duration"][-1][1]
+            fi_r = pygame.Rect(last_dur_r.right + int(10 * W / 1920),
+                               cy + (row_h - 32) // 2,
+                               int(90 * W / 1920), int(32 * H / 1080))
+            fi_col = C["accent"] if self.adv_dur_active else C["border"]
+            pygame.draw.rect(surface, C["panel2"], fi_r, border_radius=6)
+            pygame.draw.rect(surface, fi_col, fi_r, 2, border_radius=6)
+            txt = self.adv_custom_dur or "sec"
+            fi_s = self.fnt["tag"].render(txt, True,
+                                           C["text"] if self.adv_custom_dur else C["sub"])
+            surface.blit(fi_s, fi_s.get_rect(midleft=(fi_r.x + int(6 * W / 1920),
+                                                        fi_r.centery)))
+            self._adv_dur_rect = fi_r
+        cy += row_gap
+
+        # difficulty
+        row_label("Difficulty:", cy)
+        option_buttons("difficulty", DIFFICULTY_OPTS, self.adv_difficulty, cy,
+                       btn_w_override=int(108 * W / 1920))
 
     # ── sensor diagrams ───────────────────────────────────────────────────────
 
@@ -569,7 +904,6 @@ class CalibrationWindow:
         ts = self.fnt["smallb"].render("Force Sensor  —  Grip Strength", True, C["accent"])
         surface.blit(ts, ts.get_rect(midtop=(cx, r.y + int(10 * H / 1080))))
 
-        # grip controller body (cylinder)
         gw = int(r.width  * 0.22)
         gh = int(r.height * 0.54)
         gx = cx - gw // 2
@@ -579,34 +913,30 @@ class CalibrationWindow:
         pygame.draw.rect(surface, body_col, grip_rect, border_radius=int(gw * 0.45))
         pygame.draw.rect(surface, C["border"], grip_rect, 2, border_radius=int(gw * 0.45))
 
-        # pressure dot matrix on grip face
         cols, rows = 4, 5
         sx2 = gw // (cols + 1)
         sy2 = gh // (rows + 1)
         for row in range(rows):
             for col in range(cols):
-                dx2 = gx + sx2 * (col + 1)
-                dy2 = gy + sy2 * (row + 1)
                 act = live and value > (col / cols * 0.4)
                 pygame.draw.circle(surface,
                                    C["white"] if act else C["border"],
-                                   (dx2, dy2), int(3 * H / 1080))
+                                   (gx + sx2 * (col + 1), gy + sy2 * (row + 1)),
+                                   int(3 * H / 1080))
 
-        # squeeze arrows pointing inward from both sides
         arr_y   = gy + gh // 2
         arr_len = int(r.width * 0.10)
         for side in (-1, 1):
             base_x = cx + side * (gw // 2 + int(10 * W / 1920))
             col_a  = C["orange"] if (live and value > 0.05) else C["sub"]
             for k in range(3):
-                ox = base_x + side * k * int(10 * W / 1920)
+                ox    = base_x + side * k * int(10 * W / 1920)
                 tip_x = ox - side * arr_len
                 pygame.draw.line(surface, col_a,
                                  (ox, arr_y - int(10 * H / 1080)), (tip_x, arr_y), 2)
                 pygame.draw.line(surface, col_a,
                                  (ox, arr_y + int(10 * H / 1080)), (tip_x, arr_y), 2)
 
-        # "SQUEEZE" label below
         sq_s = self.fnt["small"].render("SQUEEZE", True, C["sub"])
         surface.blit(sq_s, sq_s.get_rect(midtop=(cx, gy + gh + int(6 * H / 1080))))
 
@@ -622,7 +952,6 @@ class CalibrationWindow:
         ts = self.fnt["smallb"].render("Flex Sensors  —  Finger Flexion", True, C["accent"])
         surface.blit(ts, ts.get_rect(midtop=(cx, r.y + int(10 * H / 1080))))
 
-        # palm
         palm_w = int(r.width  * 0.54)
         palm_h = int(r.height * 0.20)
         palm_x = cx - palm_w // 2
@@ -633,29 +962,27 @@ class CalibrationWindow:
         pygame.draw.rect(surface, C["border"],
                          (palm_x, palm_y, palm_w, palm_h), 1, border_radius=8)
 
-        # 5 fingers
-        n_fin   = 5
-        fin_w   = int(r.width  * 0.07)
-        fin_h   = int(r.height * 0.38)
+        n_fin  = 5
+        fin_w  = int(r.width * 0.07)
+        fin_h  = int(r.height * 0.38)
         fin_gap = (palm_w - n_fin * fin_w) // (n_fin + 1)
-        curl    = value if live else 0.0
+        curl   = value if live else 0.0
 
         for i in range(n_fin):
-            fx       = palm_x + fin_gap + i * (fin_w + fin_gap)
-            curl_px  = int(curl * fin_h * 0.80)
-            fy_top   = palm_y - fin_h + curl_px
-            fin_h2   = fin_h - curl_px + 4
-            fin_col  = C["accent"] if (live and value > 0.05) else C["panel2"]
+            fx      = palm_x + fin_gap + i * (fin_w + fin_gap)
+            curl_px = int(curl * fin_h * 0.80)
+            fy_top  = palm_y - fin_h + curl_px
+            fin_col = C["accent"] if (live and value > 0.05) else C["panel2"]
             pygame.draw.rect(surface, fin_col,
-                             (fx, fy_top, fin_w, fin_h2),
+                             (fx, fy_top, fin_w, fin_h - curl_px + 4),
                              border_radius=int(fin_w * 0.45))
             pygame.draw.rect(surface, C["border"],
-                             (fx, fy_top, fin_w, fin_h2),
+                             (fx, fy_top, fin_w, fin_h - curl_px + 4),
                              1, border_radius=int(fin_w * 0.45))
 
-        # "CURL" label
         curl_s = self.fnt["small"].render("CURL  ▼", True, C["sub"])
-        surface.blit(curl_s, curl_s.get_rect(midtop=(cx, palm_y + palm_h + int(6 * H / 1080))))
+        surface.blit(curl_s, curl_s.get_rect(
+            midtop=(cx, palm_y + palm_h + int(6 * H / 1080))))
 
     def _draw_wrist_diagram(self, surface, r, C, live, value):
         W, H = self.W, self.H
@@ -669,26 +996,21 @@ class CalibrationWindow:
         ts = self.fnt["smallb"].render("Motion Sensor  —  Wrist Rotation", True, C["accent"])
         surface.blit(ts, ts.get_rect(midtop=(cx, r.y + int(10 * H / 1080))))
 
-        # rotation arc
         arc_cx = cx
         arc_cy = r.y + int(r.height * 0.66)
         arc_r2 = int(min(r.width, r.height) * 0.28)
 
-        # background (full 180°) arc
         arc_rect = pygame.Rect(arc_cx - arc_r2, arc_cy - arc_r2,
                                arc_r2 * 2, arc_r2 * 2)
         pygame.draw.arc(surface, C["border"], arc_rect,
                         math.radians(0), math.radians(180), int(6 * H / 1080))
 
-        # active arc
         if live and value > 0.01:
-            angle_deg = value * 180
             col_a = C["orange"] if value > 0.7 else C["accent"]
             pygame.draw.arc(surface, col_a, arc_rect,
-                            math.radians(0), math.radians(angle_deg),
+                            math.radians(0), math.radians(value * 180),
                             int(8 * H / 1080))
 
-        # pointer arm
         arm_angle = math.radians(value * 180) if live else math.radians(90)
         arm_len   = arc_r2 - int(6 * W / 1920)
         arm_ex    = arc_cx + int(arm_len * math.cos(arm_angle))
@@ -697,15 +1019,14 @@ class CalibrationWindow:
         pygame.draw.line(surface, arm_col, (arc_cx, arc_cy), (arm_ex, arm_ey), 5)
         pygame.draw.circle(surface, arm_col, (arc_cx, arc_cy), int(7 * H / 1080))
 
-        # 0° and 180° labels
-        zero_s = self.fnt["small"].render("0°", True, C["sub"])
-        max_s  = self.fnt["small"].render("180°", True, C["sub"])
-        surface.blit(zero_s, (arc_cx + arc_r2 + int(4 * W / 1920),
-                               arc_cy - zero_s.get_height() // 2))
-        surface.blit(max_s,  (arc_cx - arc_r2 - max_s.get_width() - int(4 * W / 1920),
-                               arc_cy - max_s.get_height() // 2))
+        surface.blit(self.fnt["small"].render("0°", True, C["sub"]),
+                     (arc_cx + arc_r2 + int(4 * W / 1920),
+                      arc_cy - self.fnt["small"].get_height() // 2))
+        max_s = self.fnt["small"].render("180°", True, C["sub"])
+        surface.blit(max_s,
+                     (arc_cx - arc_r2 - max_s.get_width() - int(4 * W / 1920),
+                      arc_cy - max_s.get_height() // 2))
 
-        # hint label
         rot_s = self.fnt["small"].render("◄  ROTATE WRIST  ►", True, C["sub"])
         surface.blit(rot_s, rot_s.get_rect(
             midtop=(cx, arc_cy + arc_r2 + int(8 * H / 1080))))
@@ -734,17 +1055,12 @@ class CalibrationWindow:
         sx    = cx - total // 2
         for i in range(3):
             dx = sx + i * (dot_r * 2 + gap) + dot_r
-            if i < len(self.trial_results):
-                col = C["green"]
-            elif i == current:
-                col = C["yellow"]
-            else:
-                col = C["panel2"]
+            col = (C["green"] if i < len(self.trial_results)
+                   else C["yellow"] if i == current
+                   else C["panel2"])
             pygame.draw.circle(surface, col,   (dx, y), dot_r)
             pygame.draw.circle(surface, C["border"], (dx, y), dot_r, 1)
-            if i < len(self.trial_results):
-                lbl = f"{self.trial_results[i]:.2f}"
-            else:
-                lbl = f"Trial {i + 1}"
+            lbl = (f"{self.trial_results[i]:.2f}" if i < len(self.trial_results)
+                   else f"Trial {i + 1}")
             ls = self.fnt["small"].render(lbl, True, C["sub"])
             surface.blit(ls, ls.get_rect(midtop=(dx, y + dot_r + int(4 * self.H / 1080))))
