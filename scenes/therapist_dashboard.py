@@ -1687,23 +1687,23 @@ class TherapistDashboardScene:
         surface.blit(ts, ts.get_rect(midright=(sw-int(10*W/1920), ly-int(6*H/1080))))
         surface.blit(ds, ds.get_rect(midright=(sw-int(10*W/1920), ly+int(14*H/1080))))
 
-        pc_y = int(H*0.11); pc_h = int(H*0.18)
+        pc_y = int(H*0.11); pc_h = int(H*0.13)
         pc_r = pygame.Rect(int(sw*0.05), pc_y, int(sw*0.90), pc_h)
         glass_pc = pygame.Surface((pc_r.width, pc_r.height), pygame.SRCALPHA)
         pygame.draw.rect(glass_pc, (195, 220, 255, 130),
                          (0, 0, pc_r.width, pc_r.height), border_radius=12)
         surface.blit(glass_pc, pc_r.topleft)
         pygame.draw.rect(surface, (175, 208, 240), pc_r, 1, border_radius=12)
-        ir = int(34*(H/1080)); ix = pc_r.x+int(sw*0.10); iy = pc_r.centery
+        ir = int(44*(H/1080)); ix = pc_r.x+int(sw*0.12); iy = pc_r.centery
         draw_icon(surface, self.account.get("icon_index",1), ix, iy, ir, shadow=False)
-        tx = ix+ir+int(16*(W/1920))
+        tx = ix+ir+int(26*(W/1920))
         surface.blit(self.fnt["profile_nm"].render(self.account["full_name"],True,(40,55,75)),
-                     (tx, iy-int(40*(H/1080))))
+                     (tx, iy-int(32*(H/1080))))
         surface.blit(self.fnt["profile"].render(self.account["role"],True,(100,115,140)),
-                     (tx, iy-int(10*(H/1080))))
+                     (tx, iy+int(2*(H/1080))))
         ec  = (50,120,200) if self.edit_link_hovered else (75,140,210)
         es  = self.fnt["profile"].render("Edit Profile", True, ec)
-        ep  = (tx, iy+int(22*(H/1080)))
+        ep  = (tx, iy+int(26*(H/1080)))
         surface.blit(es, ep)
         self._edit_link_rect = pygame.Rect(ep[0], ep[1], es.get_width(), es.get_height())
 
@@ -3068,13 +3068,14 @@ class TherapistDashboardScene:
 
     def _draw_confirm_modal(self, surface):
         W,H=self.WIDTH,self.HEIGHT
-        mw,mh=int(W*0.26),int(H*0.26); mx,my=(W-mw)//2,(H-mh)//2
+        is_logout = (self.modal == "logout_confirm")
+        mw = int(W*0.34) if is_logout else int(W*0.26)
+        mh = int(H*0.26); mx,my=(W-mw)//2,(H-mh)//2
         mr=pygame.Rect(mx,my,mw,mh)
         ms=pygame.Surface((mw,mh),pygame.SRCALPHA)
         pygame.draw.rect(ms,(250,252,255,255),(0,0,mw,mh),border_radius=16)
         surface.blit(ms,mr.topleft)
         pygame.draw.rect(surface,(195,210,228),mr,2,border_radius=16)
-        is_logout  = (self.modal == "logout_confirm")
         is_del_pt  = (self.modal == "delete_patient_confirm")
         pt_name    = (self._ep_patient or {}).get("full_name", "this patient") if is_del_pt else ""
         title = ("Log out of RecovR?"         if is_logout else

@@ -573,8 +573,7 @@ class CalibrationWindow:
         by = area.y + int(452 * H / 1080)
         bw = W - int(360 * W / 1920)
         bh = int(38 * H / 1080)
-        self._draw_bar(surface, bx, by, bw, bh, self.live_value, C,
-                       label=f"Live: {self.live_value:.2f}   Peak: {self.peak_value:.2f}")
+        self._draw_bar(surface, bx, by, bw, bh, self.live_value, C)
 
         remaining = max(0.0, RECORD_DURATION - self.record_t)
         tim_s = self.fnt["body"].render(

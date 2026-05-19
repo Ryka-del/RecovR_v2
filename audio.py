@@ -7,6 +7,14 @@ _MUSIC = os.path.join(_DIR, "assets", "audio",
 _SFX_SUCCESS = os.path.join(_DIR, "assets", "audio", "catch_sound_effect.wav")
 _SFX_ERROR   = os.path.join(_DIR, "assets", "audio", "blast_sound.wav")
 
+_AUDIO_DIR = os.path.join(_DIR, "assets", "audio")
+
+def game_music_path(game: str, difficulty: str) -> str:
+    """Return the path for a game+difficulty track, falling back to default."""
+    filename = f"{game} {difficulty}.mp3"
+    path = os.path.join(_AUDIO_DIR, filename)
+    return path if os.path.exists(path) else _MUSIC
+
 _sounds: dict = {}
 
 
@@ -19,14 +27,16 @@ def _get_sound(path):
     return _sounds[path]
 
 
-def start_music():
+def start_music(path=None):
+    """Play looping background music. Pass a file path to use a specific track."""
+    track = path if path else _MUSIC
     try:
         if not pygame.mixer.get_init():
             pygame.mixer.init()
-        if not pygame.mixer.music.get_busy():
-            pygame.mixer.music.load(_MUSIC)
-            pygame.mixer.music.set_volume(0.4)
-            pygame.mixer.music.play(-1)
+        pygame.mixer.music.stop()
+        pygame.mixer.music.load(track)
+        pygame.mixer.music.set_volume(0.4)
+        pygame.mixer.music.play(-1)
     except Exception:
         pass
 

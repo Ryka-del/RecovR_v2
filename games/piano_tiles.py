@@ -12,7 +12,7 @@ import random
 from screens.base import BaseScreen
 from games.fatigue import FatigueMixin
 from sensors.input_handler import input_handler
-from audio import play_success, play_error, start_music, stop_music
+from audio import play_success, play_error, start_music, stop_music, game_music_path
 from constants import get_theme, GAME_W, GAME_H
 
 BASE_SPEED  = {"Easy": 280, "Medium": 420, "Hard": 580}
@@ -87,7 +87,7 @@ class PianoTilesGame(FatigueMixin, BaseScreen):
 
         self._init_fatigue()
         self._reset()
-        start_music()
+        start_music(game_music_path("Piano Tiles", self.difficulty))
         self._show_instructions = True
 
     # ── state ──────────────────────────────────────────────────────────
@@ -121,6 +121,7 @@ class PianoTilesGame(FatigueMixin, BaseScreen):
                 if self._results_again_rect.collidepoint(event.pos):
                     self._reset()
                     self._show_instructions = False
+                    start_music(game_music_path("Piano Tiles", self.difficulty))
                 elif self._results_exit_rect.collidepoint(event.pos):
                     self._exit_to_game_config()
             elif event.type == pygame.FINGERDOWN:
@@ -128,6 +129,7 @@ class PianoTilesGame(FatigueMixin, BaseScreen):
                 if self._results_again_rect.collidepoint(pos):
                     self._reset()
                     self._show_instructions = False
+                    start_music(game_music_path("Piano Tiles", self.difficulty))
                 elif self._results_exit_rect.collidepoint(pos):
                     self._exit_to_game_config()
             return
@@ -177,6 +179,7 @@ class PianoTilesGame(FatigueMixin, BaseScreen):
                 self._reset()
                 self._show_instructions = False
                 self.paused = False
+                start_music(game_music_path("Piano Tiles", self.difficulty))
             elif self.pause_sel == 2:
                 self.vol_active = True
             else:
@@ -355,7 +358,7 @@ class PianoTilesGame(FatigueMixin, BaseScreen):
         pw, ph = 860, 560
         px, py = (GAME_W - pw) // 2, (GAME_H - ph) // 2
         bg = pygame.Surface((pw, ph), pygame.SRCALPHA)
-        bg.fill((18, 26, 46, 252))
+        pygame.draw.rect(bg, (18, 26, 46, 252), (0, 0, pw, ph), border_radius=16)
         surface.blit(bg, (px, py))
         pygame.draw.rect(surface, T["ACCENT"],
                          pygame.Rect(px, py, pw, ph), 2, border_radius=16)
@@ -413,7 +416,7 @@ class PianoTilesGame(FatigueMixin, BaseScreen):
         mr = pygame.Rect(mx, my, mw, mh)
 
         bg = pygame.Surface((mw, mh), pygame.SRCALPHA)
-        bg.fill((28, 34, 52, 245))
+        pygame.draw.rect(bg, (28, 34, 52, 245), (0, 0, mw, mh), border_radius=16)
         surface.blit(bg, mr.topleft)
         pygame.draw.rect(surface, T["ACCENT"], mr, 2, border_radius=16)
 

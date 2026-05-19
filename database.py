@@ -193,7 +193,7 @@ class Database:
 
     def get_sessions(self, therapist_id, patient_id=None):
         if patient_id is not None:
-            # Show ALL sessions for this patient regardless of which therapist ran them
+            # Return ALL sessions for this patient regardless of which therapist ran them
             cur = self.conn.execute("""
                 SELECT s.id, s.played_at, s.game, s.score, s.duration_sec, s.difficulty,
                        p.full_name AS patient_name, t.full_name AS therapist_name
@@ -202,7 +202,7 @@ class Database:
                 LEFT JOIN therapists t ON s.therapist_id = t.id
                 WHERE s.patient_id = ?
                 ORDER BY s.played_at DESC
-            """, (patient_id,))
+            """, (int(patient_id),))
         else:
             cur = self.conn.execute("""
                 SELECT s.id, s.played_at, s.game, s.score, s.duration_sec, s.difficulty,
@@ -212,8 +212,8 @@ class Database:
                 LEFT JOIN therapists t ON s.therapist_id = t.id
                 WHERE s.therapist_id = ?
                 ORDER BY s.played_at DESC
-            """, (therapist_id,))
-        return [dict(zip([c[0] for c in cur.description], row)) for row in cur.fetchall()]
+            """, (int(therapist_id),))
+        return [dict(r) for r in cur.fetchall()]
 
     # ── THERAPIST CREATE ──────────────────────────────────────────────
 
