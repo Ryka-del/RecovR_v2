@@ -25,7 +25,7 @@ import math
 from screens.base import BaseScreen
 from games.fatigue import FatigueMixin
 from sensors.input_handler import input_handler
-from audio import play_success, play_error, start_music, stop_music, game_music_path
+from audio import play_success, play_error, play_completion, start_music, stop_music, game_music_path, play_click
 from constants import get_theme, GAME_W, GAME_H
 
 GOALS      = {"Easy": 8,   "Medium": 10, "Hard": 12}
@@ -74,7 +74,6 @@ class SteadyAimGame(FatigueMixin, BaseScreen):
         self._font_fb   = pygame.font.SysFont("monospace", 52, bold=True)
 
         self._init_fatigue()
-        start_music(game_music_path("Steady Aim", self.difficulty))
         self._reset()
         self._show_instructions = True
         self._pause_btn_rect    = pygame.Rect(GAME_W - 90, 13, 70, 46)
@@ -83,11 +82,13 @@ class SteadyAimGame(FatigueMixin, BaseScreen):
         self._init_fatigue()
         self.paused      = False
         self.pause_sel   = 0
-        self.game_over   = False
-        self.score       = 0
-        self.reps        = 0
-        self.time_left   = float(self.duration)
-        self.start_time  = pygame.time.get_ticks()
+        self.game_over       = False
+        self.score           = 0
+        self.reps            = 0
+        self.time_left       = float(self.duration)
+        self.start_time      = pygame.time.get_ticks()
+        self._pre_complete   = False
+        self._pre_complete_t = 0.0
         self.cursor_x    = float(GAME_W // 2)
         self.cursor_y    = float(GAME_H // 2)
         self.hold_timer  = 0.0
@@ -124,14 +125,17 @@ class SteadyAimGame(FatigueMixin, BaseScreen):
                     input_handler.was_pressed(event, "action")):
                 self._show_instructions = False
                 self.start_time = pygame.time.get_ticks()
+                start_music(game_music_path("Steady Aim", self.difficulty))
             return
 
         if self.game_over:
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if self._results_again_rect.collidepoint(event.pos):
+                    play_click()
                     self._reset()
                     start_music(game_music_path("Steady Aim", self.difficulty))
                 elif self._results_back_rect.collidepoint(event.pos):
+                    play_click()
                     self._exit_to_game_config()
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 self._exit_to_game_config()
@@ -169,6 +173,7 @@ class SteadyAimGame(FatigueMixin, BaseScreen):
             for i, action in enumerate(opts_actions):
                 oy = GAME_H // 2 - 160 + i * 96
                 if pygame.Rect(GAME_W // 2 - 200, oy, 400, 80).collidepoint(pos):
+                    play_click()
                     action()
                     return
             return
@@ -189,7 +194,16 @@ class SteadyAimGame(FatigueMixin, BaseScreen):
 
         self.time_left -= dt
         if self.time_left <= 0:
-            self._end_game(); return
+            self.time_left = 0.0
+            if not self._pre_complete:
+                self._pre_complete   = True
+                self._pre_complete_t = 0.8
+                pygame.mixer.music.fadeout(800)
+            else:
+                self._pre_complete_t -= dt
+                if self._pre_complete_t <= 0:
+                    self._end_game()
+            return
 
         # Move cursor with wrist tilt
         tx = self._normalize_tilt(self._state["tilt_x"], "x")
@@ -283,6 +297,7 @@ class SteadyAimGame(FatigueMixin, BaseScreen):
 
     def _end_game(self):
         stop_music()
+        play_completion()
         self.game_over_duration = (pygame.time.get_ticks() - self.start_time) // 1000
         self.game_over_score    = self.score
         try:

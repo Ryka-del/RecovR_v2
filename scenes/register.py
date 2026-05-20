@@ -11,6 +11,8 @@ import pygame
 import math
 import sys
 import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from audio import play_click
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
@@ -205,6 +207,7 @@ class RegisterScene:
             if self.role_open:
                 for opt in self.role_opts:
                     if opt["rect"].collidepoint(pos):
+                        play_click()
                         self.fields[2]["value"] = opt["label"]
                         self.role_open          = False
                         return None
@@ -212,6 +215,7 @@ class RegisterScene:
 
             for (cx, cy, idx) in self.sm_circles:
                 if math.hypot(pos[0] - cx, pos[1] - cy) <= self.sm_r:
+                    play_click()
                     self.selected_icon = idx
                     return None
 
@@ -219,6 +223,7 @@ class RegisterScene:
             for i, f in enumerate(self.fields):
                 if f["rect"].collidepoint(pos):
                     if f["key"] == "role":
+                        play_click()
                         self.role_open    = not self.role_open
                         self.active_field = -1
                     else:
@@ -230,19 +235,23 @@ class RegisterScene:
                 self.active_field = -1
 
             if self.register_btn_rect.collidepoint(pos):
+                play_click()
                 return self._attempt_create()
 
             if self.login_link_rect.collidepoint(pos):
+                play_click()
                 self.launch_triggered = True
                 return "login"
 
             if self._back_rect().collidepoint(pos):
+                play_click()
                 self.launch_triggered = True
                 return "login"
 
         if event.type == pygame.FINGERDOWN:
             touch = (int(event.x * self.WIDTH), int(event.y * self.HEIGHT))
             if self._back_rect().collidepoint(touch):
+                play_click()
                 self.launch_triggered = True
                 return "login"
 

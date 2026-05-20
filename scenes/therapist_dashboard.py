@@ -41,6 +41,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import Database
 from scenes.icon_renderer import draw_icon, ICONS
 from scenes.calibration_window import CalibrationWindow
+from audio import play_confirm_alert, play_start_session, play_click
 
 # ─────────────────────────────────────────────────────────────────────
 #  NAV / PANEL CONSTANTS
@@ -686,10 +687,12 @@ class TherapistDashboardScene:
             if self.modal == "delete_patient_confirm":
                 yr, nr = self._confirm_rects()
                 if yr.collidepoint(pos):
+                    play_click()
                     self._ep_delete()
                     self._ep_modal_open = False
                     self.modal = None
                 elif nr.collidepoint(pos):
+                    play_click()
                     self.modal = None
                 return None
             self._ep_handle_click(pos); return None
@@ -697,13 +700,16 @@ class TherapistDashboardScene:
         # ── Share modal (checked before everything else - highest priority) ──
         if self._share_modal_open:
             if self._share_close_rect.collidepoint(pos):
+                play_click()
                 self._share_modal_open = False; return None
 
             # Confirmation prompt yes/no
             if self._share_confirm_mode:
                 if self._share_yes_rect.collidepoint(pos):
+                    play_click()
                     self._do_share_confirm(); return None
                 if self._share_no_rect.collidepoint(pos):
+                    play_click()
                     self._share_confirm_mode      = False
                     self._share_confirm_therapist = None
                     return None
@@ -712,6 +718,7 @@ class TherapistDashboardScene:
             # Live suggestion item clicks → enter confirm mode
             for (sr, therapist) in self._share_sugg_rects:
                 if sr.collidepoint(pos):
+                    play_click()
                     self._share_confirm_therapist = therapist
                     self._share_confirm_mode      = True
                     return None
@@ -719,6 +726,7 @@ class TherapistDashboardScene:
             # Unshare/Revoke buttons
             for (ur, tid) in self._unshare_rects:
                 if ur.collidepoint(pos):
+                    play_click()
                     self.db.unshare_patient(self.share_modal_patient["id"], tid)
                     self._share_success = "Access revoked."
                     self._share_error   = ""
@@ -729,12 +737,14 @@ class TherapistDashboardScene:
         # ── Calibration mismatch modal ────────────────────────────────
         if self.modal == "calibration_mismatch":
             if self._mismatch_cal_rect.collidepoint(pos):
+                play_click()
                 self.modal = None
                 game_type  = (self.gc.get("selected_game") or (None, None))[1] or "Grip Strength"
                 self._cal_win = CalibrationWindow(self.WIDTH, self.HEIGHT, game_type)
                 self._sync_dur_to_cal()
                 return None
             if self._mismatch_cancel_rect.collidepoint(pos):
+                play_click()
                 self.modal = None
             return None
 
@@ -742,33 +752,42 @@ class TherapistDashboardScene:
         if self.modal == "delete_patient_confirm":
             yr, nr = self._confirm_rects()
             if yr.collidepoint(pos):
+                play_click()
                 self._ep_delete()
                 self._ep_modal_open = False
                 self.modal = None
             if nr.collidepoint(pos):
+                play_click()
                 self.modal = None
             return None
 
         if self.modal == "delete_confirm":
             yr, nr = self._confirm_rects()
             if yr.collidepoint(pos):
+                play_click()
                 self.db.delete_therapist(self.account["id"])
                 self.action_triggered = True
                 return "therapist_welcome"
-            if nr.collidepoint(pos): self.modal = "edit_profile"
+            if nr.collidepoint(pos):
+                play_click()
+                self.modal = "edit_profile"
             return None
 
         if self.modal == "register_success":
             if self._rp_ok_rect.collidepoint(pos):
+                play_click()
                 self.modal = None
             return None
 
         if self.modal == "logout_confirm":
             yr, nr = self._confirm_rects()
             if yr.collidepoint(pos):
+                play_click()
                 self.action_triggered = True
                 return "login"
-            if nr.collidepoint(pos): self.modal = None
+            if nr.collidepoint(pos):
+                play_click()
+                self.modal = None
             return None
 
         if self.modal == "edit_profile":
@@ -776,18 +795,29 @@ class TherapistDashboardScene:
 
         # ── Sidebar ──────────────────────────────────────────────────
         if self._edit_link_rect.collidepoint(pos):
+            play_click()
             self._init_edit_fields(); self.modal = "edit_profile"; return None
 
         if self._logout_rect().collidepoint(pos):
+            play_confirm_alert()
             self.modal = "logout_confirm"; return None
 
         for i, r in enumerate(self.nav_rects):
             if r.collidepoint(pos):
+                play_click()
                 self._open_panel(SIDEBAR_NAV[i]["idx"]); return None
 
         # ── Back button ───────────────────────────────────────────────
         if self.active_panel != -1 and self._back_btn_rect.collidepoint(pos):
-            self._go_back(); return None
+            play_click(); self._go_back(); return None
+
+        # ── Home cards ────────────────────────────────────────────────
+        if self.active_panel == -1:
+            for i, cr in enumerate(self.card_rects):
+                if cr.collidepoint(pos):
+                    play_click()
+                    self._open_panel(HOME_CARDS[i]["idx"])
+                    return None
 
         # ── Panel 0: Patient List ─────────────────────────────────────
         if self.active_panel == 0:
@@ -796,12 +826,13 @@ class TherapistDashboardScene:
             else:
                 self._pt_search_active = False
             if self._register_link_rect.collidepoint(pos):
-                self._open_panel(6); return None
+                play_click(); self._open_panel(6); return None
             for row in self._patient_rows:
                 btn_rect = row[0]
                 patient  = row[1]
                 action   = row[2] if len(row) > 2 else "select"
                 if btn_rect.collidepoint(pos):
+                    play_click()
                     if action == "share":
                         self._open_share_modal(patient)
                     elif action == "edit":
@@ -829,6 +860,7 @@ class TherapistDashboardScene:
         if self.active_panel == 4:
             self._gc_handle_click(pos)
             if self._gc_next_rect.collidepoint(pos):
+                play_click()
                 self._open_panel(5); return None
 
         # ── Panel 5: Start Session ────────────────────────────────────
@@ -842,6 +874,7 @@ class TherapistDashboardScene:
                     for j, opt_val in enumerate(open_opts):
                         or_ = pygame.Rect(pr.x, pr.bottom + j * opt_h, pr.width, opt_h)
                         if or_.collidepoint(pos):
+                            play_click()
                             self.gc[open_key] = opt_val
                             if opt_val == "Custom":
                                 self._gc_custom_dur     = ""
@@ -854,9 +887,11 @@ class TherapistDashboardScene:
                 return None   # consume click; dropdown closes
 
             if self._bypass_btn_rect.collidepoint(pos):
+                play_click()
                 self.calibration_bypassed = not self.calibration_bypassed
                 return None
             if self._calibrate_btn_rect.collidepoint(pos):
+                play_click()
                 game_type = (self.gc.get("selected_game") or (None, None))[1] or "Grip Strength"
                 self._cal_win = CalibrationWindow(self.WIDTH, self.HEIGHT, game_type)
                 self._sync_dur_to_cal()
@@ -876,6 +911,7 @@ class TherapistDashboardScene:
             for pk, opts in [("duration", DUR_OPTS), ("speed", SPD_OPTS)]:
                 pr = self._ss_param_rects.get(pk)
                 if pr and pr.collidepoint(pos):
+                    play_click()
                     self._ss_open_param = (pk, opts)
                     return None
 
@@ -883,6 +919,7 @@ class TherapistDashboardScene:
                 if self._calibration_mismatched():
                     self.modal = "calibration_mismatch"
                     return None
+                play_start_session()
                 return self._launch_game()
 
         return None
@@ -1025,10 +1062,13 @@ class TherapistDashboardScene:
     def _ep_handle_click(self, pos):
         W, H = self.WIDTH, self.HEIGHT
         if self._ep_cancel_rect.collidepoint(pos):
+            play_click()
             self._ep_modal_open = False; return
         if self._ep_save_rect.collidepoint(pos):
+            play_click()
             self._ep_submit(); return
         if self._ep_delete_rect.collidepoint(pos):
+            play_confirm_alert()
             self.modal = "delete_patient_confirm"
             return
 
@@ -1040,6 +1080,7 @@ class TherapistDashboardScene:
                     _, opt_rects, opts = info
                     for or_, opt_val in zip(opt_rects, opts):
                         if or_.collidepoint(pos):
+                            play_click()
                             self._ep[key] = opt_val
                             self._ep_drop_open[key] = False
                             return
@@ -1054,6 +1095,7 @@ class TherapistDashboardScene:
         for key, opts in drop_fields.items():
             info = self._ep_drop_rects.get(key)
             if info and info[0].collidepoint(pos):
+                play_click()
                 for k in self._ep_drop_open: self._ep_drop_open[k] = False
                 self._ep_drop_open[key] = True
                 return
@@ -1341,6 +1383,7 @@ class TherapistDashboardScene:
 
         for (cx, cy, idx) in self.edit_small_circles:
             if math.hypot(pos[0]-cx, pos[1]-cy) <= self.edit_small_r+8:
+                play_click()
                 self.edit_selected_icon = idx; return None
 
         clicked = False
@@ -1356,9 +1399,14 @@ class TherapistDashboardScene:
         if not clicked:
             self.edit_active_field = -1; self.edit_role_open = False
 
-        if self.edit_save_rect.collidepoint(pos):   return self._attempt_save()
-        if self.edit_cancel_rect.collidepoint(pos): self.modal = None
-        if self.edit_delete_rect.collidepoint(pos): self.modal = "delete_confirm"
+        if self.edit_save_rect.collidepoint(pos):
+            play_click()
+            return self._attempt_save()
+        if self.edit_cancel_rect.collidepoint(pos):
+            play_click()
+            self.modal = None
+        if self.edit_delete_rect.collidepoint(pos):
+            play_confirm_alert(); self.modal = "delete_confirm"
         return None
 
     def _handle_edit_key(self, event):
@@ -1415,6 +1463,7 @@ class TherapistDashboardScene:
         rp = self.rp
 
         if self._rp_btn_rect.collidepoint(pos):
+            play_click()
             self._rp_submit(); return
 
         for key in ["sex_open","dominant_open","affected_open","stroke_open","severity_open"]:
@@ -1428,6 +1477,7 @@ class TherapistDashboardScene:
                     _, opt_rects, opts = info
                     for j, (or_, opt_val) in enumerate(zip(opt_rects, opts)):
                         if or_.collidepoint(pos):
+                            play_click()
                             rp[field_key] = opt_val
                             rp[key] = False
                             return
@@ -1446,6 +1496,7 @@ class TherapistDashboardScene:
             if info:
                 field_rect = info[0]
                 if field_rect.collidepoint(pos):
+                    play_click()
                     for _, ok2, _ in drop_map:
                         rp[ok2] = False
                     rp[open_key] = not rp[open_key]
@@ -1504,10 +1555,12 @@ class TherapistDashboardScene:
         # ── Skill game picker modal ───────────────────────────────────
         if self._gc_skill_modal_open:
             if self._gc_skill_modal_close.collidepoint(pos):
+                play_click()
                 self._gc_skill_modal_open = False
                 return
             for (gr, game_name) in self._gc_skill_modal_rects:
                 if gr.collidepoint(pos):
+                    play_click()
                     gc["selected_game"] = (game_name, self._gc_skill_modal_type)
                     gc["preset_applied"] = False
                     self._gc_skill_modal_open = False
@@ -1517,6 +1570,7 @@ class TherapistDashboardScene:
 
         for (tr, game_tuple) in self._game_tiles:
             if tr.collidepoint(pos):
+                play_click()
                 skill_type = game_tuple[1]
                 if skill_type in SKILL_GAMES:
                     self._gc_skill_modal_type = skill_type
@@ -1613,6 +1667,10 @@ class TherapistDashboardScene:
         if self.modal == "calibration_mismatch":
             self._mismatch_cal_hov    = self._mismatch_cal_rect.collidepoint(mouse_pos)
             self._mismatch_cancel_hov = self._mismatch_cancel_rect.collidepoint(mouse_pos)
+
+        # ── Home card hover ──
+        for i, cr in enumerate(self.card_rects):
+            self.card_hovered[i] = (self.active_panel == -1 and cr.collidepoint(mouse_pos))
 
         # ── Page transition fade-in animation ──
         # Fade in over several frames (alpha goes from 0→255, +4 per frame = ~64 frames at 60FPS = 1 second)

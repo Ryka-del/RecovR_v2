@@ -4,9 +4,18 @@ import pygame
 _DIR   = os.path.dirname(os.path.abspath(__file__))
 _MUSIC = os.path.join(_DIR, "assets", "audio",
     "denis-pavlov-music-futuristic-technology-science-sci-fi-high-tech-game-music-368220.mp3")
-_SFX_SUCCESS = os.path.join(_DIR, "assets", "audio", "catch_sound_effect.wav")
-_SFX_ERROR   = os.path.join(_DIR, "assets", "audio", "blast_sound.wav")
-
+_SFX_SUCCESS    = os.path.join(_DIR, "assets", "audio", "catch_sound_effect.wav")
+_SFX_ERROR      = os.path.join(_DIR, "assets", "audio", "blast_sound.wav")
+_SFX_COMPLETE   = os.path.join(_DIR, "assets", "audio",
+                                "mixkit-completion-of-a-level-2063.wav")
+_SFX_CONFIRM    = os.path.join(_DIR, "assets", "audio",
+                                "mixkit-quick-win-video-game-notification-269.wav")
+_SFX_START_SES  = os.path.join(_DIR, "assets", "audio",
+                                "mixkit-sci-fi-interface-robot-click-901.wav")
+_SFX_WELCOME = os.path.join(_DIR, "assets", "audio",
+                             "mixkit-game-user-interface-tone-2570.wav")
+_SFX_CLICK      = os.path.join(_DIR, "assets", "audio",
+                                "mixkit-modern-technology-select-3124.wav")
 _AUDIO_DIR = os.path.join(_DIR, "assets", "audio")
 
 def game_music_path(game: str, difficulty: str) -> str:
@@ -55,6 +64,50 @@ def play_success():
             snd.play()
         except Exception:
             pass
+
+
+def play_completion():
+    snd = _get_sound(_SFX_COMPLETE)
+    if snd:
+        try:
+            snd.play()
+        except Exception:
+            pass
+
+
+def _play(path):
+    """Internal helper — initialise mixer if needed, then play a one-shot sfx."""
+    try:
+        if not pygame.mixer.get_init():
+            pygame.mixer.init()
+    except Exception:
+        return
+    snd = _get_sound(path)
+    if snd:
+        try:
+            snd.play()
+        except Exception:
+            pass
+
+
+def play_confirm_alert():
+    """Confirmation / delete prompt appears."""
+    _play(_SFX_CONFIRM)
+
+
+def play_start_session():
+    """Start Session button clicked."""
+    _play(_SFX_START_SES)
+
+
+def play_welcome():
+    """Welcome / splash screen shown."""
+    _play(_SFX_WELCOME)
+
+
+def play_click():
+    """Generic UI button click."""
+    _play(_SFX_CLICK)
 
 
 def play_error():

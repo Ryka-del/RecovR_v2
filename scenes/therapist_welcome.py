@@ -4,6 +4,9 @@
 
 import pygame
 import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from audio import play_welcome, play_click
 
 
 class TherapistWelcomeScene:
@@ -53,9 +56,10 @@ class TherapistWelcomeScene:
         )
 
         # --- FADE-IN ---
-        self.alpha        = 0
-        self.fade_surface = pygame.Surface((width, height))
+        self.alpha          = 0
+        self.fade_surface   = pygame.Surface((width, height))
         self.fade_surface.fill((255, 255, 255))
+        self._welcome_played = False
 
         # --- LAUNCH GUARD ---
         self.launch_triggered = False
@@ -67,6 +71,7 @@ class TherapistWelcomeScene:
     def handle_event(self, event):
         if not self.launch_triggered:
             if self.start_button.handle_click(event):
+                play_click()
                 self.launch_triggered = True
                 return "login"
         return None
@@ -77,6 +82,9 @@ class TherapistWelcomeScene:
             self.alpha = min(255, self.alpha + 4)
 
     def draw(self, surface):
+        if not self._welcome_played:
+            play_welcome()
+            self._welcome_played = True
         # 1. Background
         surface.blit(self.background_surface, (0, 0))
 

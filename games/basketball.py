@@ -11,7 +11,7 @@ import math
 from screens.base import BaseScreen
 from games.fatigue import FatigueMixin
 from sensors.input_handler import input_handler
-from audio import play_success, play_error, start_music, stop_music, game_music_path
+from audio import play_success, play_error, play_completion, start_music, stop_music, game_music_path, play_click
 from constants import get_theme, GAME_W, GAME_H
 
 GOALS      = {"Easy": 10, "Medium": 15, "Hard": 20}
@@ -154,7 +154,6 @@ class BasketballGame(FatigueMixin, BaseScreen):
 
         self._init_fatigue()
         self._reset()
-        start_music(game_music_path("Basketball", self.difficulty))
         self._show_instructions = True
 
     def _reset(self):
@@ -165,6 +164,8 @@ class BasketballGame(FatigueMixin, BaseScreen):
         self.reps           = 0
         self.time_left      = float(self.time_start)
         self.start_time     = pygame.time.get_ticks()
+        self._pre_complete   = False
+        self._pre_complete_t = 0.0
 
         self.zone_pos = random.uniform(0.15, 0.50)
         self.zone_dir = 1
@@ -205,16 +206,19 @@ class BasketballGame(FatigueMixin, BaseScreen):
                 self.start_time            = pygame.time.get_ticks()
                 self._grip                 = 0.0
                 self._squeezing            = False
-                self._grip_ignore_timer    = 0.8   # ignore grip for 0.8s so dismiss-squeeze doesn't charge bar
+                self._grip_ignore_timer    = 0.8
+                start_music(game_music_path("Basketball", self.difficulty))
             return
 
         if self.game_over:
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if self._results_again_rect.collidepoint(event.pos):
+                    play_click()
                     self._reset()
                     self._show_instructions = False
                     start_music(game_music_path("Basketball", self.difficulty))
                 elif self._results_exit_rect.collidepoint(event.pos):
+                    play_click()
                     self._exit_to_game_config()
             return
 
@@ -262,6 +266,7 @@ class BasketballGame(FatigueMixin, BaseScreen):
         for i, action in enumerate(opts_actions):
             oy = GAME_H // 2 - 160 + i * 96
             if pygame.Rect(GAME_W // 2 - 200, oy, 400, 80).collidepoint(pos):
+                play_click()
                 action()
                 return
 
@@ -278,7 +283,16 @@ class BasketballGame(FatigueMixin, BaseScreen):
 
         self.time_left -= dt
         if self.time_left <= 0:
-            self._end_game(); return
+            self.time_left = 0.0
+            if not self._pre_complete:
+                self._pre_complete   = True
+                self._pre_complete_t = 0.8
+                pygame.mixer.music.fadeout(800)
+            else:
+                self._pre_complete_t -= dt
+                if self._pre_complete_t <= 0:
+                    self._end_game()
+            return
 
         raw = self._normalize(self._state["grip"])
 
@@ -445,6 +459,7 @@ class BasketballGame(FatigueMixin, BaseScreen):
         if self.game_over:
             return
         stop_music()
+        play_completion()
         self.game_over_duration = (pygame.time.get_ticks() - self.start_time) // 1000
         self.game_over_score    = self.score
         try:

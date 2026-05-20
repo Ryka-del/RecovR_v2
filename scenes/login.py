@@ -15,6 +15,8 @@ import pygame
 import math
 import sys, os
 import datetime
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from audio import play_click
 
 MAX_ACCOUNTS = 23
 GRID_COLS    = 8
@@ -184,17 +186,20 @@ class LoginScene:
         # Account circles
         for i, rect in enumerate(self.account_rects):
             if rect.collidepoint(pos):
+                play_click()
                 self._select_account(i)
                 return None
 
         # Limit modal dismiss
         if self._limit_modal:
             if self._limit_ok_rect.collidepoint(pos):
+                play_click()
                 self._limit_modal = False
             return None
 
         # Add button
         if self.add_rect.collidepoint(pos):
+            play_click()
             if len(self.accounts) >= MAX_ACCOUNTS:
                 self._limit_modal = True
                 return None
@@ -203,6 +208,7 @@ class LoginScene:
 
         # Back
         if self._back_rect().collidepoint(pos):
+            play_click()
             self.launch_triggered = True
             return "therapist_welcome"
 

@@ -127,7 +127,9 @@ while True:
 
         if next_scene_name and next_scene_name in SCENES:
             incoming_scene = SCENES[next_scene_name](screen, WIDTH, HEIGHT)
-            crossfade(screen, current_scene, incoming_scene, clock)
+            _game_scenes = {"basketball", "steady_aim", "piano_tiles"}
+            _fade_steps  = 70 if next_scene_name in _game_scenes else 25
+            crossfade(screen, current_scene, incoming_scene, clock, steps=_fade_steps)
             current_scene = incoming_scene
 
     current_scene.update(mouse_pos, dt)

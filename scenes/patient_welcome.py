@@ -4,6 +4,9 @@
 
 import pygame
 import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from audio import play_welcome
 
 
 class PatientWelcomeScene:
@@ -28,9 +31,10 @@ class PatientWelcomeScene:
         self.background_surface = self._create_gradient(width, height)
 
         # --- FADE-IN ---
-        self.alpha        = 0
-        self.fade_surface = pygame.Surface((width, height))
+        self.alpha           = 0
+        self.fade_surface    = pygame.Surface((width, height))
         self.fade_surface.fill((255, 255, 255))
+        self._welcome_played = False
 
     # ------------------------------------------------------------------
     # SCENE INTERFACE
@@ -46,6 +50,9 @@ class PatientWelcomeScene:
             self.alpha = min(255, self.alpha + 4)
 
     def draw(self, surface):
+        if not self._welcome_played:
+            play_welcome()
+            self._welcome_played = True
         # 1. Background
         surface.blit(self.background_surface, (0, 0))
 

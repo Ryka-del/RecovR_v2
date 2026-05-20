@@ -12,7 +12,7 @@ import random
 from screens.base import BaseScreen
 from games.fatigue import FatigueMixin
 from sensors.input_handler import input_handler
-from audio import play_success, play_error, start_music, stop_music, game_music_path
+from audio import play_success, play_error, play_completion, start_music, stop_music, game_music_path, play_click
 from constants import get_theme, GAME_W, GAME_H
 
 BASE_SPEED  = {"Easy": 280, "Medium": 420, "Hard": 580}
@@ -95,7 +95,6 @@ class PianoTilesGame(FatigueMixin, BaseScreen):
 
         self._init_fatigue()
         self._reset()
-        start_music(game_music_path("Piano Tiles", self.difficulty))
         self._show_instructions = True
 
     # ── state ──────────────────────────────────────────────────────────
@@ -106,9 +105,11 @@ class PianoTilesGame(FatigueMixin, BaseScreen):
         self.score       = 0
         self.reps        = 0
         self.spawn_timer = 0.0
-        self.time_left   = float(self.duration)
-        self.start_time  = pygame.time.get_ticks()
-        self.flash       = {}
+        self.time_left       = float(self.duration)
+        self.start_time      = pygame.time.get_ticks()
+        self.flash           = {}
+        self._pre_complete   = False
+        self._pre_complete_t = 0.0
 
     # ── events ─────────────────────────────────────────────────────────
 
@@ -121,24 +122,29 @@ class PianoTilesGame(FatigueMixin, BaseScreen):
                     input_handler.was_pressed(event, "action")):
                 self._show_instructions = False
                 self.start_time = pygame.time.get_ticks()
+                start_music(game_music_path("Piano Tiles", self.difficulty))
             return
 
         # Results screen — mouse click on buttons
         if self.game_over:
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if self._results_again_rect.collidepoint(event.pos):
+                    play_click()
                     self._reset()
                     self._show_instructions = False
                     start_music(game_music_path("Piano Tiles", self.difficulty))
                 elif self._results_exit_rect.collidepoint(event.pos):
+                    play_click()
                     self._exit_to_game_config()
             elif event.type == pygame.FINGERDOWN:
                 pos = (int(event.x * GAME_W), int(event.y * GAME_H))
                 if self._results_again_rect.collidepoint(pos):
+                    play_click()
                     self._reset()
                     self._show_instructions = False
                     start_music(game_music_path("Piano Tiles", self.difficulty))
                 elif self._results_exit_rect.collidepoint(pos):
+                    play_click()
                     self._exit_to_game_config()
             return
 
@@ -196,6 +202,7 @@ class PianoTilesGame(FatigueMixin, BaseScreen):
         for i, action in enumerate(opts_actions):
             oy = GAME_H // 2 - 160 + i * 96
             if pygame.Rect(GAME_W // 2 - 200, oy, 400, 80).collidepoint(pos):
+                play_click()
                 action()
                 return
 
@@ -236,7 +243,14 @@ class PianoTilesGame(FatigueMixin, BaseScreen):
         self.time_left -= dt
         if self.time_left <= 0:
             self.time_left = 0.0
-            self._end_game()
+            if not self._pre_complete:
+                self._pre_complete   = True
+                self._pre_complete_t = 0.8
+                pygame.mixer.music.fadeout(800)
+            else:
+                self._pre_complete_t -= dt
+                if self._pre_complete_t <= 0:
+                    self._end_game()
             return
 
         # Adaptive spawn rate
@@ -276,6 +290,7 @@ class PianoTilesGame(FatigueMixin, BaseScreen):
         if self.game_over:
             return
         stop_music()
+        play_completion()
         self.game_over_duration = (pygame.time.get_ticks() - self.start_time) // 1000
         self.game_over_score    = self.score
         try:
