@@ -174,15 +174,17 @@ class BasketballGame(FatigueMixin, BaseScreen):
         self._squeezing = False
         self._cooldown  = 0.0
 
-        self.ball_x      = float(GAME_W // 2)
+        # Hoop is fixed at screen center
+        self.hoop_x = GAME_W // 2 - HOOP_RX
+        self.hoop_y = 300
+
+        # Ball rest position changes each round
+        self.ball_x      = float(self._rand_ball_x())
         self.ball_y      = float(GAME_H - 160)
         self.ball_vx     = 0.0
         self.ball_vy     = 0.0
         self.ball_active = False
-
-        self.hoop_x     = random.randint(300, GAME_W - 500)
-        self.hoop_y     = random.randint(200, 400)
-        self._next_hoop = None
+        self._next_ball_x = None
 
         self.feedback    = None
         self.score_flash = 0.0
@@ -370,14 +372,21 @@ class BasketballGame(FatigueMixin, BaseScreen):
         if self.score_flash > 0:
             self.score_flash -= dt
 
+    def _rand_ball_x(self):
+        """Return a random ball rest x that avoids the hoop centre."""
+        if random.random() < 0.5:
+            return float(random.randint(150, GAME_W // 2 - 220))   # left side
+        return float(random.randint(GAME_W // 2 + 220, GAME_W - 150))  # right side
+
     def _advance_hoop(self):
-        if self._next_hoop:
-            self.hoop_x, self.hoop_y = self._next_hoop
-            self._next_hoop = None
+        if self._next_ball_x is not None:
+            self.ball_x      = self._next_ball_x
+            self.ball_y      = float(GAME_H - 160)
+            self._next_ball_x = None
 
     def _shoot(self):
         self._pending_score = True
-        bx0 = float(GAME_W // 2)
+        bx0 = self.ball_x
         by0 = float(GAME_H - 160)
         hcx = float(self.hoop_x + HOOP_RX)
         hcy = float(self.hoop_y)
@@ -391,9 +400,8 @@ class BasketballGame(FatigueMixin, BaseScreen):
         self.ball_vy     = (hcy - by0 - 0.5 * GRAVITY * t * t) / t
         self.ball_active = True
 
-        self._next_hoop = (random.randint(300, GAME_W - 500),
-                           random.randint(200, 400))
-        self.zone_pos   = random.uniform(0.15, 0.50)
+        self._next_ball_x = self._rand_ball_x()
+        self.zone_pos     = random.uniform(0.15, 0.50)
 
     # ------------------------------------------------------------------ #
 
@@ -549,11 +557,7 @@ class BasketballGame(FatigueMixin, BaseScreen):
 
         # Z-ordered drawing: back of hoop → ball → front of hoop
         _draw_hoop_back(surface, self.hoop_x, self.hoop_y)
-
-        bx = int(self.ball_x) if self.ball_active else GAME_W // 2
-        by = int(self.ball_y) if self.ball_active else GAME_H - 160
-        _draw_basketball(surface, bx, by, BALL_R)
-
+        _draw_basketball(surface, int(self.ball_x), int(self.ball_y), BALL_R)
         _draw_hoop_front(surface, self.hoop_x, self.hoop_y)
 
         # Grip bar
