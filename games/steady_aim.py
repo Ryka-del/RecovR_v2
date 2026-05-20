@@ -240,7 +240,7 @@ class SteadyAimGame(FatigueMixin, BaseScreen):
         pw, ph = 860, 570
         px, py = (GAME_W - pw) // 2, (GAME_H - ph) // 2
         bg = pygame.Surface((pw, ph), pygame.SRCALPHA)
-        pygame.draw.rect(bg, (18, 26, 46, 252), (0, 0, pw, ph), border_radius=16)
+        pygame.draw.rect(bg, T["PANEL"] + (252,), (0, 0, pw, ph), border_radius=16)
         surface.blit(bg, (px, py))
         pygame.draw.rect(surface, T["ACCENT"], pygame.Rect(px, py, pw, ph), 2, border_radius=16)
 
@@ -357,8 +357,8 @@ class SteadyAimGame(FatigueMixin, BaseScreen):
 
         # Cursor — proper upward arrow
         cur_x, cur_y = int(self.cursor_x), int(self.cursor_y)
-        cur_col    = T["GREEN"] if inside else T["WHITE"]
-        cur_shadow = T["BG"]
+        cur_col    = T["GREEN"] if inside else T["TEXT"]
+        cur_shadow = T["ACCENT"]
         tip_w, shaft_w, head_h, shaft_h = 24, 8, 22, 22
         pts = [
             (cur_x,             cur_y),
@@ -430,7 +430,7 @@ class SteadyAimGame(FatigueMixin, BaseScreen):
         mr = pygame.Rect(mx, my, mw, mh)
 
         bg = pygame.Surface((mw, mh), pygame.SRCALPHA)
-        pygame.draw.rect(bg, (28, 34, 52, 245), (0, 0, mw, mh), border_radius=16)
+        pygame.draw.rect(bg, T["PANEL"] + (245,), (0, 0, mw, mh), border_radius=16)
         surface.blit(bg, mr.topleft)
         pygame.draw.rect(surface, T["ACCENT"], mr, 2, border_radius=16)
 
@@ -442,12 +442,12 @@ class SteadyAimGame(FatigueMixin, BaseScreen):
         title = f_big.render("Session Complete!", True, T["YELLOW"])
         surface.blit(title, title.get_rect(center=(mr.centerx, my + 60)))
 
-        sc_s = f_mid.render(f"Score:    {self.game_over_score}", True, T["WHITE"])
+        sc_s = f_mid.render(f"Score:    {self.game_over_score}", True, T["TEXT"])
         surface.blit(sc_s, sc_s.get_rect(midleft=(mx + 80, my + 140)))
 
         mins, secs = divmod(self.game_over_duration, 60)
         dur_str = f"{mins}:{secs:02d}" if mins else f"{secs}s"
-        du_s = f_mid.render(f"Duration: {dur_str}", True, T["WHITE"])
+        du_s = f_mid.render(f"Duration: {dur_str}", True, T["TEXT"])
         surface.blit(du_s, du_s.get_rect(midleft=(mx + 80, my + 185)))
 
         dif_s = f_sm.render(f"Difficulty: {self.difficulty}", True, T["GRAY"])

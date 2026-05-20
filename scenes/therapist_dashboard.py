@@ -732,6 +732,7 @@ class TherapistDashboardScene:
                 self.modal = None
                 game_type  = (self.gc.get("selected_game") or (None, None))[1] or "Grip Strength"
                 self._cal_win = CalibrationWindow(self.WIDTH, self.HEIGHT, game_type)
+                self._sync_dur_to_cal()
                 return None
             if self._mismatch_cancel_rect.collidepoint(pos):
                 self.modal = None
@@ -858,6 +859,7 @@ class TherapistDashboardScene:
             if self._calibrate_btn_rect.collidepoint(pos):
                 game_type = (self.gc.get("selected_game") or (None, None))[1] or "Grip Strength"
                 self._cal_win = CalibrationWindow(self.WIDTH, self.HEIGHT, game_type)
+                self._sync_dur_to_cal()
                 return None
 
             # ── Custom duration field ──────────────────────────────────
@@ -902,6 +904,32 @@ class TherapistDashboardScene:
                 self.db.get_all_patients(therapist_id=self.account["id"])
                 if hasattr(self.db, 'get_all_patients') else []
             )
+
+    def _sync_dur_to_cal(self):
+        """Push Session Details duration → newly opened CalibrationWindow Advanced Settings."""
+        if self._cal_win is None:
+            return
+        sd = self.gc.get("duration", "120 seconds")
+        if sd == "Custom":
+            self._cal_win.adv_duration   = "Custom"
+            self._cal_win.adv_custom_dur = self._gc_custom_dur or ""
+        else:
+            try:
+                self._cal_win.adv_duration = f"{int(sd.split()[0])} s"
+            except (ValueError, IndexError):
+                pass
+
+    def _sync_dur_from_cal(self, cal_win):
+        """Pull CalibrationWindow Advanced Settings duration → Session Details."""
+        cal_d = cal_win.adv_duration
+        if cal_d == "Custom":
+            self.gc["duration"]    = "Custom"
+            self._gc_custom_dur    = cal_win.adv_custom_dur or ""
+        else:
+            try:
+                self.gc["duration"] = f"{int(cal_d.split()[0])} seconds"
+            except (ValueError, IndexError):
+                pass
 
     def _session_ready(self):
         return (self.selected_patient is not None and
@@ -1539,6 +1567,7 @@ class TherapistDashboardScene:
             if self._cal_win.done:
                 self.calibration_done   = True
                 self.calibration_result = self._cal_win.calibration_result
+                self._sync_dur_from_cal(self._cal_win)
                 self._cal_win           = None
                 pt_id = (self.selected_patient or {}).get("id")
                 if pt_id and hasattr(self.db, "save_calibration"):
