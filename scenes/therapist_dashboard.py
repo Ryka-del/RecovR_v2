@@ -2380,12 +2380,14 @@ class TherapistDashboardScene:
             if cy + section_h > pa.bottom - int(10*H/1080):
                 break
 
-            bar_col = GAME_COLORS[g_idx % len(GAME_COLORS)]
-            g_scores = [s.get("score", 0) for s in g_sessions]
-            g_durs   = [s.get("duration_sec", 0) for s in g_sessions]
+            bar_col  = GAME_COLORS[g_idx % len(GAME_COLORS)]
             g_total  = len(g_sessions)
-            g_best   = max(g_scores)
-            g_avg    = sum(g_scores) / g_total
+            g_durs   = [s.get("duration_sec", 0) for s in g_sessions]
+            # rate = score / duration (pts/s); guard against zero duration
+            g_rates  = [s.get("score", 0) / max(s.get("duration_sec", 1), 1)
+                        for s in g_sessions]
+            g_best   = max(g_rates)
+            g_avg    = sum(g_rates) / g_total
             g_tmin, g_tsec = divmod(sum(g_durs), 60)
 
             # Section heading
@@ -2399,8 +2401,8 @@ class TherapistDashboardScene:
             # Stat boxes
             stat_items = [
                 ("Sessions",    str(g_total)),
-                ("Best Score",  str(g_best)),
-                ("Avg Score",   f"{g_avg:.1f}"),
+                ("Best (pts/s)", f"{g_best:.3f}"),
+                ("Avg (pts/s)",  f"{g_avg:.3f}"),
                 ("Play Time",   f"{g_tmin}m {g_tsec}s" if g_tmin else f"{g_tsec}s"),
             ]
             sw = int((pa.width - int(64*W/1920)) // 4)
@@ -2415,19 +2417,20 @@ class TherapistDashboardScene:
                              (sx + int(8*W/1920), cy + int(34*H/1080)))
             cy += int(92*H/1080)
 
-            # Mini bar chart — last 8 sessions
-            recent = g_sessions[:8][::-1]
+            # Mini bar chart — last 8 sessions, bars = score/duration (pts/s)
+            recent       = g_sessions[:8][::-1]
+            recent_rates = g_rates[-len(recent):][::-1] if len(g_sessions) >= len(recent) else g_rates[::-1]
             if recent:
-                max_s     = max(s.get("score", 1) for s in recent) or 1
+                max_r     = max(recent_rates) or 1
                 bar_w     = int((pa.width - int(64*W/1920)) // len(recent))
                 bar_h_max = int(60*H/1080)
                 lbl_h     = int(20*H/1080)
-                for i, s in enumerate(recent):
-                    bh = max(4, int(bar_h_max * s.get("score", 0) / max_s))
+                for i, (s, rate) in enumerate(zip(recent, recent_rates)):
+                    bh = max(4, int(bar_h_max * rate / max_r))
                     bx = lx + i * (bar_w + 4)
                     br = pygame.Rect(bx, cy + bar_h_max - bh, bar_w - 4, bh)
                     pygame.draw.rect(surface, bar_col, br, border_radius=4)
-                    sc_s = self.fnt["time"].render(str(s.get("score", 0)),
+                    sc_s = self.fnt["time"].render(f"{rate:.2f}",
                                                    True, (80, 100, 130))
                     surface.blit(sc_s, sc_s.get_rect(
                         midtop=(br.centerx, cy + bar_h_max + int(4*H/1080))))
