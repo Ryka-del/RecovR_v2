@@ -27,6 +27,17 @@ ROLES = [
     "Other",
 ]
 
+SECURITY_QUESTIONS = [
+    "What was the name of your first pet?",
+    "What is your mother's maiden name?",
+    "What city were you born in?",
+    "What was the name of your elementary school?",
+    "What is your oldest sibling's middle name?",
+    "What was the make of your first car?",
+    "What is your favorite movie?",
+    "What was your childhood nickname?",
+]
+
 
 class RegisterScene:
 
@@ -178,7 +189,7 @@ class RegisterScene:
         )
 
         # ----------------------------------------------------------------
-        # STATE
+        # STATE — Step 1 (account creation)
         # ----------------------------------------------------------------
         self.selected_icon    = 0
         self.icon_hovered     = 0
@@ -193,6 +204,50 @@ class RegisterScene:
         self.fade_surface = pygame.Surface((width, height))
         self.fade_surface.fill((255, 255, 255))
 
+        # ----------------------------------------------------------------
+        # STATE — Step 2 (security questions)
+        # ----------------------------------------------------------------
+        self.reg_step          = 1          # 1 = account form, 2 = security questions
+        self.sq_therapist_id   = None       # set after account creation succeeds
+        self.sq_error_msg      = ""
+        self.sq_complete_hov   = False
+        self.sq_active_slot    = None       # (slot_idx, 'a') when an answer field has focus
+
+        sq_cw   = int(width  * 0.55)
+        sq_cx   = (width - sq_cw) // 2
+        sq_top  = int(height * 0.22)
+        sq_fh   = field_h
+        sq_gap  = int(48  * (height / 1080))   # gap between question dropdown and answer input
+        sq_step = int(200 * (height / 1080))   # spacing between each Q&A block
+
+        self.sq_fields = []
+        for i in range(3):
+            base_y = sq_top + i * sq_step
+            q_rect = pygame.Rect(sq_cx, base_y, sq_cw, sq_fh)
+            a_rect = pygame.Rect(sq_cx, base_y + sq_fh + sq_gap, sq_cw, sq_fh)
+            # Precompute option rects for this slot's question dropdown
+            opt_h  = sq_fh
+            q_opts = [
+                pygame.Rect(sq_cx, q_rect.bottom + j * opt_h, sq_cw, opt_h)
+                for j in range(len(SECURITY_QUESTIONS))
+            ]
+            self.sq_fields.append({
+                "q_value": "",
+                "q_open":  False,
+                "q_rect":  q_rect,
+                "a_value": "",
+                "a_rect":  a_rect,
+                "q_opts":  q_opts,
+            })
+
+        last_a = self.sq_fields[2]["a_rect"]
+        self.sq_complete_rect = pygame.Rect(
+            sq_cx,
+            last_a.bottom + int(50 * (height / 1080)),
+            int(sq_cw * 0.45),
+            int(50 * (height / 1080)),
+        )
+
     # ------------------------------------------------------------------
     # SCENE INTERFACE
     # ------------------------------------------------------------------
@@ -200,6 +255,9 @@ class RegisterScene:
     def handle_event(self, event):
         if self.launch_triggered:
             return None
+
+        if self.reg_step == 2:
+            return self._sq_handle_event(event)
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             pos = event.pos
@@ -316,12 +374,21 @@ class RegisterScene:
 
         ok = self.db.create_therapist(fn, un, pin, role, workplace, idx)
         if ok:
-            self.launch_triggered = True
-            return "login"
+            therapist = self.db.get_therapist_by_username(un)
+            if therapist:
+                self.sq_therapist_id = therapist["id"]
+            self.reg_step  = 2
+            self.error_msg = ""
+            return None
         self.error_msg = "Could not create account. Try a different username."
         return None
 
     def update(self, mouse_pos, dt):
+        if self.reg_step == 2:
+            self.sq_complete_hov = self.sq_complete_rect.collidepoint(mouse_pos)
+            if self.alpha < 255:
+                self.alpha = min(255, self.alpha + 4)
+            return
         self.back_hovered     = self._back_rect().collidepoint(mouse_pos)
         self.register_hovered = self.register_btn_rect.collidepoint(mouse_pos)
         self.login_ln_hovered = self.login_link_rect.collidepoint(mouse_pos)
@@ -335,10 +402,13 @@ class RegisterScene:
 
     def draw(self, surface):
         surface.blit(self.background_surface, (0, 0))
-        self._draw_title(surface)
-        self._draw_icon_picker(surface)
-        self._draw_form(surface)
-        self._draw_back_link(surface)
+        if self.reg_step == 2:
+            self._draw_step2(surface)
+        else:
+            self._draw_title(surface)
+            self._draw_icon_picker(surface)
+            self._draw_form(surface)
+            self._draw_back_link(surface)
         if self.alpha < 255:
             self.fade_surface.set_alpha(255 - self.alpha)
             surface.blit(self.fade_surface, (0, 0))
@@ -467,6 +537,204 @@ class RegisterScene:
             ts = self.font_login_ln.render(text, True, col)
             surface.blit(ts, ts.get_rect(midleft=(x_cursor, link_y)))
             x_cursor += ts.get_width()
+
+    # ------------------------------------------------------------------
+    # STEP 2 — SECURITY QUESTIONS
+    # ------------------------------------------------------------------
+
+    def _sq_handle_event(self, event):
+        """Route events when reg_step == 2."""
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            return self._sq_handle_click(event.pos)
+        if event.type == pygame.FINGERDOWN:
+            touch = (int(event.x * self.WIDTH), int(event.y * self.HEIGHT))
+            return self._sq_handle_click(touch)
+        if event.type == pygame.KEYDOWN:
+            self._sq_handle_key(event)
+        return None
+
+    def _sq_handle_click(self, pos):
+        # Close any open dropdown if click is outside it
+        for i, sf in enumerate(self.sq_fields):
+            if sf["q_open"]:
+                # Check option clicks first
+                for j, opt_r in enumerate(sf["q_opts"]):
+                    if opt_r.collidepoint(pos):
+                        play_click()
+                        sf["q_value"] = SECURITY_QUESTIONS[j]
+                        sf["q_open"]  = False
+                        self.sq_error_msg = ""
+                        return None
+                sf["q_open"] = False
+                return None
+
+        # Check interactions for each slot
+        for i, sf in enumerate(self.sq_fields):
+            if sf["q_rect"].collidepoint(pos):
+                play_click()
+                # Close all other dropdowns
+                for other in self.sq_fields:
+                    other["q_open"] = False
+                sf["q_open"] = True
+                self.sq_active_slot = None
+                return None
+            if sf["a_rect"].collidepoint(pos):
+                play_click()
+                self.sq_active_slot = i
+                return None
+
+        # Complete Setup button
+        if self.sq_complete_rect.collidepoint(pos):
+            play_click()
+            return self._sq_submit()
+
+        # Click outside → deactivate answer field
+        self.sq_active_slot = None
+        return None
+
+    def _sq_handle_key(self, event):
+        if self.sq_active_slot is None:
+            return
+        sf = self.sq_fields[self.sq_active_slot]
+        if event.key == pygame.K_BACKSPACE:
+            sf["a_value"]     = sf["a_value"][:-1]
+            self.sq_error_msg = ""
+        elif event.key == pygame.K_TAB:
+            self.sq_active_slot = (self.sq_active_slot + 1) % 3
+        elif event.key == pygame.K_RETURN:
+            self.sq_active_slot = None
+        elif event.unicode:
+            sf["a_value"]     += event.unicode
+            self.sq_error_msg  = ""
+
+    def _sq_submit(self):
+        chosen_questions = [sf["q_value"] for sf in self.sq_fields]
+        answers          = [sf["a_value"].strip() for sf in self.sq_fields]
+
+        for i in range(3):
+            if not chosen_questions[i]:
+                self.sq_error_msg = f"Please select Question {i + 1}."
+                return None
+            if not answers[i]:
+                self.sq_error_msg = f"Please enter an answer for Question {i + 1}."
+                return None
+
+        # No duplicate questions
+        if len(set(chosen_questions)) < 3:
+            self.sq_error_msg = "Each security question must be different."
+            return None
+
+        if self.sq_therapist_id:
+            self.db.set_security_questions(
+                self.sq_therapist_id,
+                chosen_questions[0], answers[0],
+                chosen_questions[1], answers[1],
+                chosen_questions[2], answers[2],
+            )
+
+        self.launch_triggered = True
+        return "login"
+
+    def _draw_step2(self, surface):
+        W, H = self.WIDTH, self.HEIGHT
+
+        # Title
+        ts = self.font_title.render("Set Up Security Questions", True, (40, 55, 80))
+        surface.blit(ts, ts.get_rect(center=(W // 2, int(H * 0.11))))
+
+        sub = self.font_caption.render(
+            "These help verify your identity. Choose 3 different questions.",
+            True, (100, 120, 150)
+        )
+        surface.blit(sub, sub.get_rect(center=(W // 2, int(H * 0.16))))
+
+        # Determine if any dropdown is open (draw those last so they appear on top)
+        open_slot = next((i for i, sf in enumerate(self.sq_fields) if sf["q_open"]), None)
+
+        for i, sf in enumerate(self.sq_fields):
+            q_rect = sf["q_rect"]
+            a_rect = sf["a_rect"]
+            a_active = (self.sq_active_slot == i)
+
+            # Slot label
+            lbl = self.font_label.render(f"Question {i + 1}", True, (55, 72, 95))
+            surface.blit(lbl, (q_rect.x, q_rect.y - int(24 * H / 1080)))
+
+            # Question dropdown button (skip drawing if open, draw after loop)
+            if not sf["q_open"]:
+                self._sq_draw_dropdown(surface, sf, q_rect, W)
+
+            # Answer label + input
+            a_lbl = self.font_label.render("Answer", True, (55, 72, 95))
+            surface.blit(a_lbl, (a_rect.x, a_rect.y - int(22 * H / 1080)))
+            pygame.draw.rect(surface, (255, 255, 255), a_rect, border_radius=10)
+            border_col = (40, 160, 220) if a_active else (195, 210, 228)
+            pygame.draw.rect(surface, border_col, a_rect, 3 if a_active else 2, border_radius=10)
+            if sf["a_value"]:
+                vs = self.font_input.render(sf["a_value"], True, (30, 45, 65))
+                surface.blit(vs, vs.get_rect(midleft=(a_rect.x + int(14 * W / 1920), a_rect.centery)))
+                if a_active:
+                    cur_x = a_rect.x + int(14 * W / 1920) + vs.get_width() + 2
+                    pygame.draw.line(
+                        surface, (40, 160, 220),
+                        (cur_x, a_rect.centery - int(10 * H / 1080)),
+                        (cur_x, a_rect.centery + int(10 * H / 1080)), 2
+                    )
+            else:
+                ph = self.font_input.render("Type your answer here", True, (175, 188, 205))
+                surface.blit(ph, ph.get_rect(midleft=(a_rect.x + int(14 * W / 1920), a_rect.centery)))
+
+        # Error + button drawn BEFORE open dropdown so dropdown renders on top
+        if self.sq_error_msg:
+            es = self.font_error.render(self.sq_error_msg, True, (210, 50, 50))
+            surface.blit(es, es.get_rect(
+                midleft=(self.sq_complete_rect.x,
+                         self.sq_complete_rect.y - int(20 * H / 1080))
+            ))
+
+        bc = (25, 130, 185) if self.sq_complete_hov else (40, 160, 220)
+        pygame.draw.rect(surface, bc, self.sq_complete_rect, border_radius=12)
+        cs = self.font_btn.render("Complete Setup", True, (255, 255, 255))
+        surface.blit(cs, cs.get_rect(center=self.sq_complete_rect.center))
+
+        # Draw open dropdown last so it overlays everything below it
+        if open_slot is not None:
+            sf = self.sq_fields[open_slot]
+            self._sq_draw_dropdown(surface, sf, sf["q_rect"], W)
+            self._sq_draw_options(surface, sf, W)
+
+    def _sq_draw_dropdown(self, surface, sf, q_rect, W):
+        pygame.draw.rect(surface, (255, 255, 255), q_rect, border_radius=10)
+        border_col = (40, 160, 220) if sf["q_open"] else (195, 210, 228)
+        pygame.draw.rect(surface, border_col, q_rect, 3 if sf["q_open"] else 2, border_radius=10)
+        val = sf["q_value"] or "Select a security question…"
+        col = (40, 50, 65) if sf["q_value"] else (170, 183, 200)
+        ts  = self.font_dropdown.render(val, True, col)
+        # Clip text to fit inside the dropdown rect
+        clip_w = q_rect.width - int(40 * W / 1920)
+        if ts.get_width() > clip_w:
+            ts = ts.subsurface(pygame.Rect(0, 0, clip_w, ts.get_height()))
+        surface.blit(ts, ts.get_rect(midleft=(q_rect.x + int(14 * W / 1920), q_rect.centery)))
+        chev = self.font_dropdown.render("▼" if not sf["q_open"] else "▲", True, (90, 110, 140))
+        surface.blit(chev, chev.get_rect(midright=(q_rect.right - int(14 * W / 1920), q_rect.centery)))
+
+    def _sq_draw_options(self, surface, sf, W):
+        q_rect = sf["q_rect"]
+        opt_h  = sf["q_opts"][0].height
+        ph     = len(SECURITY_QUESTIONS) * opt_h + 6
+        pr     = pygame.Rect(q_rect.x, q_rect.bottom - 1, q_rect.width, ph)
+        pygame.draw.rect(surface, (248, 251, 255), pr, border_radius=10)
+        pygame.draw.rect(surface, (40, 160, 220), pr, 2, border_radius=10)
+        for j, opt_r in enumerate(sf["q_opts"]):
+            if j % 2 == 0:
+                shade = pygame.Surface((pr.width - 4, opt_h), pygame.SRCALPHA)
+                shade.fill((40, 160, 220, 18))
+                surface.blit(shade, (pr.x + 2, opt_r.y))
+            ts = self.font_dropdown.render(SECURITY_QUESTIONS[j], True, (40, 50, 65))
+            clip_w = pr.width - int(28 * W / 1920)
+            if ts.get_width() > clip_w:
+                ts = ts.subsurface(pygame.Rect(0, 0, clip_w, ts.get_height()))
+            surface.blit(ts, ts.get_rect(midleft=(opt_r.x + int(14 * W / 1920), opt_r.centery)))
 
     def _draw_back_link(self, surface):
         col  = (80, 105, 140) if self.back_hovered else (160, 175, 195)

@@ -24,6 +24,7 @@ GRID_COLS    = 8
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import Database, MAX_PIN_ATTEMPTS, LOCK_DURATION_HOURS
 from scenes.icon_renderer import draw_icon, get_icon_color
+from scenes.register import SECURITY_QUESTIONS
 
 import builtins
 if not hasattr(builtins, 'normalise_pos'):
@@ -57,6 +58,10 @@ class LoginScene:
         self.font_lock_sub  = pygame.font.Font(_F("Lexend-Light.ttf"),       int(15 * (H / 1080)))
         self.font_forgot    = pygame.font.Font(_F("Lexend-Light.ttf"),       int(15 * (H / 1080)))
         self.font_attempts  = pygame.font.Font(_F("Lexend-Light.ttf"),       int(14 * (H / 1080)))
+        self.font_sq_title  = pygame.font.Font(_F("FjallaOne-Regular.ttf"), int(30 * (H / 1080)))
+        self.font_sq_lbl    = pygame.font.Font(_F("Lexend-Regular.ttf"),    int(16 * (H / 1080)))
+        self.font_sq_inp    = pygame.font.Font(_F("Lexend-Regular.ttf"),    int(17 * (H / 1080)))
+        self.font_sq_btn    = pygame.font.Font(_F("Lexend-SemiBold.ttf"),   int(17 * (H / 1080)))
 
         # --- BACKGROUND ---
         self.background_surface = self._create_gradient(width, height)
@@ -89,16 +94,65 @@ class LoginScene:
         
         # --- FORGOT PIN RESET WORKFLOW STATE MACHINE ---
         self.show_forgot      = False   # flag showing reset workflow is running
-        self.forgot_state     = "new_pin" # "new_pin" or "confirm_pin"
+        self.forgot_state     = "new_pin" # "new_pin" | "confirm_pin" | "security_qs"
         self.forgot_new_pin   = ""
         self.forgot_conf_pin  = ""
         self.forgot_error     = ""
         self.forgot_success_msg = ""
         self.forgot_success_timer = 0.0
 
+        # Security questions sub-step within forgot PIN flow
+        self.forgot_sq_questions  = []          # [q1, q2, q3] loaded when entering the step
+        self.forgot_sq_answers    = ["", "", ""]
+        self.forgot_sq_active     = 0           # which answer field has focus (0-2)
+        self.forgot_sq_error      = ""
+        self._sq_forgot_a_rects   = [pygame.Rect(0, 0, 1, 1)] * 3
+        self._sq_forgot_btn_rect  = pygame.Rect(0, 0, 1, 1)
+        self._sq_forgot_btn_hov   = False
+
         self._limit_modal  = False
         self._limit_ok_rect = pygame.Rect(0, 0, 1, 1)
         self._limit_ok_hov  = False
+
+        # --- SECURITY QUESTIONS SETUP (for accounts that haven't set them yet) ---
+        self.setup_sq        = False
+        self.sq_account      = None
+        self.sq_active_slot  = None   # index 0-2 of the answer field with focus
+        self.sq_error_msg    = ""
+        self.sq_complete_hov = False
+
+        sq_cw   = int(width  * 0.55)
+        sq_cx   = (width - sq_cw) // 2
+        sq_top  = int(height * 0.22)
+        sq_fh   = int(38 * (height / 1080))
+        sq_gap  = int(48 * (height / 1080))    # gap between question dropdown and answer input
+        sq_step = int(200 * (height / 1080))   # spacing between each Q&A block
+
+        self.sq_fields = []
+        for i in range(3):
+            base_y = sq_top + i * sq_step
+            q_rect = pygame.Rect(sq_cx, base_y, sq_cw, sq_fh)
+            a_rect = pygame.Rect(sq_cx, base_y + sq_fh + sq_gap, sq_cw, sq_fh)
+            q_opts = [
+                pygame.Rect(sq_cx, q_rect.bottom + j * sq_fh, sq_cw, sq_fh)
+                for j in range(len(SECURITY_QUESTIONS))
+            ]
+            self.sq_fields.append({
+                "q_value": "",
+                "q_open":  False,
+                "q_rect":  q_rect,
+                "a_value": "",
+                "a_rect":  a_rect,
+                "q_opts":  q_opts,
+            })
+
+        last_a = self.sq_fields[2]["a_rect"]
+        self.sq_complete_rect = pygame.Rect(
+            sq_cx,
+            last_a.bottom + int(50 * (height / 1080)),
+            int(sq_cw * 0.45),
+            int(50 * (height / 1080)),
+        )
 
         self.dim_surface  = pygame.Surface((width, height))
         self.dim_surface.fill((10, 14, 22))
@@ -163,9 +217,11 @@ class LoginScene:
     def _hit_test(self, pos):
         # Forgot PIN interactive workflow tap-outside validation logic
         if self.show_forgot:
-            # If success notice is showing, skip tap checks until it completes natively
             if self.forgot_success_msg:
                 return None
+            # Security questions step: handle answer field + button clicks
+            if self.forgot_state == "security_qs":
+                return self._sq_forgot_click(pos)
             cx, cy = self.WIDTH // 2, int(self.HEIGHT * 0.38)
             if math.hypot(pos[0] - cx, pos[1] - cy) > self.circle_r * 3.5:
                 self._cancel_forgot_workflow()
@@ -221,6 +277,9 @@ class LoginScene:
     def handle_event(self, event):
         if self.launch_triggered:
             return None
+
+        if self.setup_sq:
+            return self._sq_handle_event(event)
 
         # Keyboard (PIN entry routing)
         if event.type == pygame.KEYDOWN:
@@ -279,6 +338,10 @@ class LoginScene:
 
     def _handle_forgot_key(self, event):
         """Processes key signatures running inside the custom reset overlay loop."""
+        if self.forgot_state == "security_qs":
+            self._sq_forgot_key(event)
+            return None
+
         if event.key == pygame.K_BACKSPACE:
             if self.forgot_state == "new_pin":
                 self.forgot_new_pin = self.forgot_new_pin[:-1]
@@ -292,7 +355,6 @@ class LoginScene:
                 self.forgot_new_pin += event.unicode
                 self.forgot_error = ""
                 if len(self.forgot_new_pin) == 4:
-                    # Automatically step forward into verification validation check
                     self.forgot_state = "confirm_pin"
             elif self.forgot_state == "confirm_pin" and len(self.forgot_conf_pin) < 4:
                 self.forgot_conf_pin += event.unicode
@@ -300,6 +362,37 @@ class LoginScene:
                 if len(self.forgot_conf_pin) == 4:
                     self._process_pin_reset_commit()
         return None
+
+    def _sq_forgot_click(self, pos):
+        """Handle mouse/touch clicks during the security-questions step of PIN reset."""
+        for i, a_rect in enumerate(self._sq_forgot_a_rects):
+            if a_rect.collidepoint(pos):
+                play_click()
+                self.forgot_sq_active = i
+                return None
+        if self._sq_forgot_btn_rect.collidepoint(pos):
+            play_click()
+            self._verify_sq_and_commit()
+        return None
+
+    def _sq_forgot_key(self, event):
+        """Handle keyboard input for the security-questions step of PIN reset."""
+        idx = self.forgot_sq_active
+        if event.key == pygame.K_BACKSPACE:
+            self.forgot_sq_answers[idx] = self.forgot_sq_answers[idx][:-1]
+            self.forgot_sq_error = ""
+        elif event.key == pygame.K_TAB:
+            self.forgot_sq_active = (idx + 1) % 3
+        elif event.key == pygame.K_RETURN:
+            if idx < 2:
+                self.forgot_sq_active = idx + 1
+            else:
+                self._verify_sq_and_commit()
+        elif event.key == pygame.K_ESCAPE:
+            self._cancel_forgot_workflow()
+        elif event.unicode:
+            self.forgot_sq_answers[idx] += event.unicode
+            self.forgot_sq_error = ""
 
     # ------------------------------------------------------------------
     # ACCOUNT SELECTION & PIN
@@ -336,6 +429,12 @@ class LoginScene:
 
         if self.db.verify_pin(acc["username"], self.pin_entered):
             self.db.record_successful_login(acc["id"])
+            if not self.db.has_security_questions(acc["id"]):
+                # Prompt existing account to set security questions before dashboard
+                self.pin_entered = ""
+                self.setup_sq    = True
+                self.sq_account  = acc
+                return None
             builtins.pending_account = acc
             self.launch_triggered = True
             return "therapist_dashboard"
@@ -367,13 +466,17 @@ class LoginScene:
     # ------------------------------------------------------------------
 
     def _start_forgot_workflow(self):
-        self.show_forgot        = True
-        self.forgot_state       = "new_pin"
-        self.forgot_new_pin     = ""
-        self.forgot_conf_pin    = ""
-        self.forgot_error       = ""
-        self.forgot_success_msg = ""
+        self.show_forgot          = True
+        self.forgot_state         = "new_pin"
+        self.forgot_new_pin       = ""
+        self.forgot_conf_pin      = ""
+        self.forgot_error         = ""
+        self.forgot_success_msg   = ""
         self.forgot_success_timer = 0.0
+        self.forgot_sq_questions  = []
+        self.forgot_sq_answers    = ["", "", ""]
+        self.forgot_sq_active     = 0
+        self.forgot_sq_error      = ""
 
     def _cancel_forgot_workflow(self):
         self.show_forgot = False
@@ -381,7 +484,7 @@ class LoginScene:
         self.pin_error   = ""
 
     def _process_pin_reset_commit(self):
-        """Validates entry parity and forces synchronization into core DB layers."""
+        """After both PIN entries match, check security questions (if set) before committing."""
         if self.forgot_new_pin != self.forgot_conf_pin:
             self.forgot_error    = "PINs do not match! Restarting verification..."
             self.forgot_state    = "new_pin"
@@ -390,11 +493,24 @@ class LoginScene:
             self.pin_shake       = 14
             return
 
+        # If the account has security questions, require them before the PIN is saved
+        acc     = self.selected
+        sq_data = self.db.get_security_questions(acc["id"])
+        if sq_data:
+            self.forgot_sq_questions = [sq_data["q1"], sq_data["q2"], sq_data["q3"]]
+            self.forgot_sq_answers   = ["", "", ""]
+            self.forgot_sq_active    = 0
+            self.forgot_sq_error     = ""
+            self.forgot_state        = "security_qs"
+            return
+
+        self._do_pin_reset()
+
+    def _do_pin_reset(self):
+        """Commit the new PIN to the database and show the success message."""
         try:
-            # Synchronize configuration change across persistence layer
             username = self.selected["username"]
-            # REPLACE with:
-            acc = self.selected
+            acc      = self.selected
             self.db.update_therapist(
                 acc["id"],
                 acc["full_name"],
@@ -402,35 +518,51 @@ class LoginScene:
                 acc["role"],
                 acc["workplace"],
                 acc["icon_index"],
-                new_pin=self.forgot_new_pin
+                new_pin=self.forgot_new_pin,
             )
-            
-            # Fire verification overlay notice state clear metrics
-            self.forgot_success_msg = "PIN Updated Successfully!"
-            self.forgot_success_timer = 1.5  # hold verification confirmation notice up for 1.5s
-            
-            # Flush existing lock markers cleanly
-            self.db.record_successful_login(self.selected["id"])
+            self.forgot_success_msg   = "PIN Updated Successfully!"
+            self.forgot_success_timer = 1.5
+            self.db.record_successful_login(acc["id"])
             self.lock_attempts = 0
             self.locked_until  = None
-            
-            # Instantly update local runtime dictionary caches
             self.accounts = self.db.get_all_therapists()
-            for idx, item in enumerate(self.accounts):
+            for item in self.accounts:
                 if item["username"] == username:
                     self.selected = item
                     break
-        except Exception as err:
-            self.forgot_error = "Database rejected mutation layer target configuration."
-            self.forgot_state = "new_pin"
+        except Exception:
+            self.forgot_error    = "Could not update PIN. Please try again."
+            self.forgot_state    = "new_pin"
             self.forgot_new_pin  = ""
             self.forgot_conf_pin = ""
+
+    def _verify_sq_and_commit(self):
+        """Verify the three security answers and, if correct, commit the PIN reset."""
+        acc = self.selected
+        ok  = self.db.verify_security_answers(
+            acc["id"],
+            self.forgot_sq_answers[0],
+            self.forgot_sq_answers[1],
+            self.forgot_sq_answers[2],
+        )
+        if ok:
+            self._do_pin_reset()
+        else:
+            self.forgot_sq_error   = "One or more answers are incorrect. Please try again."
+            self.forgot_sq_answers = ["", "", ""]
+            self.forgot_sq_active  = 0
+            self.pin_shake         = 14
 
     # ------------------------------------------------------------------
     # UPDATE
     # ------------------------------------------------------------------
 
     def update(self, mouse_pos, dt):
+        if self.setup_sq:
+            self.sq_complete_hov = self.sq_complete_rect.collidepoint(mouse_pos)
+            if self.alpha < 255:
+                self.alpha = min(255, self.alpha + 4)
+            return
         self._limit_ok_hov  = self._limit_ok_rect.collidepoint(mouse_pos)
         self.back_hovered   = self._back_rect().collidepoint(mouse_pos)
         self.forgot_hovered = self._forgot_rect().collidepoint(mouse_pos)
@@ -492,22 +624,25 @@ class LoginScene:
         self._draw_heading(surface)
         self._draw_circles(surface)
 
-        if self.dim_alpha > 0:
-            self.dim_surface.set_alpha(self.dim_alpha)
-            surface.blit(self.dim_surface, (0, 0))
+        if self.setup_sq:
+            self._draw_sq_overlay(surface)
+        else:
+            if self.dim_alpha > 0:
+                self.dim_surface.set_alpha(self.dim_alpha)
+                surface.blit(self.dim_surface, (0, 0))
 
-        if self.selected is not None and self.dim_alpha > 0:
-            if self.show_forgot:
-                self._draw_forgot_panel(surface)
-            elif self.locked_until is not None:
-                self._draw_lock_screen(surface)
-            else:
-                self._draw_pin_panel(surface)
+            if self.selected is not None and self.dim_alpha > 0:
+                if self.show_forgot:
+                    self._draw_forgot_panel(surface)
+                elif self.locked_until is not None:
+                    self._draw_lock_screen(surface)
+                else:
+                    self._draw_pin_panel(surface)
 
-        self._draw_back_link(surface)
+            self._draw_back_link(surface)
 
-        if self._limit_modal:
-            self._draw_limit_modal(surface)
+            if self._limit_modal:
+                self._draw_limit_modal(surface)
 
         if self.alpha < 255:
             self.fade_surface.set_alpha(255 - self.alpha)
@@ -711,16 +846,20 @@ class LoginScene:
         ns = self.font_name_big.render(acc["full_name"], True, (230, 235, 248))
         panel.blit(ns, ns.get_rect(center=(cx, cy + r + int(22 * self.HEIGHT/1080))))
 
-        # Handle structural UI overlay branch routing depending on success metrics state
         if self.forgot_success_msg:
-            # Render a dedicated Success confirmation splash
             heading = self.font_lock.render(self.forgot_success_msg, True, (100, 240, 140))
             panel.blit(heading, heading.get_rect(center=(cx, cy + r + int(70 * self.HEIGHT/1080))))
-            
             sub_lbl = self.font_lock_sub.render("Returning to account verification...", True, (160, 180, 200))
             panel.blit(sub_lbl, sub_lbl.get_rect(center=(cx, cy + r + int(115 * self.HEIGHT/1080))))
+
+        elif self.forgot_state == "security_qs":
+            panel.set_alpha(int(255 * alpha_factor))
+            surface.blit(panel, (0, 0))
+            # Draw SQ step directly on surface so rects stay in screen coords
+            self._draw_sq_forgot_step(surface, cx, cy, r)
+            return
+
         else:
-            # Active entry workflow input step configuration labels
             if self.forgot_state == "new_pin":
                 heading_txt = "Reset Password: Enter New 4-Digit PIN"
                 current_len = len(self.forgot_new_pin)
@@ -730,25 +869,294 @@ class LoginScene:
 
             heading = self.font_lock.render(heading_txt, True, (200, 220, 255))
             panel.blit(heading, heading.get_rect(center=(cx, cy + r + int(62 * self.HEIGHT/1080))))
-
-            # Draw the input box track visualization geometry layout
             self._draw_pin_boxes(panel, cx, cy + r + int(94 * self.HEIGHT/1080), current_len)
 
-            # Draw running workflow feedback tracking loops
             label_y = cy + r + int(168 * self.HEIGHT/1080)
             if self.forgot_error:
                 es = self.font_error.render(self.forgot_error, True, (255, 120, 120))
                 panel.blit(es, es.get_rect(center=(cx, label_y)))
             else:
-                hint_lbl = "Use number keys to assign value" if self.forgot_state == "new_pin" else "Please match the original values explicitly"
+                hint_lbl = ("Use number keys to assign value" if self.forgot_state == "new_pin"
+                            else "Please match the original values explicitly")
                 ts = self.font_lock_sub.render(hint_lbl, True, (140, 155, 185))
                 panel.blit(ts, ts.get_rect(center=(cx, label_y)))
-
             hint = self.font_lock_sub.render("Tap outside or press ESC to abort reset.", True, (120, 138, 165))
             panel.blit(hint, hint.get_rect(center=(cx, label_y + int(36 * self.HEIGHT/1080))))
 
         panel.set_alpha(int(255 * alpha_factor))
         surface.blit(panel, (0, 0))
+
+    def _draw_sq_forgot_step(self, surface, cx, cy, r):
+        """Draw the security-questions verification step of the forgot-PIN flow."""
+        W, H = self.WIDTH, self.HEIGHT
+        inp_w  = int(W * 0.52)
+        inp_x  = cx - inp_w // 2
+        inp_h  = int(36 * H / 1080)
+        gap    = int(12 * H / 1080)
+        q_gap  = int(44 * H / 1080)   # space between end of one A-field and start of next Q-label
+        start_y = cy + r + int(70 * H / 1080)
+
+        heading = self.font_sq_title.render("Verify Your Identity", True, (200, 220, 255))
+        surface.blit(heading, heading.get_rect(center=(cx, start_y)))
+
+        sub = self.font_lock_sub.render(
+            "Answer your security questions to confirm the PIN reset.",
+            True, (150, 168, 200)
+        )
+        surface.blit(sub, sub.get_rect(center=(cx, start_y + int(32 * H / 1080))))
+
+        cur_y = start_y + int(70 * H / 1080)
+        new_a_rects = []
+        for i, question in enumerate(self.forgot_sq_questions):
+            # Question text (truncated if too long)
+            q_surf = self.font_sq_lbl.render(question, True, (180, 198, 225))
+            clip_w = inp_w
+            if q_surf.get_width() > clip_w:
+                q_surf = q_surf.subsurface(pygame.Rect(0, 0, clip_w, q_surf.get_height()))
+            surface.blit(q_surf, (inp_x, cur_y))
+            cur_y += q_surf.get_height() + gap
+
+            # Answer input field
+            a_rect = pygame.Rect(inp_x, cur_y, inp_w, inp_h)
+            new_a_rects.append(a_rect)
+            a_act  = (self.forgot_sq_active == i)
+            pygame.draw.rect(surface, (240, 244, 252), a_rect, border_radius=8)
+            bc = (80, 160, 230) if a_act else (100, 120, 160)
+            pygame.draw.rect(surface, bc, a_rect, 2 if a_act else 1, border_radius=8)
+
+            ans = self.forgot_sq_answers[i]
+            if ans:
+                vs = self.font_sq_inp.render(ans, True, (30, 45, 70))
+                surface.blit(vs, vs.get_rect(midleft=(a_rect.x + int(10 * W / 1920), a_rect.centery)))
+                if a_act:
+                    cxr = a_rect.x + int(10 * W / 1920) + vs.get_width() + 2
+                    pygame.draw.line(surface, (80, 160, 230),
+                                     (cxr, a_rect.centery - int(9 * H / 1080)),
+                                     (cxr, a_rect.centery + int(9 * H / 1080)), 2)
+            else:
+                ph = self.font_sq_inp.render("Your answer…", True, (150, 165, 200))
+                surface.blit(ph, ph.get_rect(midleft=(a_rect.x + int(10 * W / 1920), a_rect.centery)))
+
+            cur_y += inp_h + q_gap
+
+        self._sq_forgot_a_rects = new_a_rects
+
+        # Error
+        if self.forgot_sq_error:
+            es = self.font_error.render(self.forgot_sq_error, True, (255, 110, 110))
+            surface.blit(es, es.get_rect(center=(cx, cur_y)))
+            cur_y += int(26 * H / 1080)
+        else:
+            cur_y += int(10 * H / 1080)
+
+        # Confirm Reset button
+        bw = int(inp_w * 0.46)
+        bh = int(46 * H / 1080)
+        btn_r = pygame.Rect(cx - bw // 2, cur_y, bw, bh)
+        self._sq_forgot_btn_rect = btn_r
+        self._sq_forgot_btn_hov  = btn_r.collidepoint(pygame.mouse.get_pos())
+        bc = (28, 115, 175) if self._sq_forgot_btn_hov else (40, 150, 220)
+        pygame.draw.rect(surface, bc, btn_r, border_radius=12)
+        cs = self.font_sq_btn.render("Confirm Reset", True, (255, 255, 255))
+        surface.blit(cs, cs.get_rect(center=btn_r.center))
+
+        esc_hint = self.font_lock_sub.render("Press ESC to cancel.", True, (120, 138, 165))
+        surface.blit(esc_hint, esc_hint.get_rect(center=(cx, btn_r.bottom + int(20 * H / 1080))))
+
+    # ------------------------------------------------------------------
+    # SECURITY QUESTIONS SETUP OVERLAY
+    # ------------------------------------------------------------------
+
+    def _sq_handle_event(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            pos = builtins.normalise_pos(event.pos)
+            return self._sq_handle_click(pos)
+        if event.type == pygame.FINGERDOWN:
+            pos = (int(event.x * self.WIDTH), int(event.y * self.HEIGHT))
+            return self._sq_handle_click(pos)
+        if event.type == pygame.KEYDOWN:
+            self._sq_handle_key(event)
+        return None
+
+    def _sq_handle_click(self, pos):
+        # Close any open dropdown if click lands outside it
+        for i, sf in enumerate(self.sq_fields):
+            if sf["q_open"]:
+                for j, opt_r in enumerate(sf["q_opts"]):
+                    if opt_r.collidepoint(pos):
+                        play_click()
+                        sf["q_value"] = SECURITY_QUESTIONS[j]
+                        sf["q_open"]  = False
+                        self.sq_error_msg = ""
+                        return None
+                sf["q_open"] = False
+                return None
+
+        for i, sf in enumerate(self.sq_fields):
+            if sf["q_rect"].collidepoint(pos):
+                play_click()
+                for other in self.sq_fields:
+                    other["q_open"] = False
+                sf["q_open"] = True
+                self.sq_active_slot = None
+                return None
+            if sf["a_rect"].collidepoint(pos):
+                play_click()
+                self.sq_active_slot = i
+                return None
+
+        if self.sq_complete_rect.collidepoint(pos):
+            play_click()
+            return self._sq_submit()
+
+        self.sq_active_slot = None
+        return None
+
+    def _sq_handle_key(self, event):
+        if self.sq_active_slot is None:
+            return
+        sf = self.sq_fields[self.sq_active_slot]
+        if event.key == pygame.K_BACKSPACE:
+            sf["a_value"]    = sf["a_value"][:-1]
+            self.sq_error_msg = ""
+        elif event.key == pygame.K_TAB:
+            self.sq_active_slot = (self.sq_active_slot + 1) % 3
+        elif event.key == pygame.K_RETURN:
+            self.sq_active_slot = None
+        elif event.unicode:
+            sf["a_value"]    += event.unicode
+            self.sq_error_msg = ""
+
+    def _sq_submit(self):
+        chosen = [sf["q_value"] for sf in self.sq_fields]
+        answers = [sf["a_value"].strip() for sf in self.sq_fields]
+
+        for i in range(3):
+            if not chosen[i]:
+                self.sq_error_msg = f"Please select Question {i + 1}."
+                return None
+            if not answers[i]:
+                self.sq_error_msg = f"Please enter an answer for Question {i + 1}."
+                return None
+
+        if len(set(chosen)) < 3:
+            self.sq_error_msg = "Each security question must be different."
+            return None
+
+        if self.sq_account:
+            self.db.set_security_questions(
+                self.sq_account["id"],
+                chosen[0], answers[0],
+                chosen[1], answers[1],
+                chosen[2], answers[2],
+            )
+
+        builtins.pending_account = self.sq_account
+        self.launch_triggered = True
+        return "therapist_dashboard"
+
+    def _draw_sq_overlay(self, surface):
+        W, H = self.WIDTH, self.HEIGHT
+
+        # Dim the background
+        ov = pygame.Surface((W, H), pygame.SRCALPHA)
+        ov.fill((10, 14, 22, 200))
+        surface.blit(ov, (0, 0))
+
+        # Title
+        ts = self.font_sq_title.render("Set Up Security Questions", True, (230, 238, 255))
+        surface.blit(ts, ts.get_rect(center=(W // 2, int(H * 0.10))))
+
+        sub = self.font_lock_sub.render(
+            "Choose 3 different security questions and provide answers.",
+            True, (160, 175, 200)
+        )
+        surface.blit(sub, sub.get_rect(center=(W // 2, int(H * 0.15))))
+
+        # Determine open dropdown (drawn last so it overlaps)
+        open_slot = next((i for i, sf in enumerate(self.sq_fields) if sf["q_open"]), None)
+
+        for i, sf in enumerate(self.sq_fields):
+            q_rect  = sf["q_rect"]
+            a_rect  = sf["a_rect"]
+            a_act   = (self.sq_active_slot == i)
+
+            # Slot label
+            lbl = self.font_sq_lbl.render(f"Question {i + 1}", True, (190, 205, 230))
+            surface.blit(lbl, (q_rect.x, q_rect.y - int(22 * H / 1080)))
+
+            # Dropdown button (skip if this slot is open — drawn after loop)
+            if not sf["q_open"]:
+                self._sq_draw_q_btn(surface, sf, q_rect, W)
+
+            # Answer label + input
+            a_lbl = self.font_sq_lbl.render("Answer", True, (190, 205, 230))
+            surface.blit(a_lbl, (a_rect.x, a_rect.y - int(20 * H / 1080)))
+            pygame.draw.rect(surface, (240, 244, 252), a_rect, border_radius=8)
+            bc = (80, 160, 230) if a_act else (100, 120, 160)
+            pygame.draw.rect(surface, bc, a_rect, 2 if a_act else 1, border_radius=8)
+            if sf["a_value"]:
+                vs = self.font_sq_inp.render(sf["a_value"], True, (30, 45, 70))
+                surface.blit(vs, vs.get_rect(midleft=(a_rect.x + int(12 * W / 1920), a_rect.centery)))
+                if a_act:
+                    cx2 = a_rect.x + int(12 * W / 1920) + vs.get_width() + 2
+                    pygame.draw.line(surface, (80, 160, 230),
+                                     (cx2, a_rect.centery - int(9 * H / 1080)),
+                                     (cx2, a_rect.centery + int(9 * H / 1080)), 2)
+            else:
+                ph = self.font_sq_inp.render("Type your answer", True, (150, 165, 195))
+                surface.blit(ph, ph.get_rect(midleft=(a_rect.x + int(12 * W / 1920), a_rect.centery)))
+
+        # Error + button drawn BEFORE open dropdown so dropdown renders on top
+        if self.sq_error_msg:
+            es = self.font_error.render(self.sq_error_msg, True, (255, 100, 100))
+            surface.blit(es, es.get_rect(
+                midleft=(self.sq_complete_rect.x,
+                         self.sq_complete_rect.y - int(20 * H / 1080))
+            ))
+
+        bc = (28, 115, 175) if self.sq_complete_hov else (40, 150, 220)
+        pygame.draw.rect(surface, bc, self.sq_complete_rect, border_radius=12)
+        cs = self.font_sq_btn.render("Save & Continue", True, (255, 255, 255))
+        surface.blit(cs, cs.get_rect(center=self.sq_complete_rect.center))
+
+        # Draw open dropdown last so it overlays everything below it
+        if open_slot is not None:
+            sf = self.sq_fields[open_slot]
+            self._sq_draw_q_btn(surface, sf, sf["q_rect"], W)
+            self._sq_draw_q_opts(surface, sf, W)
+
+    def _sq_draw_q_btn(self, surface, sf, q_rect, W):
+        pygame.draw.rect(surface, (240, 244, 252), q_rect, border_radius=8)
+        bc = (80, 160, 230) if sf["q_open"] else (100, 120, 160)
+        pygame.draw.rect(surface, bc, q_rect, 2 if sf["q_open"] else 1, border_radius=8)
+        val = sf["q_value"] or "Select a security question…"
+        col = (30, 45, 70) if sf["q_value"] else (140, 158, 190)
+        ts  = self.font_sq_inp.render(val, True, col)
+        clip_w = q_rect.width - int(38 * W / 1920)
+        if ts.get_width() > clip_w:
+            ts = ts.subsurface(pygame.Rect(0, 0, clip_w, ts.get_height()))
+        surface.blit(ts, ts.get_rect(midleft=(q_rect.x + int(12 * W / 1920), q_rect.centery)))
+        chev = self.font_sq_inp.render("▼" if not sf["q_open"] else "▲", True, (100, 120, 160))
+        surface.blit(chev, chev.get_rect(midright=(q_rect.right - int(12 * W / 1920), q_rect.centery)))
+
+    def _sq_draw_q_opts(self, surface, sf, W):
+        q_rect = sf["q_rect"]
+        opt_h  = sf["q_opts"][0].height
+        ph     = len(SECURITY_QUESTIONS) * opt_h + 6
+        pr     = pygame.Rect(q_rect.x, q_rect.bottom - 1, q_rect.width, ph)
+        pygame.draw.rect(surface, (240, 246, 255), pr, border_radius=8)
+        pygame.draw.rect(surface, (80, 160, 230), pr, 2, border_radius=8)
+        for j, opt_r in enumerate(sf["q_opts"]):
+            if j % 2 == 0:
+                sh = pygame.Surface((pr.width - 4, opt_h), pygame.SRCALPHA)
+                sh.fill((80, 160, 230, 20))
+                surface.blit(sh, (pr.x + 2, opt_r.y))
+            ts = self.font_sq_inp.render(SECURITY_QUESTIONS[j], True, (30, 45, 70))
+            clip_w = pr.width - int(24 * W / 1920)
+            if ts.get_width() > clip_w:
+                ts = ts.subsurface(pygame.Rect(0, 0, clip_w, ts.get_height()))
+            surface.blit(ts, ts.get_rect(midleft=(opt_r.x + int(12 * W / 1920), opt_r.centery)))
 
     def _draw_limit_modal(self, surface):
         W, H = self.WIDTH, self.HEIGHT

@@ -120,6 +120,20 @@ class Database:
             )
         """)
 
+        # Security questions per therapist account
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS security_questions (
+                therapist_id  INTEGER PRIMARY KEY,
+                q1            TEXT NOT NULL,
+                a1_hash       TEXT NOT NULL,
+                q2            TEXT NOT NULL,
+                a2_hash       TEXT NOT NULL,
+                q3            TEXT NOT NULL,
+                a3_hash       TEXT NOT NULL,
+                FOREIGN KEY (therapist_id) REFERENCES therapists(id) ON DELETE CASCADE
+            )
+        """)
+
         # Add game_name column if it doesn't exist yet (migration for existing DBs)
         try:
             self.conn.execute(
@@ -412,9 +426,13 @@ class Database:
                    notes_stiffness, notes_pain, notes_therapist
         Returns the auto-generated patient_id_str (e.g. RCVR-0001).
         """
-        # Auto-generate sequential patient ID
-        c = self.conn.execute("SELECT COUNT(*) as cnt FROM patients")
-        n = c.fetchone()["cnt"] + 1
+        # Auto-generate sequential patient ID based on the highest existing number
+        # (uses MAX instead of COUNT so deletions never cause ID collisions)
+        c = self.conn.execute(
+            "SELECT MAX(CAST(SUBSTR(patient_id_str, 6) AS INTEGER)) AS max_n FROM patients"
+        )
+        r = c.fetchone()
+        n = (r["max_n"] or 0) + 1
         pid_str = f"RCVR-{n:04d}"
         try:
             self.conn.execute("""
@@ -442,6 +460,7 @@ class Database:
             self.conn.commit()
             return pid_str
         except sqlite3.IntegrityError:
+            self.conn.rollback()
             return None
 
     # ── PATIENT SHARING ───────────────────────────────────────────────
@@ -529,6 +548,54 @@ class Database:
         self.conn.execute("DELETE FROM patient_shares WHERE patient_id=?", (patient_id,))
         self.conn.execute("DELETE FROM patients WHERE id=?", (patient_id,))
         self.conn.commit()
+
+    # ── SECURITY QUESTIONS ────────────────────────────────────────────
+
+    def set_security_questions(self, therapist_id, q1, a1, q2, a2, q3, a3):
+        """Save (or replace) the 3 security Q&A pairs for a therapist. Answers are hashed."""
+        self.conn.execute("""
+            INSERT OR REPLACE INTO security_questions
+              (therapist_id, q1, a1_hash, q2, a2_hash, q3, a3_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            therapist_id,
+            q1, self._hash(a1.strip().lower()),
+            q2, self._hash(a2.strip().lower()),
+            q3, self._hash(a3.strip().lower()),
+        ))
+        self.conn.commit()
+
+    def get_security_questions(self, therapist_id):
+        """Return {q1, q2, q3} for the therapist, or None if not set."""
+        c = self.conn.execute(
+            "SELECT q1, q2, q3 FROM security_questions WHERE therapist_id=?",
+            (therapist_id,)
+        )
+        r = c.fetchone()
+        return dict(r) if r else None
+
+    def has_security_questions(self, therapist_id):
+        """True if security questions have been set for this therapist."""
+        c = self.conn.execute(
+            "SELECT 1 FROM security_questions WHERE therapist_id=?",
+            (therapist_id,)
+        )
+        return c.fetchone() is not None
+
+    def verify_security_answers(self, therapist_id, a1, a2, a3):
+        """Return True only if all three answers match the stored hashes."""
+        c = self.conn.execute(
+            "SELECT a1_hash, a2_hash, a3_hash FROM security_questions WHERE therapist_id=?",
+            (therapist_id,)
+        )
+        r = c.fetchone()
+        if not r:
+            return False
+        return (
+            r["a1_hash"] == self._hash(a1.strip().lower()) and
+            r["a2_hash"] == self._hash(a2.strip().lower()) and
+            r["a3_hash"] == self._hash(a3.strip().lower())
+        )
 
     # ── UTIL ──────────────────────────────────────────────────────────
 

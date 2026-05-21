@@ -47,6 +47,11 @@ WIDTH, HEIGHT = screen_info.current_w, screen_info.current_h
 screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.NOFRAME)
 pygame.display.set_caption("RecovR")
 
+# --- CLOSE BUTTON (always on top of every scene) ---
+_close_font  = pygame.font.SysFont("segoeuisymbol", int(26 * HEIGHT / 1080))
+_close_rect  = pygame.Rect(WIDTH - 56, 0, 56, 46)
+_close_hover = False
+
 # --- COORDINATE NORMALISER ---
 # Compares the actual surface pixel size to the logical (WIDTH, HEIGHT).
 # If DPI scaling still caused a mismatch, this corrects every event.pos.
@@ -108,6 +113,8 @@ def crossfade(screen, outgoing_scene, incoming_scene, clock, steps=25):
     new_frame.set_alpha(255)
 
 # --- STARTING SCENE ---
+_current_scene_name = "therapist_welcome"
+_game_scene_names   = {"basketball", "steady_aim", "piano_tiles"}
 current_scene = TherapistWelcomeScene(screen, WIDTH, HEIGHT)
 
 # --- MAIN LOOP ---
@@ -123,14 +130,28 @@ while True:
         if event.type == pygame.QUIT:
             pygame.quit(); sys.exit()
 
+        # Close button — only active when not in a game or calibration
+        _btn_active = (
+            _current_scene_name not in _game_scene_names and
+            getattr(current_scene, "_cal_win", None) is None
+        )
+        if _btn_active:
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if _close_rect.collidepoint(normalise_pos(event.pos)):
+                    pygame.quit(); sys.exit()
+            if event.type == pygame.FINGERDOWN:
+                _fp = (int(event.x * WIDTH), int(event.y * HEIGHT))
+                if _close_rect.collidepoint(_fp):
+                    pygame.quit(); sys.exit()
+
         next_scene_name = current_scene.handle_event(event)
 
         if next_scene_name and next_scene_name in SCENES:
             incoming_scene = SCENES[next_scene_name](screen, WIDTH, HEIGHT)
-            _game_scenes = {"basketball", "steady_aim", "piano_tiles"}
-            _fade_steps  = 70 if next_scene_name in _game_scenes else 25
+            _fade_steps  = 70 if next_scene_name in _game_scene_names else 25
             crossfade(screen, current_scene, incoming_scene, clock, steps=_fade_steps)
-            current_scene = incoming_scene
+            current_scene      = incoming_scene
+            _current_scene_name = next_scene_name
 
     current_scene.update(mouse_pos, dt)
 
@@ -140,7 +161,19 @@ while True:
         current_scene._pending_scene = None
         incoming_scene = SCENES[pending](screen, WIDTH, HEIGHT)
         crossfade(screen, current_scene, incoming_scene, clock)
-        current_scene = incoming_scene
+        current_scene       = incoming_scene
+        _current_scene_name = pending
 
     current_scene.draw(screen)
+
+    # Draw always-on-top close button — hidden during games and calibration
+    _in_game        = _current_scene_name in _game_scene_names
+    _in_calibration = getattr(current_scene, "_cal_win", None) is not None
+    if not _in_game and not _in_calibration:
+        _close_hover = _close_rect.collidepoint(mouse_pos)
+        _bg = (190, 35, 35) if _close_hover else (110, 25, 25)
+        pygame.draw.rect(screen, _bg, _close_rect)
+        _xs = _close_font.render("✕", True, (255, 255, 255))
+        screen.blit(_xs, _xs.get_rect(center=_close_rect.center))
+
     pygame.display.flip() 

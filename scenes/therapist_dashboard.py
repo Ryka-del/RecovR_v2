@@ -777,6 +777,7 @@ class TherapistDashboardScene:
             if self._rp_ok_rect.collidepoint(pos):
                 play_click()
                 self.modal = None
+                self._open_panel(0)
             return None
 
         if self.modal == "logout_confirm":
@@ -936,11 +937,13 @@ class TherapistDashboardScene:
         if idx == 0:
             self._pt_search_active = False
             self._pt_search_text   = ""
-            # Only load patients belonging to or shared with this therapist
-            self.patients = (
-                self.db.get_all_patients(therapist_id=self.account["id"])
-                if hasattr(self.db, 'get_all_patients') else []
-            )
+            try:
+                self.patients = (
+                    self.db.get_all_patients(therapist_id=self.account["id"])
+                    if hasattr(self.db, 'get_all_patients') else []
+                )
+            except Exception:
+                self.patients = []
 
     def _sync_dur_to_cal(self):
         """Push Session Details duration → newly opened CalibrationWindow Advanced Settings."""
@@ -1521,13 +1524,20 @@ class TherapistDashboardScene:
         if not rp["affected_hand"]:       rp["error"]="Affected Hand required.";    return
         if not rp["severity"]:            rp["error"]="Severity required.";         return
         name = rp["full_name"].strip()
-        pid  = self.db.create_patient(rp, self.account["id"]) if hasattr(self.db, 'create_patient') else None
-        self.patients = (
-            self.db.get_all_patients(therapist_id=self.account["id"])
-            if hasattr(self.db, 'get_all_patients') else []
-        )
+        try:
+            pid = self.db.create_patient(rp, self.account["id"]) if hasattr(self.db, 'create_patient') else None
+            if pid is None:
+                rp["error"] = "Registration failed. Please try again."
+                return
+            self.patients = (
+                self.db.get_all_patients(therapist_id=self.account["id"])
+                if hasattr(self.db, 'get_all_patients') else []
+            )
+        except Exception:
+            rp["error"] = "An error occurred. Please try again."
+            return
         self._init_register_state()
-        self._rp_success_msg = f"Patient '{name}' registered successfully." + (f"\nID: {pid}" if pid else "")
+        self._rp_success_msg = f"Patient '{name}' registered successfully.\nID: {pid}"
         self.modal = "register_success"
 
     def _rp_keydown(self, event):
