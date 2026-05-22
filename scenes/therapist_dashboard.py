@@ -42,6 +42,7 @@ from database import Database
 from scenes.icon_renderer import draw_icon, ICONS
 from scenes.calibration_window import CalibrationWindow
 from audio import play_confirm_alert, play_start_session, play_click
+from sensors.input_handler import input_handler
 
 # ─────────────────────────────────────────────────────────────────────
 #  NAV / PANEL CONSTANTS
@@ -2592,6 +2593,23 @@ class TherapistDashboardScene:
         surface.blit(self.fnt["small"].render(
             f"Configuring session for:  {pt_nm}  ·  {sev}",
             True,(50,100,160)),(ban_r.x+int(12*W/1920),ban_r.y+int(15*H/1080)))
+
+        # ── BLE controller status badge (right side of banner) ────────
+        if input_handler.connected:
+            dot_col  = (40, 190, 90)
+            ble_text = "Controller Connected"
+            txt_col  = (30, 140, 65)
+        else:
+            dot_col  = (200, 90, 40)
+            ble_text = "Controller Not Connected"
+            txt_col  = (170, 80, 35)
+        ble_s    = self.fnt["small"].render(ble_text, True, txt_col)
+        dot_r    = int(7 * H / 1080)
+        dot_x    = ban_r.right - ble_s.get_width() - dot_r * 2 - int(24 * W / 1920)
+        dot_y    = ban_r.centery
+        pygame.draw.circle(surface, dot_col, (dot_x, dot_y), dot_r)
+        surface.blit(ble_s, (dot_x + dot_r + int(8 * W / 1920),
+                              dot_y - ble_s.get_height() // 2))
 
         # ── Game tiles — word-wrap helper ─────────────────────────────
         def _tile_name(surf, font, text, color, max_w, x, y, lh):

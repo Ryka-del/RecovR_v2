@@ -1,50 +1,49 @@
 # =============================================================================
 # sensors/ble_receiver.py
 # =============================================================================
-# Async BLE client that runs in a background daemon thread so it never
-# blocks pygame's main loop.
+# Auto-connecting BLE client for the RecovR wireless controller.
 #
-# The ESP32 C3 controller advertises as "RecovR-Controller" and sends
-# 9-byte little-endian packets via BLE GATT notifications:
+# Runs in a background daemon thread so it never blocks pygame.
+# Continuously scans for "RecovR-Controller". As soon as the ESP32 powers on
+# and starts advertising, this receiver connects automatically within ~5 s.
+# If the controller disconnects (powered off / out of range), it keeps scanning
+# and reconnects automatically when the device is available again.
 #
-#   Offset  Type    Field       Description
-#   0-1     uint16  grip_raw    FSR402 ADC  0-4095
-#   2-3     uint16  flex_raw    Flex sensor 0-4095
-#   4       uint8   buttons     bit 0 = push button (C10)
-#   5-6     int16   accel_x     MPU6050 accel X  (16384 LSB/g at ±2 g)
-#   7-8     int16   accel_y     MPU6050 accel Y
+# BLE Packet (9 bytes, little-endian):
+#   [0-1] uint16  grip_raw    FSR402 ADC  0-4095
+#   [2-3] uint16  flex_raw    Flex sensor 0-4095
+#   [4]   uint8   buttons     bit0 = push button
+#   [5-6] int16   accel_x     MPU6050 accel X  (16384 LSB/g)
+#   [7-8] int16   accel_y     MPU6050 accel Y
 #
 # Usage:
 #   from sensors.ble_receiver import ble_receiver
-#   if ble_receiver.connected:
-#       data = ble_receiver.get_latest()
-#       # data keys: grip_raw, flex_raw, buttons, accel_x, accel_y
+#   ble_receiver.connected      -> bool
+#   ble_receiver.get_latest()   -> dict of raw sensor values
 # =============================================================================
 
 import asyncio
 import struct
 import threading
-import logging
+import time
 
-logger = logging.getLogger(__name__)
+DEVICE_NAME   = "RecovR-Controller"
+SERVICE_UUID  = "12345678-1234-1234-1234-123456789abc"
+CHAR_UUID     = "12345678-1234-1234-1234-123456789abd"
 
-SERVICE_UUID = "12345678-1234-1234-1234-123456789abc"
-CHAR_UUID    = "12345678-1234-1234-1234-123456789abd"
-DEVICE_NAME  = "RecovR-Controller"
-
-PACKET_FORMAT = "<HHBhh"                         # little-endian
+PACKET_FORMAT = "<HHBhh"
 PACKET_SIZE   = struct.calcsize(PACKET_FORMAT)   # 9 bytes
 
-_RECONNECT_DELAY = 2.0   # seconds between reconnect attempts
-_SCAN_TIMEOUT    = 8.0   # seconds to scan before retrying
+_SCAN_TIMEOUT    = 5.0    # seconds per scan attempt
+_RECONNECT_DELAY = 1.0    # seconds to wait after a clean disconnect
+_ERROR_DELAY     = 3.0    # seconds to wait after an unexpected error
 
 
 class BLEReceiver:
-    """Thread-safe BLE receiver for the RecovR controller."""
 
     def __init__(self):
-        self._lock    = threading.Lock()
-        self._latest  = {
+        self._lock      = threading.Lock()
+        self._latest    = {
             "grip_raw": 0,
             "flex_raw": 0,
             "buttons":  0,
@@ -53,73 +52,89 @@ class BLEReceiver:
         }
         self._connected = False
 
-        # Daemon thread — dies automatically when the main process exits
-        self._thread = threading.Thread(target=self._run, name="BLEReceiver", daemon=True)
-        self._thread.start()
+        # Daemon thread — exits automatically when the main process quits
+        t = threading.Thread(target=self._thread_main, name="BLEReceiver", daemon=True)
+        t.start()
 
-    # ── Public interface ──────────────────────────────────────────────────────
+    # ── Public API ────────────────────────────────────────────────────────────
 
     @property
     def connected(self) -> bool:
         return self._connected
 
     def get_latest(self) -> dict:
-        """Return a copy of the most recently received sensor packet."""
         with self._lock:
             return dict(self._latest)
 
-    # ── Background thread entry ───────────────────────────────────────────────
+    # ── Thread entry — restarts the event loop if it ever crashes ─────────────
 
-    def _run(self):
-        """Entry point for the background thread; runs the asyncio event loop."""
-        try:
-            asyncio.run(self._ble_loop())
-        except Exception as exc:
-            logger.warning("BLE receiver thread exited: %s", exc)
+    def _thread_main(self):
+        while True:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(self._ble_loop())
+            except Exception as exc:
+                print(f"[BLE] Event loop crashed: {exc}. Restarting in {_ERROR_DELAY}s...")
+            finally:
+                try:
+                    loop.close()
+                except Exception:
+                    pass
+            self._connected = False
+            time.sleep(_ERROR_DELAY)
 
-    # ── Async BLE loop ────────────────────────────────────────────────────────
+    # ── Main async loop — scan → connect → notify → repeat ───────────────────
 
     async def _ble_loop(self):
-        """Continuously scan → connect → subscribe → reconnect on disconnect."""
         try:
             from bleak import BleakClient, BleakScanner
         except ImportError:
-            logger.warning(
-                "bleak not installed — BLE controller unavailable. "
-                "Run: pip install bleak"
-            )
-            return
+            print("[BLE] 'bleak' is not installed.")
+            print("[BLE] Run:  pip install bleak")
+            print("[BLE] BLE controller will be unavailable until bleak is installed.")
+            return   # thread_main will restart this after _ERROR_DELAY
+
+        print(f"[BLE] Auto-scan started. Waiting for '{DEVICE_NAME}' to power on...")
 
         while True:
+            # ── Scan ─────────────────────────────────────────────────────────
+            device = None
             try:
-                logger.info("Scanning for '%s' ...", DEVICE_NAME)
                 device = await BleakScanner.find_device_by_name(
                     DEVICE_NAME, timeout=_SCAN_TIMEOUT
                 )
-                if device is None:
-                    logger.debug("'%s' not found, retrying in %.1f s", DEVICE_NAME, _RECONNECT_DELAY)
-                    await asyncio.sleep(_RECONNECT_DELAY)
-                    continue
+            except Exception as exc:
+                print(f"[BLE] Scan error: {exc}. Retrying...")
+                await asyncio.sleep(_ERROR_DELAY)
+                continue
 
-                logger.info("Found '%s' (%s), connecting ...", DEVICE_NAME, device.address)
+            if device is None:
+                # Not found this round — loop back and scan again immediately
+                continue
+
+            # ── Connect ───────────────────────────────────────────────────────
+            print(f"[BLE] Found '{DEVICE_NAME}' ({device.address}). Connecting...")
+            try:
                 async with BleakClient(device, timeout=10.0) as client:
                     self._connected = True
-                    logger.info("Connected to %s", device.address)
+                    print("[BLE] Controller connected! Sensor data is live.")
 
                     await client.start_notify(CHAR_UUID, self._on_notification)
 
-                    # Stay alive until disconnected
+                    # Hold the connection open until the device disconnects
                     while client.is_connected:
-                        await asyncio.sleep(0.05)
+                        await asyncio.sleep(0.1)
 
+                # Clean disconnect (powered off / out of range)
                 self._connected = False
-                logger.info("Disconnected from controller, reconnecting ...")
+                print(f"[BLE] Controller disconnected. Scanning again...")
                 await asyncio.sleep(_RECONNECT_DELAY)
 
             except Exception as exc:
                 self._connected = False
-                logger.warning("BLE error: %s — retrying in %.1f s", exc, _RECONNECT_DELAY)
-                await asyncio.sleep(_RECONNECT_DELAY)
+                print(f"[BLE] Connection error: {exc}. Retrying in {_ERROR_DELAY}s...")
+                await asyncio.sleep(_ERROR_DELAY)
 
     # ── Notification handler ──────────────────────────────────────────────────
 
@@ -139,5 +154,5 @@ class BLEReceiver:
             }
 
 
-# Module-level singleton — imported by input_handler.py
+# Singleton — created once when this module is first imported
 ble_receiver = BLEReceiver()
