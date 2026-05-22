@@ -153,11 +153,27 @@ class BLEReceiver:
             print(f"[BLE] Found '{device.name}' ({device.address}). Connecting...")
             try:
                 async with BleakClient(device, timeout=10.0) as client:
-                    self._connected = True
-                    print("[BLE] Controller connected!  Sensor data is live.")
-                    await client.start_notify(CHAR_UUID, self._on_notification)
-                    while client.is_connected:
-                        await asyncio.sleep(0.1)
+                    print("[BLE] Connected. Reading characteristics...")
+                    for svc in client.services:
+                        for ch in svc.characteristics:
+                            match = " <-- TARGET" if ch.uuid == CHAR_UUID else ""
+                            print(f"[BLE]   {ch.uuid}{match}")
+
+                    if not any(
+                        ch.uuid == CHAR_UUID
+                        for svc in client.services
+                        for ch in svc.characteristics
+                    ):
+                        print(f"[BLE] WARNING: CHAR_UUID {CHAR_UUID} not found.")
+                        print("[BLE] The ESP32 is running old firmware — please flash firmware/controller_esp32c3.ino")
+                        # Keep connected flag False; retry after delay
+                        await asyncio.sleep(5.0)
+                    else:
+                        self._connected = True
+                        print("[BLE] Controller connected!  Sensor data is live.")
+                        await client.start_notify(CHAR_UUID, self._on_notification)
+                        while client.is_connected:
+                            await asyncio.sleep(0.1)
 
                 self._connected = False
                 print("[BLE] Controller disconnected. Scanning again...")
