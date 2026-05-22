@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 
-DEVICE_NAME   = "ESP32_FSR"
+DEVICE_NAME   = "FSR402"
 SERVICE_UUID  = "12345678-1234-1234-1234-123456789abc"
 CHAR_UUID     = "12345678-1234-1234-1234-123456789abd"
 
@@ -117,38 +117,43 @@ class BLEReceiver:
             except Exception as exc:
                 print(f"[BLE]   Scan failed: {exc}")
 
-        print(f"[BLE] Scanning for '{DEVICE_NAME}'...")
-
         while True:
-            # ── Scan ─────────────────────────────────────────────────────────
-            device = None
+            # ── Continuous scan — fires the moment the ESP32 is seen ──────────
+            found_device = None
+            found_event  = asyncio.Event()
+
+            def _on_detect(device, _adv):
+                nonlocal found_device
+                if found_device:
+                    return
+                name = device.name or ""
+                if name == DEVICE_NAME or name.lower() == DEVICE_NAME.lower():
+                    found_device = device
+                    found_event.set()
+
+            print(f"[BLE] Scanning for '{DEVICE_NAME}' (waiting until found)...")
             try:
-                devs = await BleakScanner.discover(timeout=_SCAN_TIMEOUT)
-                device = next(
-                    (d for d in devs if d.name == DEVICE_NAME), None
-                )
-                if device is None:
-                    device = next(
-                        (d for d in devs
-                         if d.name and d.name.lower() == DEVICE_NAME.lower()),
-                        None
-                    )
+                async with BleakScanner(detection_callback=_on_detect):
+                    # Wait up to 60 s; if not seen, restart the scanner
+                    try:
+                        await asyncio.wait_for(found_event.wait(), timeout=60.0)
+                    except asyncio.TimeoutError:
+                        print("[BLE] Still looking...")
+                        continue
             except Exception as exc:
                 self._connected = False
-                print(f"[BLE] Scan error: {exc}")
+                print(f"[BLE] Scanner error: {exc}")
                 self._print_permission_hint(exc)
                 await asyncio.sleep(_ERROR_DELAY)
                 continue
 
-            if device is None:
-                # Not found — short pause so we don't hammer the adapter
-                await asyncio.sleep(1.0)
+            if not found_device:
                 continue
 
             # ── Connect ───────────────────────────────────────────────────────
-            print(f"[BLE] Found '{device.name}' ({device.address}). Connecting...")
+            print(f"[BLE] Found '{found_device.name}' ({found_device.address}). Connecting...")
             try:
-                async with BleakClient(device, timeout=10.0) as client:
+                async with BleakClient(found_device, timeout=10.0) as client:
                     self._connected = True
                     print("[BLE] Controller connected!  Sensor data is live.")
                     await client.start_notify(CHAR_UUID, self._on_notification)
@@ -156,14 +161,13 @@ class BLEReceiver:
                         await asyncio.sleep(0.1)
 
                 self._connected = False
-                print("[BLE] Controller disconnected.  Resetting adapter and scanning again...")
+                print("[BLE] Controller disconnected. Scanning again...")
 
             except Exception as exc:
                 self._connected = False
                 print(f"[BLE] Connection error: {exc}. Retrying...")
 
-            # Reset adapter after every disconnect / failed connect so
-            # BlueZ doesn't cache the old connection state
+            # Reset adapter so BlueZ doesn't cache the old connection state
             self._reset_adapter()
             await asyncio.sleep(_RECONNECT_DELAY)
 
