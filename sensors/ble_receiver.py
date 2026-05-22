@@ -14,7 +14,7 @@ import struct
 import threading
 import time
 
-DEVICE_NAME   = "RecovR-Controller"
+DEVICE_NAME   = "ESP32_FSR"
 SERVICE_UUID  = "12345678-1234-1234-1234-123456789abc"
 CHAR_UUID     = "12345678-1234-1234-1234-123456789abd"
 
