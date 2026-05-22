@@ -457,7 +457,13 @@ class CalibrationWindow:
                              int(780 * W / 1920),  int(370 * H / 1080))
         self._draw_sensitivity_panel(surface, sens_r, C)
 
-        kh_s = self.fnt["small"].render(self.cfg["key_hint"], True, C["sub"])
+        if input_handler.connected:
+            kh_text = "BLE Controller Connected — use the physical sensor"
+            kh_col  = C["green"]
+        else:
+            kh_text = self.cfg["key_hint"]
+            kh_col  = C["sub"]
+        kh_s = self.fnt["small"].render(kh_text, True, kh_col)
         surface.blit(kh_s, kh_s.get_rect(center=(cx, area.y + int(570 * H / 1080))))
 
         begin_r = pygame.Rect(cx - int(170 * W / 1920), area.y + int(620 * H / 1080),
@@ -568,14 +574,37 @@ class CalibrationWindow:
         by = area.y + int(452 * H / 1080)
         bw = W - int(360 * W / 1920)
         bh = int(38 * H / 1080)
-        self._draw_bar(surface, bx, by, bw, bh, self.live_value, C)
+        # Show live percentage to the right of the bar
+        self._draw_bar(surface, bx, by, bw, bh, self.live_value, C,
+                       label=f"{self.live_value * 100:.0f}%")
+
+        # Live value + peak on same row, centered below bar
+        live_s = self.fnt["bold"].render(
+            f"Live: {self.live_value * 100:.1f}%", True, C["accent"])
+        peak_s = self.fnt["bold"].render(
+            f"Peak: {self.peak_value * 100:.1f}%", True, C["green"])
+        gap = int(80 * W / 1920)
+        total_w = live_s.get_width() + gap + peak_s.get_width()
+        lx = cx - total_w // 2
+        row_y = area.y + int(503 * H / 1080)
+        surface.blit(live_s, (lx, row_y))
+        surface.blit(peak_s, (lx + live_s.get_width() + gap, row_y))
 
         remaining = max(0.0, RECORD_DURATION - self.record_t)
         tim_s = self.fnt["body"].render(
             f"Recording…  {remaining:.1f} s remaining", True, C["sub"])
-        surface.blit(tim_s, tim_s.get_rect(center=(cx, area.y + int(520 * H / 1080))))
+        surface.blit(tim_s, tim_s.get_rect(center=(cx, area.y + int(538 * H / 1080))))
 
-        self._draw_trial_dots(surface, cx, area.y + int(580 * H / 1080), C,
+        # BLE / keyboard mode indicator
+        if input_handler.connected:
+            mode_s = self.fnt["small"].render(
+                "BLE Controller Active", True, C["green"])
+        else:
+            mode_s = self.fnt["small"].render(
+                "Keyboard Mode — controller not connected", True, C["sub"])
+        surface.blit(mode_s, mode_s.get_rect(center=(cx, area.y + int(566 * H / 1080))))
+
+        self._draw_trial_dots(surface, cx, area.y + int(602 * H / 1080), C,
                               current=self.current_trial)
 
     # ── phase: trial_done ─────────────────────────────────────────────────────
