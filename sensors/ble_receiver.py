@@ -16,7 +16,10 @@ import sys
 import threading
 import time
 
-DEVICE_NAME   = "FSR402"
+DEVICE_NAME   = "RecovR-Controller"   # primary name set in firmware
+# Any BLE device whose name contains one of these strings (case-insensitive)
+# will also be accepted — covers typos, spaces vs hyphens, etc.
+_NAME_KEYWORDS = ["recovr", "fsr402", "esp32_fsr"]
 SERVICE_UUID  = "12345678-1234-1234-1234-123456789abc"
 CHAR_UUID     = "12345678-1234-1234-1234-123456789abd"
 
@@ -109,7 +112,7 @@ class BLEReceiver:
                 if devs:
                     for d in devs:
                         tag = "  <-- YOUR CONTROLLER" if (
-                            d.name and d.name.lower() == DEVICE_NAME.lower()
+                            d.name and any(kw in d.name.lower() for kw in _NAME_KEYWORDS)
                         ) else ""
                         print(f"[BLE]   {str(d.name):<32s}  {d.address}{tag}")
                 else:
@@ -128,15 +131,17 @@ class BLEReceiver:
                 named = [(d.name or "(no name)", d.address) for d in devs]
                 print(f"[BLE]   Devices found: {named if named else '(none)'}")
 
+                def _is_controller(name):
+                    if not name:
+                        return False
+                    n = name.lower()
+                    return any(kw in n for kw in _NAME_KEYWORDS)
+
                 device = next(
                     (d for d in devs if d.name == DEVICE_NAME), None
+                ) or next(
+                    (d for d in devs if _is_controller(d.name)), None
                 )
-                if device is None:
-                    device = next(
-                        (d for d in devs
-                         if d.name and d.name.lower() == DEVICE_NAME.lower()),
-                        None
-                    )
 
             except Exception as exc:
                 self._connected = False

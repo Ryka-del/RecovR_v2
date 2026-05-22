@@ -125,7 +125,7 @@ void setup() {
     Serial.println("[MPU6050] OK");
 
     // BLE
-    BLEDevice::init("FSR402");
+    BLEDevice::init("RecovR-Controller");
     pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
 
@@ -142,7 +142,7 @@ void setup() {
     pAdvertising->setScanResponse(false);
     BLEDevice::startAdvertising();
 
-    Serial.println("[BLE] Advertising as 'FSR402'");
+    Serial.println("[BLE] Advertising as 'RecovR-Controller'");
 }
 
 // -- loop() -------------------------------------------------------------------

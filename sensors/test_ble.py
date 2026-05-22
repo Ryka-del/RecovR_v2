@@ -20,7 +20,7 @@ import asyncio
 import struct
 import sys
 
-DEVICE_NAME   = "FSR402"
+DEVICE_NAME   = "RecovR-Controller"
 CHAR_UUID     = "12345678-1234-1234-1234-123456789abd"
 PACKET_FORMAT = "<HHBhh"
 PACKET_SIZE   = struct.calcsize(PACKET_FORMAT)
