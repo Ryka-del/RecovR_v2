@@ -4,13 +4,15 @@
 # Auto-connecting BLE client for the RecovR wireless controller.
 # Runs in a background daemon thread — never blocks pygame.
 #
-# On startup it prints ALL visible BLE devices so you can verify the ESP32
-# is advertising. Once found, it connects automatically and reconnects
-# whenever the controller is powered back on.
+# Fixes stale-connection problem on Raspberry Pi / BlueZ:
+#   - Resets the HCI adapter on startup and after every disconnect so that
+#     closing and reopening the app always works cleanly.
 # =============================================================================
 
 import asyncio
 import struct
+import subprocess
+import sys
 import threading
 import time
 
@@ -22,7 +24,7 @@ PACKET_FORMAT = "<HHBhh"
 PACKET_SIZE   = struct.calcsize(PACKET_FORMAT)   # 9 bytes
 
 _SCAN_TIMEOUT    = 5.0
-_RECONNECT_DELAY = 1.0
+_RECONNECT_DELAY = 2.0
 _ERROR_DELAY     = 3.0
 
 
@@ -35,7 +37,7 @@ class BLEReceiver:
             "buttons":  0, "accel_x":  0, "accel_y": 0,
         }
         self._connected = False
-        self._first_run = True   # flag for the initial device-list scan
+        self._first_run = True
 
         t = threading.Thread(target=self._thread_main, name="BLEReceiver", daemon=True)
         t.start()
@@ -50,102 +52,120 @@ class BLEReceiver:
         with self._lock:
             return dict(self._latest)
 
-    # ── Thread — restarts the event loop if it ever crashes ──────────────────
+    # ── Thread — resets adapter then runs the async loop ─────────────────────
 
     def _thread_main(self):
         while True:
+            # Reset the Bluetooth adapter before every loop iteration.
+            # This clears stale connections left over from a previous session.
+            self._reset_adapter()
+
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
                 loop.run_until_complete(self._ble_loop())
             except Exception as exc:
                 self._connected = False
-                print(f"[BLE] Loop crashed ({type(exc).__name__}: {exc}). Restarting in {_ERROR_DELAY}s...")
+                print(f"[BLE] Loop error ({type(exc).__name__}: {exc}). Restarting...")
             finally:
                 try:
                     loop.close()
                 except Exception:
                     pass
+
             self._connected = False
             time.sleep(_ERROR_DELAY)
+
+    # ── Adapter reset (Linux / Raspberry Pi only) ─────────────────────────────
+
+    @staticmethod
+    def _reset_adapter():
+        if sys.platform != "linux":
+            return
+        try:
+            subprocess.run(
+                ["hciconfig", "hci0", "reset"],
+                capture_output=True, timeout=5
+            )
+            time.sleep(1.0)   # let the adapter come back up
+        except Exception:
+            pass   # hciconfig not available — skip silently
 
     # ── Main async BLE loop ───────────────────────────────────────────────────
 
     async def _ble_loop(self):
-        # -- import bleak --
         try:
             from bleak import BleakClient, BleakScanner
         except ImportError:
-            print("[BLE] ERROR: bleak is not installed.")
-            print("[BLE]        Run:  pip install bleak")
+            print("[BLE] ERROR: bleak not installed.  Run:  pip install bleak")
             return
 
-        # -- first-run: list every visible BLE device -------------------------
+        # First-run: list every visible device so user can verify ESP32 is on
         if self._first_run:
             self._first_run = False
-            print("[BLE] Starting initial scan — listing all visible BLE devices...")
+            print("[BLE] Scanning — visible BLE devices:")
             try:
-                all_devs = await BleakScanner.discover(timeout=4.0)
-                if all_devs:
-                    for d in all_devs:
+                devs = await BleakScanner.discover(timeout=4.0)
+                if devs:
+                    for d in devs:
                         tag = "  <-- YOUR CONTROLLER" if (
                             d.name and d.name.lower() == DEVICE_NAME.lower()
                         ) else ""
                         print(f"[BLE]   {str(d.name):<32s}  {d.address}{tag}")
                 else:
-                    print("[BLE]   (no devices found — is Bluetooth enabled?)")
+                    print("[BLE]   (none found — is Bluetooth on?)")
             except Exception as exc:
                 print(f"[BLE]   Scan failed: {exc}")
-                self._print_permission_hint(exc)
 
-        # -- main scan/connect loop -------------------------------------------
-        print(f"[BLE] Scanning for '{DEVICE_NAME}' — will connect automatically when found...")
+        print(f"[BLE] Scanning for '{DEVICE_NAME}'...")
 
         while True:
+            # ── Scan ─────────────────────────────────────────────────────────
             device = None
             try:
-                # Use discover() — more reliable than find_device_by_name() on RPi/BlueZ
-                all_devs = await BleakScanner.discover(timeout=_SCAN_TIMEOUT)
-                # Exact match first, then case-insensitive fallback
+                devs = await BleakScanner.discover(timeout=_SCAN_TIMEOUT)
                 device = next(
-                    (d for d in all_devs if d.name == DEVICE_NAME), None
+                    (d for d in devs if d.name == DEVICE_NAME), None
                 )
                 if device is None:
                     device = next(
-                        (d for d in all_devs
+                        (d for d in devs
                          if d.name and d.name.lower() == DEVICE_NAME.lower()),
                         None
                     )
-
             except Exception as exc:
                 self._connected = False
-                print(f"[BLE] Scan error: {type(exc).__name__}: {exc}")
+                print(f"[BLE] Scan error: {exc}")
                 self._print_permission_hint(exc)
                 await asyncio.sleep(_ERROR_DELAY)
                 continue
 
             if device is None:
-                print(f"[BLE] '{DEVICE_NAME}' not found, scanning again...")
+                # Not found — short pause so we don't hammer the adapter
+                await asyncio.sleep(1.0)
                 continue
 
-            # -- connect --
+            # ── Connect ───────────────────────────────────────────────────────
             print(f"[BLE] Found '{device.name}' ({device.address}). Connecting...")
             try:
                 async with BleakClient(device, timeout=10.0) as client:
                     self._connected = True
-                    print("[BLE] Controller connected!  Sensor data is now live.")
+                    print("[BLE] Controller connected!  Sensor data is live.")
                     await client.start_notify(CHAR_UUID, self._on_notification)
                     while client.is_connected:
                         await asyncio.sleep(0.1)
 
                 self._connected = False
-                print("[BLE] Controller disconnected.  Scanning again...")
-                await asyncio.sleep(_RECONNECT_DELAY)
+                print("[BLE] Controller disconnected.  Resetting adapter and scanning again...")
 
             except Exception as exc:
                 self._connected = False
-                print(f"[BLE] Connection failed: {type(exc).__name__}: {exc}")
-                await asyncio.sleep(_ERROR_DELAY)
+                print(f"[BLE] Connection error: {exc}. Retrying...")
+
+            # Reset adapter after every disconnect / failed connect so
+            # BlueZ doesn't cache the old connection state
+            self._reset_adapter()
+            await asyncio.sleep(_RECONNECT_DELAY)
 
     # ── Notification handler ──────────────────────────────────────────────────
 
@@ -162,20 +182,14 @@ class BLEReceiver:
                 "accel_y":  vals[4],
             }
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
-
     @staticmethod
     def _print_permission_hint(exc):
         msg = str(exc).lower()
-        if "permission" in msg or "operation not permitted" in msg or "access" in msg:
-            print("[BLE] --> Permission error. Fix with ONE of these commands:")
-            print("[BLE]     sudo setcap cap_net_raw,cap_net_admin+eip $(readlink -f $(which python3))")
-            print("[BLE]     OR run the app with:  sudo python3 main.py")
-        elif "adapter" in msg or "not found" in msg or "no such" in msg:
-            print("[BLE] --> Bluetooth adapter not found. Run:")
-            print("[BLE]     sudo systemctl start bluetooth")
-            print("[BLE]     sudo hciconfig hci0 up")
+        if "permission" in msg or "not permitted" in msg:
+            print("[BLE] --> Fix: sudo setcap cap_net_raw,cap_net_admin+eip $(readlink -f $(which python3))")
+        elif "adapter" in msg or "not found" in msg:
+            print("[BLE] --> Fix: sudo systemctl start bluetooth && sudo hciconfig hci0 up")
 
 
-# Singleton — starts the background thread immediately on import
+# Singleton — starts background thread on import
 ble_receiver = BLEReceiver()
