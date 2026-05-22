@@ -2,24 +2,11 @@
 # sensors/ble_receiver.py
 # =============================================================================
 # Auto-connecting BLE client for the RecovR wireless controller.
+# Runs in a background daemon thread — never blocks pygame.
 #
-# Runs in a background daemon thread so it never blocks pygame.
-# Continuously scans for "RecovR-Controller". As soon as the ESP32 powers on
-# and starts advertising, this receiver connects automatically within ~5 s.
-# If the controller disconnects (powered off / out of range), it keeps scanning
-# and reconnects automatically when the device is available again.
-#
-# BLE Packet (9 bytes, little-endian):
-#   [0-1] uint16  grip_raw    FSR402 ADC  0-4095
-#   [2-3] uint16  flex_raw    Flex sensor 0-4095
-#   [4]   uint8   buttons     bit0 = push button
-#   [5-6] int16   accel_x     MPU6050 accel X  (16384 LSB/g)
-#   [7-8] int16   accel_y     MPU6050 accel Y
-#
-# Usage:
-#   from sensors.ble_receiver import ble_receiver
-#   ble_receiver.connected      -> bool
-#   ble_receiver.get_latest()   -> dict of raw sensor values
+# On startup it prints ALL visible BLE devices so you can verify the ESP32
+# is advertising. Once found, it connects automatically and reconnects
+# whenever the controller is powered back on.
 # =============================================================================
 
 import asyncio
@@ -34,9 +21,9 @@ CHAR_UUID     = "12345678-1234-1234-1234-123456789abd"
 PACKET_FORMAT = "<HHBhh"
 PACKET_SIZE   = struct.calcsize(PACKET_FORMAT)   # 9 bytes
 
-_SCAN_TIMEOUT    = 5.0    # seconds per scan attempt
-_RECONNECT_DELAY = 1.0    # seconds to wait after a clean disconnect
-_ERROR_DELAY     = 3.0    # seconds to wait after an unexpected error
+_SCAN_TIMEOUT    = 5.0
+_RECONNECT_DELAY = 1.0
+_ERROR_DELAY     = 3.0
 
 
 class BLEReceiver:
@@ -44,15 +31,12 @@ class BLEReceiver:
     def __init__(self):
         self._lock      = threading.Lock()
         self._latest    = {
-            "grip_raw": 0,
-            "flex_raw": 0,
-            "buttons":  0,
-            "accel_x":  0,
-            "accel_y":  0,
+            "grip_raw": 0, "flex_raw": 0,
+            "buttons":  0, "accel_x":  0, "accel_y": 0,
         }
         self._connected = False
+        self._first_run = True   # flag for the initial device-list scan
 
-        # Daemon thread — exits automatically when the main process quits
         t = threading.Thread(target=self._thread_main, name="BLEReceiver", daemon=True)
         t.start()
 
@@ -66,7 +50,7 @@ class BLEReceiver:
         with self._lock:
             return dict(self._latest)
 
-    # ── Thread entry — restarts the event loop if it ever crashes ─────────────
+    # ── Thread — restarts the event loop if it ever crashes ──────────────────
 
     def _thread_main(self):
         while True:
@@ -75,7 +59,8 @@ class BLEReceiver:
             try:
                 loop.run_until_complete(self._ble_loop())
             except Exception as exc:
-                print(f"[BLE] Event loop crashed: {exc}. Restarting in {_ERROR_DELAY}s...")
+                self._connected = False
+                print(f"[BLE] Loop crashed ({type(exc).__name__}: {exc}). Restarting in {_ERROR_DELAY}s...")
             finally:
                 try:
                     loop.close()
@@ -84,56 +69,83 @@ class BLEReceiver:
             self._connected = False
             time.sleep(_ERROR_DELAY)
 
-    # ── Main async loop — scan → connect → notify → repeat ───────────────────
+    # ── Main async BLE loop ───────────────────────────────────────────────────
 
     async def _ble_loop(self):
+        # -- import bleak --
         try:
             from bleak import BleakClient, BleakScanner
         except ImportError:
-            print("[BLE] 'bleak' is not installed.")
-            print("[BLE] Run:  pip install bleak")
-            print("[BLE] BLE controller will be unavailable until bleak is installed.")
-            return   # thread_main will restart this after _ERROR_DELAY
+            print("[BLE] ERROR: bleak is not installed.")
+            print("[BLE]        Run:  pip install bleak")
+            return
 
-        print(f"[BLE] Auto-scan started. Waiting for '{DEVICE_NAME}' to power on...")
+        # -- first-run: list every visible BLE device -------------------------
+        if self._first_run:
+            self._first_run = False
+            print("[BLE] Starting initial scan — listing all visible BLE devices...")
+            try:
+                all_devs = await BleakScanner.discover(timeout=4.0)
+                if all_devs:
+                    for d in all_devs:
+                        tag = "  <-- YOUR CONTROLLER" if (
+                            d.name and d.name.lower() == DEVICE_NAME.lower()
+                        ) else ""
+                        print(f"[BLE]   {str(d.name):<32s}  {d.address}{tag}")
+                else:
+                    print("[BLE]   (no devices found — is Bluetooth enabled?)")
+            except Exception as exc:
+                print(f"[BLE]   Scan failed: {exc}")
+                self._print_permission_hint(exc)
+
+        # -- main scan/connect loop -------------------------------------------
+        print(f"[BLE] Scanning for '{DEVICE_NAME}' — will connect automatically when found...")
 
         while True:
-            # ── Scan ─────────────────────────────────────────────────────────
             device = None
             try:
+                # Primary: exact name match
                 device = await BleakScanner.find_device_by_name(
                     DEVICE_NAME, timeout=_SCAN_TIMEOUT
                 )
+
+                # Fallback: case-insensitive name search
+                if device is None:
+                    all_devs = await BleakScanner.discover(timeout=3.0)
+                    device = next(
+                        (d for d in all_devs
+                         if d.name and d.name.lower() == DEVICE_NAME.lower()),
+                        None
+                    )
+
             except Exception as exc:
-                print(f"[BLE] Scan error: {exc}. Retrying...")
+                self._connected = False
+                print(f"[BLE] Scan error: {type(exc).__name__}: {exc}")
+                self._print_permission_hint(exc)
                 await asyncio.sleep(_ERROR_DELAY)
                 continue
 
             if device is None:
-                # Not found this round — loop back and scan again immediately
+                # Not found yet — loop immediately, no delay
                 continue
 
-            # ── Connect ───────────────────────────────────────────────────────
-            print(f"[BLE] Found '{DEVICE_NAME}' ({device.address}). Connecting...")
+            # -- connect --
+            print(f"[BLE] Found '{device.name}' ({device.address}). Connecting...")
             try:
                 async with BleakClient(device, timeout=10.0) as client:
                     self._connected = True
-                    print("[BLE] Controller connected! Sensor data is live.")
-
+                    print("[BLE] Controller connected!  Sensor data is now live.")
                     await client.start_notify(CHAR_UUID, self._on_notification)
-
-                    # Hold the connection open until the device disconnects
                     while client.is_connected:
                         await asyncio.sleep(0.1)
 
-                # Clean disconnect (powered off / out of range)
                 self._connected = False
-                print(f"[BLE] Controller disconnected. Scanning again...")
+                print("[BLE] Controller disconnected.  Scanning again...")
                 await asyncio.sleep(_RECONNECT_DELAY)
 
             except Exception as exc:
                 self._connected = False
-                print(f"[BLE] Connection error: {exc}. Retrying in {_ERROR_DELAY}s...")
+                print(f"[BLE] Connection failed: {type(exc).__name__}: {exc}")
                 await asyncio.sleep(_ERROR_DELAY)
 
     # ── Notification handler ──────────────────────────────────────────────────
@@ -141,18 +153,30 @@ class BLEReceiver:
     def _on_notification(self, sender, data: bytearray):
         if len(data) < PACKET_SIZE:
             return
-        grip_raw, flex_raw, buttons, accel_x, accel_y = struct.unpack_from(
-            PACKET_FORMAT, data
-        )
+        vals = struct.unpack_from(PACKET_FORMAT, data)
         with self._lock:
             self._latest = {
-                "grip_raw": grip_raw,
-                "flex_raw": flex_raw,
-                "buttons":  buttons,
-                "accel_x":  accel_x,
-                "accel_y":  accel_y,
+                "grip_raw": vals[0],
+                "flex_raw": vals[1],
+                "buttons":  vals[2],
+                "accel_x":  vals[3],
+                "accel_y":  vals[4],
             }
 
+    # ── Helpers ───────────────────────────────────────────────────────────────
 
-# Singleton — created once when this module is first imported
+    @staticmethod
+    def _print_permission_hint(exc):
+        msg = str(exc).lower()
+        if "permission" in msg or "operation not permitted" in msg or "access" in msg:
+            print("[BLE] --> Permission error. Fix with ONE of these commands:")
+            print("[BLE]     sudo setcap cap_net_raw,cap_net_admin+eip $(readlink -f $(which python3))")
+            print("[BLE]     OR run the app with:  sudo python3 main.py")
+        elif "adapter" in msg or "not found" in msg or "no such" in msg:
+            print("[BLE] --> Bluetooth adapter not found. Run:")
+            print("[BLE]     sudo systemctl start bluetooth")
+            print("[BLE]     sudo hciconfig hci0 up")
+
+
+# Singleton — starts the background thread immediately on import
 ble_receiver = BLEReceiver()
