@@ -104,14 +104,13 @@ class BLEReceiver:
         while True:
             device = None
             try:
-                # Primary: exact name match
-                device = await BleakScanner.find_device_by_name(
-                    DEVICE_NAME, timeout=_SCAN_TIMEOUT
+                # Use discover() — more reliable than find_device_by_name() on RPi/BlueZ
+                all_devs = await BleakScanner.discover(timeout=_SCAN_TIMEOUT)
+                # Exact match first, then case-insensitive fallback
+                device = next(
+                    (d for d in all_devs if d.name == DEVICE_NAME), None
                 )
-
-                # Fallback: case-insensitive name search
                 if device is None:
-                    all_devs = await BleakScanner.discover(timeout=3.0)
                     device = next(
                         (d for d in all_devs
                          if d.name and d.name.lower() == DEVICE_NAME.lower()),
@@ -126,7 +125,7 @@ class BLEReceiver:
                 continue
 
             if device is None:
-                # Not found yet — loop immediately, no delay
+                print(f"[BLE] '{DEVICE_NAME}' not found, scanning again...")
                 continue
 
             # -- connect --
