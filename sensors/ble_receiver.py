@@ -117,43 +117,42 @@ class BLEReceiver:
             except Exception as exc:
                 print(f"[BLE]   Scan failed: {exc}")
 
+        scan_count = 0
         while True:
-            # ── Continuous scan — fires the moment the ESP32 is seen ──────────
-            found_device = None
-            found_event  = asyncio.Event()
-
-            def _on_detect(device, _adv):
-                nonlocal found_device
-                if found_device:
-                    return
-                name = device.name or ""
-                if name == DEVICE_NAME or name.lower() == DEVICE_NAME.lower():
-                    found_device = device
-                    found_event.set()
-
-            print(f"[BLE] Scanning for '{DEVICE_NAME}' (waiting until found)...")
+            # ── Scan — compatible with all bleak versions ─────────────────────
+            scan_count += 1
+            print(f"[BLE] Scan #{scan_count} — looking for '{DEVICE_NAME}'...")
+            device = None
             try:
-                async with BleakScanner(detection_callback=_on_detect):
-                    # Wait up to 60 s; if not seen, restart the scanner
-                    try:
-                        await asyncio.wait_for(found_event.wait(), timeout=60.0)
-                    except asyncio.TimeoutError:
-                        print("[BLE] Still looking...")
-                        continue
+                devs = await BleakScanner.discover(timeout=8.0)
+                named = [(d.name or "(no name)", d.address) for d in devs]
+                print(f"[BLE]   Devices found: {named if named else '(none)'}")
+
+                device = next(
+                    (d for d in devs if d.name == DEVICE_NAME), None
+                )
+                if device is None:
+                    device = next(
+                        (d for d in devs
+                         if d.name and d.name.lower() == DEVICE_NAME.lower()),
+                        None
+                    )
+
             except Exception as exc:
                 self._connected = False
-                print(f"[BLE] Scanner error: {exc}")
+                print(f"[BLE] Scan error: {exc}")
                 self._print_permission_hint(exc)
                 await asyncio.sleep(_ERROR_DELAY)
                 continue
 
-            if not found_device:
+            if device is None:
+                # Not found this round — retry immediately
                 continue
 
             # ── Connect ───────────────────────────────────────────────────────
-            print(f"[BLE] Found '{found_device.name}' ({found_device.address}). Connecting...")
+            print(f"[BLE] Found '{device.name}' ({device.address}). Connecting...")
             try:
-                async with BleakClient(found_device, timeout=10.0) as client:
+                async with BleakClient(device, timeout=10.0) as client:
                     self._connected = True
                     print("[BLE] Controller connected!  Sensor data is live.")
                     await client.start_notify(CHAR_UUID, self._on_notification)
@@ -165,9 +164,9 @@ class BLEReceiver:
 
             except Exception as exc:
                 self._connected = False
-                print(f"[BLE] Connection error: {exc}. Retrying...")
+                print(f"[BLE] Connection error: {type(exc).__name__}: {exc}")
 
-            # Reset adapter so BlueZ doesn't cache the old connection state
+            # Reset adapter so BlueZ doesn't cache the old connection
             self._reset_adapter()
             await asyncio.sleep(_RECONNECT_DELAY)
 
