@@ -1,12 +1,11 @@
 """
-Catch the Falling Object — Grip Strength / Wrist game (1920x1080)
+Catch the Falling Object — Dual Skill (Grip + Wrist) game (1920x1080)
 
-Mechanic (original):
+Mechanic:
   - Objects fall from the top
-  - tilt_x (← →) moves the catcher left/right
-  - SQUEEZE (grip >= threshold) to catch an object when it's over the catcher
-  - RELEASE grip to score the caught object
-  - Catching an invalid target (Medium/Hard) counts as an error
+  - Tilt wrist (← →) to move the catcher left/right
+  - Grip (squeeze >= threshold) while an object is over the catcher to catch it
+  - The red object marked with an X must NOT be caught — let it fall
 """
 
 import pygame
@@ -15,10 +14,9 @@ import math
 from screens.base import BaseScreen
 from games.fatigue import FatigueMixin
 from sensors.input_handler import input_handler
-from audio import play_success, play_error, start_music, stop_music
+from audio import play_success, start_music, stop_music, play_completion, play_click
 from constants import get_theme, GAME_W, GAME_H
 
-GOALS        = {"Easy": 8,   "Medium": 10, "Hard": 12}
 THRESHOLDS   = {"Easy": 0.30, "Medium": 0.45, "Hard": 0.60}
 FALL_SPEEDS  = {"Easy": 100, "Medium": 180, "Hard": 280}
 SPAWN_RATES  = {"Easy": 2.8, "Medium": 2.0, "Hard": 1.2}
@@ -40,10 +38,9 @@ class FallingObj:
         self.color  = random.choice(OBJ_COLORS)
         self.r      = 30
         self.pulse  = 0.0
-        self.caught = False
         self.scored = False
         self.missed = False
-        # Medium/Hard: some objects are invalid (red)
+        # Medium/Hard: some objects are invalid (red, marked X) — must not be caught
         if difficulty == "Easy":
             self.valid = True
         else:
@@ -53,9 +50,8 @@ class FallingObj:
 
     def update(self, dt):
         self.pulse += dt * 3
-        if not self.caught:
-            self.y += self.speed * dt
-        if self.y > GAME_H + 60 and not self.caught:
+        self.y += self.speed * dt
+        if self.y > GAME_H + 60:
             self.missed = True
 
     def draw(self, surface):
@@ -66,7 +62,6 @@ class FallingObj:
         pygame.draw.circle(surface, self.color, (cx, cy), pr, 3)
         pygame.draw.circle(surface, self.color, (cx, cy), self.r)
         if not self.valid:
-            # X mark on invalid objects
             pygame.draw.line(surface, (255,255,255), (cx-12,cy-12),(cx+12,cy+12), 3)
             pygame.draw.line(surface, (255,255,255), (cx+12,cy-12),(cx-12,cy+12), 3)
 
@@ -75,6 +70,7 @@ class CatchObjectGame(FatigueMixin, BaseScreen):
     def on_enter(self, data):
         self.account_id = data.get("account_id")
         self.account    = data.get("account")
+        self._patient   = data.get("patient")
         self.exercise   = "wrist"
         self.difficulty = data.get("difficulty", "Easy")
         self.cal        = data.get("calibration", {})
@@ -82,32 +78,40 @@ class CatchObjectGame(FatigueMixin, BaseScreen):
         self.threshold  = THRESHOLDS[self.difficulty]
         self.fall_speed = FALL_SPEEDS[self.difficulty]
         self.spawn_rate = SPAWN_RATES[self.difficulty]
-        self.goal       = GOALS[self.difficulty]
-        self.duration   = DURATION[self.difficulty]
         self.move_speed = MOVE_SPEED[self.difficulty]
 
-        self._init_fatigue()
-        start_music()
-        self._reset()
-        self.paused     = False
-        self.pause_sel  = 0
+        dur = data.get("duration_sec")
+        self.duration = int(dur) if dur else DURATION[self.difficulty]
+
         self.vol_active = False
         try:
             from db.database import get_volume
             self.pause_vol = get_volume()
         except Exception:
             self.pause_vol = 0.4
+
+        self._pause_btn_rect     = pygame.Rect(GAME_W - 90, 13, 70, 46)
+        self._results_again_rect = pygame.Rect(0, 0, 1, 1)
+        self._results_exit_rect  = pygame.Rect(0, 0, 1, 1)
+
         self._font_hud = pygame.font.SysFont("monospace", 34, bold=True)
         self._font_sm  = pygame.font.SysFont("monospace", 24)
         self._font_fb  = pygame.font.SysFont("monospace", 48, bold=True)
 
+        self._init_fatigue()
+        self._reset()
+        self._show_instructions = True
+
     def _reset(self):
+        self.game_over          = False
+        self.game_over_score    = 0
+        self.game_over_duration = 0
+        self.paused      = False
+        self.pause_sel   = 0
         self.objects     = []
         self.score       = 0
         self.misses      = 0
-        self.errors      = 0
         self.reps        = 0
-        self.held_obj    = None
         self.spawn_timer = 0.0
         self.time_left   = float(self.duration)
         self.start_time  = pygame.time.get_ticks()
@@ -131,40 +135,82 @@ class CatchObjectGame(FatigueMixin, BaseScreen):
         return max(-1.0, min(1.0, (raw - wmin) / (wmax - wmin) * 2.0 - 1.0))
 
     def handle_event(self, event):
+        if self._show_instructions:
+            if (event.type == pygame.KEYDOWN or
+                    (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1) or
+                    input_handler.was_pressed(event, "action")):
+                self._show_instructions = False
+                self.start_time = pygame.time.get_ticks()
+                start_music()
+            return
+
+        if self.game_over:
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if self._results_again_rect.collidepoint(event.pos):
+                    play_click()
+                    self._reset()
+                    start_music()
+                elif self._results_exit_rect.collidepoint(event.pos):
+                    play_click()
+                    self._exit_to_game_config()
+            return
+
         if self.fatigue_paused:
             if input_handler.was_pressed(event, "action"): self._resume_fatigue()
             return
         if self.paused:
-            if self.vol_active:
-                if input_handler.was_pressed(event, "left"):
-                    self.pause_vol = max(0.0, self.pause_vol - 0.1); self._apply_vol()
-                elif input_handler.was_pressed(event, "right"):
-                    self.pause_vol = min(1.0, self.pause_vol + 0.1); self._apply_vol()
-                elif (input_handler.was_pressed(event, "action") or
-                      input_handler.was_pressed(event, "back")):
-                    self.vol_active = False
-                return
-            if input_handler.was_pressed(event, "up"):
-                self.pause_sel = max(0, self.pause_sel - 1)
-            elif input_handler.was_pressed(event, "down"):
-                self.pause_sel = min(3, self.pause_sel + 1)
-            elif input_handler.was_pressed(event, "action"):
-                if self.pause_sel == 0:   self.paused = False
-                elif self.pause_sel == 1: self._reset(); self.paused = False
-                elif self.pause_sel == 2: self.vol_active = True
-                else:                     self._exit_to_menu()
+            self._pause_handle(event)
+            return
+        if (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
+                and self._pause_btn_rect.collidepoint(event.pos)):
+            self.paused = True
             return
         if input_handler.was_pressed(event, "back"):
             self.paused = True
 
+    def _pause_handle(self, event):
+        pos = None
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            pos = event.pos
+        elif event.type == pygame.FINGERDOWN:
+            pos = (int(event.x * GAME_W), int(event.y * GAME_H))
+        if pos is None:
+            return
+        if self.vol_active:
+            _bx = GAME_W // 2 - (10*30 + 9*6) // 2
+            _by = GAME_H // 2 - 160 + 2 * 96 + 52
+            for si in range(10):
+                sx = _bx + si * (30 + 6)
+                if pygame.Rect(sx, _by - 8, 30, 44).collidepoint(pos):
+                    self.pause_vol = (si + 1) / 10
+                    self._apply_vol()
+                    return
+            self.vol_active = False
+            return
+        opts_actions = [
+            lambda: setattr(self, "paused", False),
+            lambda: (self._reset(), start_music()),
+            lambda: setattr(self, "vol_active", True),
+            self._exit_to_game_config,
+        ]
+        for i, action in enumerate(opts_actions):
+            oy = GAME_H // 2 - 160 + i * 96
+            if pygame.Rect(GAME_W // 2 - 200, oy, 400, 80).collidepoint(pos):
+                play_click()
+                action()
+                return
+
     def update(self, dt):
+        if self._show_instructions or self.game_over:
+            return
+
         self._state = input_handler.get_state()
         self._update_fatigue(dt, self._state)
         if self.fatigue_paused or self.paused:
             return
 
         self.time_left -= dt
-        if self.time_left <= 0 or self.score >= self.goal:
+        if self.time_left <= 0:
             self._end_game(); return
 
         grip = self._normalize_grip(self._state["grip"])
@@ -177,44 +223,28 @@ class CatchObjectGame(FatigueMixin, BaseScreen):
 
         # Spawn
         self.spawn_timer += dt
-        if self.spawn_timer >= self.spawn_rate and self.held_obj is None:
+        if self.spawn_timer >= self.spawn_rate:
             self.spawn_timer = 0.0
             self.objects.append(FallingObj(self.difficulty, self.fall_speed))
 
         for obj in self.objects:
             obj.update(dt)
 
-        # Try to catch — squeeze when object is over catcher
-        if self.held_obj is None:
+        # Grip catches a valid object over the catcher — invalid (red X) ones are ignored
+        if grip >= self.threshold:
             for obj in self.objects:
-                if obj.caught or obj.missed or obj.scored:
+                if obj.scored or obj.missed or not obj.valid:
                     continue
                 over_catcher = (abs(obj.x - self.catcher_x) < CATCHER_W//2 + obj.r and
                                 CATCHER_Y - 60 < obj.y < CATCHER_Y + 30)
-                if over_catcher and grip >= self.threshold:
-                    if obj.valid:
-                        obj.caught   = True
-                        self.held_obj = obj
-                        self.feedback = ("GRIPPED — Release to score!", (0,210,255), 1.2)
-                    else:
-                        obj.missed = True
-                        self.errors += 1
-                        self.feedback = ("WRONG TARGET!", (255,60,80), 1.0)
-                        play_error()
-
-        # Release to score
-        if self.held_obj:
-            self.held_obj.x = self.catcher_x
-            self.held_obj.y = float(CATCHER_Y - 30)
-            released = grip < (0.05 if not input_handler.connected else 0.15)
-            if released:
-                self.held_obj.scored = True
-                self.held_obj = None
-                self.score       += 1
-                self.reps        += 1
-                self.score_flash  = 0.4
-                self.feedback     = ("SCORED!", (0,255,160), 0.8)
-                play_success()
+                if over_catcher:
+                    obj.scored        = True
+                    self.score       += 1
+                    self.reps        += 1
+                    self.score_flash  = 0.4
+                    self.feedback     = ("SCORED!", (0,255,160), 0.8)
+                    play_success()
+                    break
 
         # Count misses
         new_misses = [o for o in self.objects if o.missed]
@@ -227,20 +257,86 @@ class CatchObjectGame(FatigueMixin, BaseScreen):
         if self.score_flash > 0:
             self.score_flash -= dt
 
-    def _exit_to_menu(self):
+    def _exit_to_game_config(self):
+        import builtins
         stop_music()
-        self.manager.go_to("exercise_menu",
-                           account_id=self.account_id, account=self.account)
+        builtins.pending_panel   = 4
+        builtins.pending_patient = self._patient
+        builtins.pending_account = self.account
+        self.manager.go_to("therapist_dashboard")
 
     def _end_game(self):
+        if self.game_over:
+            return
         stop_music()
-        duration = (pygame.time.get_ticks() - self.start_time) // 1000
-        self.manager.go_to("endgame",
-            account_id=self.account_id, account=self.account,
-            exercise=self.exercise, game="catch_object",
-            difficulty=self.difficulty, score=self.score,
-            reps=self.reps, duration_sec=duration,
-            max_score=self.goal, back_screen="game_select")
+        play_completion()
+        self.game_over_duration = (pygame.time.get_ticks() - self.start_time) // 1000
+        self.game_over_score    = self.score
+        try:
+            from database import Database
+            db = Database()
+            patient_id = self._patient.get("id") if self._patient else None
+            db.save_session(
+                patient_id   = patient_id,
+                therapist_id = self.account_id,
+                game         = "Catch the Falling Object",
+                score        = self.score,
+                duration_sec = self.game_over_duration,
+                difficulty   = self.difficulty,
+            )
+        except Exception:
+            pass
+        self.game_over = True
+
+    def _draw_instructions(self, surface):
+        T = get_theme()
+        ov = pygame.Surface((GAME_W, GAME_H), pygame.SRCALPHA)
+        ov.fill((0, 0, 0, 210))
+        surface.blit(ov, (0, 0))
+
+        pw, ph = 860, 560
+        px, py = (GAME_W - pw) // 2, (GAME_H - ph) // 2
+        bg = pygame.Surface((pw, ph), pygame.SRCALPHA)
+        pygame.draw.rect(bg, T["PANEL"] + (252,), (0, 0, pw, ph), border_radius=16)
+        surface.blit(bg, (px, py))
+        pygame.draw.rect(surface, T["ACCENT"], pygame.Rect(px, py, pw, ph), 2, border_radius=16)
+
+        f_title = pygame.font.SysFont("monospace", 36, bold=True)
+        f_head  = pygame.font.SysFont("monospace", 22, bold=True)
+        f_body  = pygame.font.SysFont("monospace", 19)
+        f_hint  = pygame.font.SysFont("monospace", 21, bold=True)
+
+        diff_col = {"Easy": T["GREEN"], "Medium": T["YELLOW"], "Hard": T["RED"]}[self.difficulty]
+        title = f_title.render("How to Play", True, diff_col)
+        surface.blit(title, title.get_rect(centerx=GAME_W // 2, top=py + 26))
+        pygame.draw.line(surface, T["ACCENT"], (px + 40, py + 78), (px + pw - 40, py + 78), 1)
+
+        y = py + 96
+        for header, lines in [
+            ("OBJECTIVE", [
+                "Objects fall from the top of the screen.",
+                "Catch them with the catcher to score.",
+                "The red object marked with an X must NOT be caught.",
+            ]),
+            ("CONTROLS", [
+                "Tilt wrist LEFT / RIGHT to move the catcher.",
+                "Grip (squeeze) while a valid object is over the catcher to catch it.",
+            ]),
+            ("THIS SESSION", [
+                f"Duration:   {self.duration} seconds",
+                f"Difficulty: {self.difficulty}",
+            ]),
+        ]:
+            surface.blit(f_head.render(header, True, T["ACCENT"]), (px + 48, y))
+            y += 30
+            for line in lines:
+                surface.blit(f_body.render(line, True, T["TEXT"]), (px + 64, y))
+                y += 26
+            y += 14
+
+        blink_col = T["YELLOW"] if (pygame.time.get_ticks() // 600) % 2 == 0 else T["GRAY"]
+        hint = f_hint.render("Press any key or click to begin", True, blink_col)
+        surface.blit(hint, hint.get_rect(centerx=GAME_W // 2, bottom=py + ph - 20))
 
     def draw(self, surface):
         T = get_theme()
@@ -250,6 +346,10 @@ class CatchObjectGame(FatigueMixin, BaseScreen):
             pygame.draw.line(surface, T["PANEL"], (0, y), (GAME_W, y), 1)
         for x in range(0, GAME_W, 80):
             pygame.draw.line(surface, T["PANEL"], (x, 0), (x, GAME_H), 1)
+
+        if self._show_instructions:
+            self._draw_instructions(surface)
+            return
 
         font_hud = self._font_hud
         font_sm  = self._font_sm
@@ -267,11 +367,6 @@ class CatchObjectGame(FatigueMixin, BaseScreen):
                          3, border_radius=8)
         pygame.draw.circle(surface, T["ACCENT2"], (cx - CATCHER_W//2, CATCHER_Y + CATCHER_H//2), 10)
         pygame.draw.circle(surface, T["ACCENT2"], (cx + CATCHER_W//2, CATCHER_Y + CATCHER_H//2), 10)
-
-        # Held object glow
-        if self.held_obj:
-            pygame.draw.circle(surface, T["ACCENT"],
-                               (int(self.held_obj.x), int(self.held_obj.y)), 50, 2)
 
         # Score flash
         if self.score_flash > 0:
@@ -309,51 +404,93 @@ class CatchObjectGame(FatigueMixin, BaseScreen):
         surface.blit(font_hud.render(
             f"CATCH OBJECT  ·  {self.difficulty.upper()}", True, diff_col), (80, 18))
         surface.blit(font_hud.render(
-            f"{self.score:02d} / {self.goal:02d}", True, T["ACCENT"]),
-            (GAME_W//2 - 60, 18))
+            f"Score: {self.score:02d}", True, T["ACCENT"]),
+            (GAME_W//2 - 80, 18))
         time_col = T["RED"] if self.time_left < 10 else T["TEXT"]
-        surface.blit(font_hud.render(
-            f"{max(0, int(self.time_left)):02d}s", True, time_col),
-            (GAME_W - 160, 18))
+        time_s = font_hud.render(f"{max(0, int(self.time_left)):02d}s", True, time_col)
+        surface.blit(time_s, time_s.get_rect(right=self._pause_btn_rect.left - 24, y=18))
 
         surface.blit(font_sm.render(
-            f"Miss {self.misses}  Err {self.errors}", True, T["RED"]),
-            (GAME_W - 260, GAME_H - 80))
+            f"Missed {self.misses}", True, T["RED"]),
+            (GAME_W - 220, GAME_H - 80))
 
         if self.feedback:
             msg = self._font_fb.render(self.feedback[0], True, self.feedback[1])
             surface.blit(msg, (GAME_W//2 - msg.get_width()//2, GAME_H//2 - 80))
 
-        hints = {"Easy":   "← → Tilt to move   SQUEEZE to catch   RELEASE to score",
-                 "Medium": "← → Tilt to move   Catch GREEN only   Ignore RED (✕)",
-                 "Hard":   "← → Tilt to move   Catch GREEN only   Ignore RED (✕)"}
+        hints = {"Easy":   "← → Tilt to move   GRIP to catch",
+                 "Medium": "← → Tilt to move   GRIP to catch   Avoid the red ✕",
+                 "Hard":   "← → Tilt to move   GRIP to catch   Avoid the red ✕"}
         surface.blit(font_sm.render(hints[self.difficulty], True, T["GRAY"]),
                      (GAME_W//2 - 380, GAME_H - 80))
+
+        # Pause button — two solid bars
+        pb     = self._pause_btn_rect
+        pb_col = T["ACCENT"]
+        pygame.draw.rect(surface, (15, 20, 36), pb, border_radius=8)
+        pygame.draw.rect(surface, pb_col, pb, 2, border_radius=8)
+        bw2, bh2 = 8, 22
+        by2 = pb.top + (pb.height - bh2) // 2
+        bx1 = pb.left + pb.width // 2 - bw2 - 4
+        bx2 = pb.left + pb.width // 2 + 4
+        pygame.draw.rect(surface, pb_col, (bx1, by2, bw2, bh2), border_radius=2)
+        pygame.draw.rect(surface, pb_col, (bx2, by2, bw2, bh2), border_radius=2)
 
         if self.paused: self._draw_pause(surface)
         self._draw_fatigue_overlay(surface)
 
-    def _draw_pause(self, surface):
-        T       = get_theme()
-        font    = pygame.font.SysFont("monospace", 48, bold=True)
-        font_sm = pygame.font.SysFont("monospace", 28)
+        if self.game_over:
+            self._draw_results(surface)
+
+    def _draw_results(self, surface):
+        T = get_theme()
         ov = pygame.Surface((GAME_W, GAME_H), pygame.SRCALPHA)
-        ov.fill((0, 0, 0, 180))
+        ov.fill((0, 0, 0, 185))
         surface.blit(ov, (0, 0))
-        panel = pygame.Rect(GAME_W//2 - 260, GAME_H//2 - 200, 520, 420)
-        pygame.draw.rect(surface, T["PANEL"], panel, border_radius=16)
-        pygame.draw.rect(surface, T["ACCENT"], panel, 2, border_radius=16)
-        for i, opt in enumerate(["RESUME", "RESTART", "VOLUME", "EXIT"]):
-            col = T["ACCENT"] if i == self.pause_sel else T["GRAY"]
-            lbl = font.render(opt, True, col)
-            surface.blit(lbl, (GAME_W//2 - lbl.get_width()//2,
-                               GAME_H//2 - 160 + i * 96))
-            if opt == "VOLUME" and (i == self.pause_sel or self.vol_active):
-                bw, bh = 360, 12
-                bx = GAME_W//2 - bw//2
-                by = GAME_H//2 - 160 + i * 96 + 52
-                pygame.draw.rect(surface, T["PANEL"], (bx, by, bw, bh), border_radius=6)
-                pygame.draw.rect(surface, T["GREEN"],
-                                 (bx, by, int(bw * self.pause_vol), bh), border_radius=6)
-                pct = font_sm.render(f"{int(self.pause_vol*100)}%", True, T["GREEN"])
-                surface.blit(pct, (bx + bw + 10, by - 4))
+
+        mw, mh = 640, 400
+        mx, my = (GAME_W - mw) // 2, (GAME_H - mh) // 2
+        mr = pygame.Rect(mx, my, mw, mh)
+
+        bg = pygame.Surface((mw, mh), pygame.SRCALPHA)
+        pygame.draw.rect(bg, T["PANEL"] + (245,), (0, 0, mw, mh), border_radius=16)
+        surface.blit(bg, mr.topleft)
+        pygame.draw.rect(surface, T["ACCENT"], mr, 2, border_radius=16)
+
+        f_big = pygame.font.SysFont("monospace", 48, bold=True)
+        f_mid = pygame.font.SysFont("monospace", 32, bold=True)
+        f_sm  = pygame.font.SysFont("monospace", 24)
+        f_btn = pygame.font.SysFont("monospace", 28, bold=True)
+
+        title = f_big.render("Session Complete!", True, T["YELLOW"])
+        surface.blit(title, title.get_rect(center=(mr.centerx, my + 60)))
+
+        sc_s = f_mid.render(f"Score:    {self.game_over_score}", True, T["TEXT"])
+        surface.blit(sc_s, sc_s.get_rect(midleft=(mx + 80, my + 140)))
+
+        mins, secs = divmod(self.game_over_duration, 60)
+        dur_str = f"{mins}:{secs:02d}" if mins else f"{secs}s"
+        du_s = f_mid.render(f"Duration: {dur_str}", True, T["TEXT"])
+        surface.blit(du_s, du_s.get_rect(midleft=(mx + 80, my + 190)))
+
+        dif_s = f_sm.render(f"Difficulty: {self.difficulty}", True, T["GRAY"])
+        surface.blit(dif_s, dif_s.get_rect(midleft=(mx + 80, my + 238)))
+
+        mp  = pygame.mouse.get_pos()
+        bw, bh = 220, 52
+
+        again_r = pygame.Rect(mx + 60,           my + mh - 80, bw, bh)
+        exit_r  = pygame.Rect(mx + mw - 60 - bw, my + mh - 80, bw, bh)
+        self._results_again_rect = again_r
+        self._results_exit_rect  = exit_r
+
+        ag_col = (55, 170, 100) if again_r.collidepoint(mp) else (40, 140, 80)
+        ex_col = (75, 110, 190) if exit_r.collidepoint(mp)  else (55,  85, 160)
+
+        pygame.draw.rect(surface, ag_col, again_r, border_radius=10)
+        pygame.draw.rect(surface, ex_col, exit_r,  border_radius=10)
+
+        ag_lbl = f_btn.render("Play Again", True, T["WHITE"])
+        ex_lbl = f_btn.render("Exit",       True, T["WHITE"])
+        surface.blit(ag_lbl, ag_lbl.get_rect(center=again_r.center))
+        surface.blit(ex_lbl, ex_lbl.get_rect(center=exit_r.center))

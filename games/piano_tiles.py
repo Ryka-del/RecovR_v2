@@ -353,9 +353,8 @@ class PianoTilesGame(FatigueMixin, BaseScreen):
             f"Score: {self.score:02d}", True, T["ACCENT"]),
             (GAME_W // 2 - 60, 18))
         time_col = T["RED"] if self.time_left < 10 else T["TEXT"]
-        surface.blit(self._font_hud.render(
-            f"{max(0, int(self.time_left)):02d}s", True, time_col),
-            (GAME_W - 160, 18))
+        time_s = self._font_hud.render(f"{max(0, int(self.time_left)):02d}s", True, time_col)
+        surface.blit(time_s, time_s.get_rect(right=self._pause_btn_rect.left - 24, y=18))
 
         # Pause button — two solid bars (identical to Basketball / Steady Aim)
         pb     = self._pause_btn_rect

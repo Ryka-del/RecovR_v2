@@ -100,9 +100,13 @@ from scenes.patient_dashboard   import PatientDashboardScene
 from scenes.game_scene          import make_game_scene
 
 # --- IMPORT GAMES ---
-from games.steady_aim   import SteadyAimGame
-from games.basketball   import BasketballGame
-from games.piano_tiles  import PianoTilesGame
+from games.steady_aim     import SteadyAimGame
+from games.basketball     import BasketballGame
+from games.piano_tiles    import PianoTilesGame
+from games.catchingapple  import AppleCatchingGame
+from games.catch_object   import CatchObjectGame
+from games.gravity_catch  import GravityCatchGame
+from games.key_lock       import KeyLockGame
 
 SCENES = {
     "therapist_welcome"  : TherapistWelcomeScene,
@@ -114,6 +118,10 @@ SCENES = {
     "steady_aim"         : make_game_scene(SteadyAimGame),
     "basketball"         : make_game_scene(BasketballGame),
     "piano_tiles"        : make_game_scene(PianoTilesGame),
+    "catchingapple"      : make_game_scene(AppleCatchingGame),
+    "catch_object"       : make_game_scene(CatchObjectGame),
+    "gravity_catch"      : make_game_scene(GravityCatchGame),
+    "key_lock"           : make_game_scene(KeyLockGame),
 }
 
 # --- CROSSFADE ---
@@ -143,7 +151,7 @@ def _draw_confirm_dialog():
     pygame.draw.rect(screen, (200, 210, 230), _dlg_r, 2, border_radius=16)
 
     # Title
-    title_s = _dlg_font_title.render("Close RecovRWE?", True, (30, 45, 70))
+    title_s = _dlg_font_title.render("Close RecovR?", True, (30, 45, 70))
     screen.blit(title_s, title_s.get_rect(center=(_dlg_r.centerx,
                                                    _dlg_r.y + int(52 * HEIGHT / 1080))))
 
@@ -166,7 +174,8 @@ def _draw_confirm_dialog():
 
 # --- STARTING SCENE ---
 _current_scene_name = "therapist_welcome"
-_game_scene_names   = {"basketball", "steady_aim", "piano_tiles"}
+_game_scene_names   = {"basketball", "steady_aim", "piano_tiles",
+                        "catchingapple", "catch_object", "gravity_catch", "key_lock"}
 current_scene = TherapistWelcomeScene(screen, WIDTH, HEIGHT)
 
 # --- MAIN LOOP ---

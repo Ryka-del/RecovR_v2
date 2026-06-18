@@ -117,8 +117,9 @@ ALL_GAMES = SINGLE_SKILL_GAMES + INTEGRATED_GAMES
 SKILL_GAMES = {
     "Grip Strength":  ["Basketball"],
     "Finger Flexion": ["Piano Tiles"],
-    "Wrist Rotation": ["Apple Catching", "Catch the Falling Object",
-                       "Gravity Catch", "Key and Lock", "Steady Aim"],
+    "Wrist Rotation": ["Apple Catching", "Gravity Catch",
+                       "Key and Lock", "Steady Aim"],
+    "Dual Skill":     ["Catch the Falling Object"],
 }
 
 DIFFICULTY_OPTS = ["Easy", "Medium", "Hard", "Custom"]
@@ -927,9 +928,9 @@ class TherapistDashboardScene:
         return None
 
     def _go_back(self):
-        if self.active_panel == 6:   self.active_panel = 0
-        elif self.active_panel == 4: self.active_panel = 0
-        elif self.active_panel == 5: self.active_panel = 4
+        if self.active_panel == 6:   self._open_panel(0)
+        elif self.active_panel == 4: self._open_panel(0)
+        elif self.active_panel == 5: self._open_panel(4)
 
     def _open_panel(self, idx):
         self.active_panel      = idx
@@ -991,6 +992,10 @@ class TherapistDashboardScene:
         "Basketball": "basketball",
         "Steady Aim": "steady_aim",
         "Piano Tiles": "piano_tiles",
+        "Apple Catching": "catchingapple",
+        "Catch the Falling Object": "catch_object",
+        "Gravity Catch": "gravity_catch",
+        "Key and Lock": "key_lock",
     }
 
     def _launch_game(self):
@@ -2344,8 +2349,8 @@ class TherapistDashboardScene:
         _card_bg(surface, pa, alpha=220)
         table_y = pa.y + int(28*H/1080)
         cols   = ["Date", "Game", "Score", "Duration", "Difficulty", "Therapist"]
-        col_xs = [pa.x+int(16*W/1920),  pa.x+int(230*W/1920), pa.x+int(480*W/1920),
-                  pa.x+int(620*W/1920), pa.x+int(790*W/1920),  pa.x+int(980*W/1920)]
+        col_xs = [pa.x+int(16*W/1920),  pa.x+int(230*W/1920), pa.x+int(620*W/1920),
+                  pa.x+int(780*W/1920), pa.x+int(950*W/1920),  pa.x+int(1140*W/1920)]
         for cx, c in zip(col_xs, cols):
             surface.blit(self.fnt["section"].render(c, True, (85,105,135)), (cx, table_y))
         pygame.draw.line(surface, (210,218,230),
@@ -2662,11 +2667,17 @@ class TherapistDashboardScene:
         for i, (gname, gtype) in enumerate(INTEGRATED_GAMES):
             tx  = ig_start_x + i * (tw + tg)
             tr  = pygame.Rect(tx, gy2, tw, th)
-            sel = gc["selected_game"] and gc["selected_game"][0] == gname
+            sel = gc["selected_game"] and gc["selected_game"][1] == gtype
             bc  = PANEL_COLORS.get(i + 3, (180,200,220)) if sel else (210,220,235)
             _card_bg(surface, tr, alpha=245 if sel else 200, border_col=bc, border_w=2 if sel else 1)
-            lbl_s = self.fnt["body_b"].render(gname, True, bc if sel else (55,72,95))
-            surface.blit(lbl_s, lbl_s.get_rect(center=(tr.centerx, tr.centery)))
+            if sel and gc["selected_game"]:
+                lbl_s = self.fnt["body_b"].render(gtype, True, bc)
+                surface.blit(lbl_s, lbl_s.get_rect(midleft=(tr.x + int(14*W/1920), tr.y + int(36*H/1080))))
+                sub = self.fnt["small"].render(gc["selected_game"][0], True, bc)
+                surface.blit(sub, sub.get_rect(midleft=(tr.x + int(14*W/1920), tr.y + int(82*H/1080))))
+            else:
+                lbl_s = self.fnt["body_b"].render(gname, True, (55,72,95))
+                surface.blit(lbl_s, lbl_s.get_rect(center=(tr.centerx, tr.centery)))
             self._game_tiles.append((tr, (gname, gtype)))
 
         # ── Proceed to Start Calibration button ───────────────────────
@@ -2779,7 +2790,8 @@ class TherapistDashboardScene:
             need_type = (gc.get("selected_game") or (None, "—"))[1] or "—"
             SENSOR_FOR = {"Grip Strength": "Force Sensor",
                           "Finger Flexion": "Flex Sensors",
-                          "Wrist Rotation": "Motion Sensor"}
+                          "Wrist Rotation": "Motion Sensor",
+                          "Dual Skill": "Force + Motion Sensors"}
             need_sens = SENSOR_FOR.get(need_type, "—")
             pygame.draw.rect(surface, (255,243,215), cal_r, border_radius=14)
             pygame.draw.rect(surface, (220,145,30),  cal_r, 2, border_radius=14)
@@ -2853,6 +2865,7 @@ class TherapistDashboardScene:
                 "Grip Strength": "Force Sensor",
                 "Finger Flexion": "Flex Sensors",
                 "Wrist Rotation": "Motion Sensor",
+                "Dual Skill": "Force + Motion Sensors",
             }
             sensor_name = sensor_map.get(game_type, "Sensor")
             for j, ln in enumerate([
@@ -3146,7 +3159,8 @@ class TherapistDashboardScene:
         need_type = (self.gc.get("selected_game") or (None, "—"))[1] or "—"
         SENSOR_FOR = {"Grip Strength":  "Force Sensor",
                       "Finger Flexion": "Flex Sensors",
-                      "Wrist Rotation": "Motion Sensor"}
+                      "Wrist Rotation": "Motion Sensor",
+                      "Dual Skill":     "Force + Motion Sensors"}
         need_sens  = SENSOR_FOR.get(need_type, "—")
 
         # body lines
