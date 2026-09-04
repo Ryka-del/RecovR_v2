@@ -180,48 +180,33 @@ class BLEReceiver:
                 await asyncio.sleep(0.3)
                 continue
 
-            # First-run (once we are enabled): list every visible device so the
-            # user can verify the ESP32 controller is powered on and advertising.
-            if self._first_run:
-                self._first_run = False
-                print("[BLE] Scanning — visible BLE devices:")
-                try:
-                    devs = await BleakScanner.discover(timeout=4.0)
-                    if devs:
-                        for d in devs:
-                            tag = "  <-- YOUR CONTROLLER" if (
-                                d.name and any(kw in d.name.lower() for kw in _NAME_KEYWORDS)
-                            ) else ""
-                            print(f"[BLE]   {str(d.name):<32s}  {d.address}{tag}")
-                    else:
-                        print("[BLE]   (none found — is Bluetooth on?)")
-                except Exception as exc:
-                    print(f"[BLE]   Scan failed: {exc}")
-
-            # ── Scan — compatible with all bleak versions ─────────────────────
+            # ── Scan ─────────────────────────────────────────────────────────
+            # find_device_by_filter returns the INSTANT the controller
+            # advertises, instead of always burning the whole timeout like
+            # discover(). That matters for the dual-monitor handoff: the game
+            # must have the controller before the therapist's START unlocks.
             self._scan_count += 1
             self._stage = "scanning"
             self._detail = f"scan #{self._scan_count}"
             print(f"[BLE] Scan #{self._scan_count} — looking for '{DEVICE_NAME}'...")
             device = None
+            seen = {}
+
+            def _adv_name(d, adv):
+                """Name from the advert OR the scan response (the ESP32 puts the
+                full name in the scan response, so d.name can lag)."""
+                return d.name or (getattr(adv, "local_name", None) if adv else None)
+
+            def _match(d, adv):
+                nm = _adv_name(d, adv)
+                seen[d.address] = nm or "(no name)"
+                if nm == DEVICE_NAME:
+                    return True
+                return any(kw in nm.lower() for kw in _NAME_KEYWORDS) if nm else False
+
             try:
-                devs = await BleakScanner.discover(timeout=8.0)
-                named = [(d.name or "(no name)", d.address) for d in devs]
-                self._seen_names = [n for n, _ in named]
-                print(f"[BLE]   Devices found: {named if named else '(none)'}")
-
-                def _is_controller(name):
-                    if not name:
-                        return False
-                    n = name.lower()
-                    return any(kw in n for kw in _NAME_KEYWORDS)
-
-                device = next(
-                    (d for d in devs if d.name == DEVICE_NAME), None
-                ) or next(
-                    (d for d in devs if _is_controller(d.name)), None
-                )
-
+                device = await BleakScanner.find_device_by_filter(
+                    _match, timeout=_SCAN_TIMEOUT)
             except Exception as exc:
                 self._connected = False
                 self._stage = self._classify_error(exc)
@@ -230,10 +215,24 @@ class BLEReceiver:
                 self._print_permission_hint(exc)
                 await asyncio.sleep(_ERROR_DELAY)
                 continue
+            finally:
+                self._seen_names = list(seen.values())
 
             if device is None:
-                # Not found this round — retry immediately
                 self._detail = f"not advertising (scan #{self._scan_count})"
+                # Nothing matched -- print what IS visible, so the user can tell
+                # "Bluetooth sees nothing" from "the ESP32 is advertising nameless".
+                if self._first_run:
+                    self._first_run = False
+                    if seen:
+                        print("[BLE]   Visible BLE devices:")
+                        for addr, nm in seen.items():
+                            print(f"[BLE]     {nm:<32s}  {addr}")
+                        print("[BLE]   None matched. If your controller is listed as "
+                              "'(no name)', re-flash firmware/controller_esp32c3.ino "
+                              "(it needs setScanResponse(true)).")
+                    else:
+                        print("[BLE]   (no BLE devices at all — is Bluetooth on?)")
                 continue
 
             # ── Connect ───────────────────────────────────────────────────────
