@@ -44,6 +44,21 @@ from scenes.calibration_window import CalibrationWindow
 from audio import play_confirm_alert, play_start_session, play_click
 from sensors.input_handler import input_handler
 
+# ── Dual-monitor mode (opt-in via recovr/launch_production.py) ────────────
+# When RECOVR_DUAL_MONITOR=1, "Start Session" hands the game to the patient
+# window (a separate process on the other monitor) instead of switching this
+# window to the game scene, and this dashboard stays live showing a small
+# session-monitoring panel with Pause/Resume/Stop. Everything below is inert
+# and this file behaves exactly as before when the flag is unset.
+_DUAL_MONITOR = os.environ.get("RECOVR_DUAL_MONITOR") == "1"
+if _DUAL_MONITOR:
+    try:
+        from recovr.therapist_link import therapist_link
+        from recovr.shared import commands as _rc_cmd
+    except Exception as _exc:               # pragma: no cover - defensive
+        print(f"[recovr] dual-monitor link unavailable ({_exc}); staying single-window")
+        _DUAL_MONITOR = False
+
 # ─────────────────────────────────────────────────────────────────────
 #  NAV / PANEL CONSTANTS
 # ─────────────────────────────────────────────────────────────────────
@@ -70,6 +85,8 @@ PANEL_TITLES = {
     4: "Game Configuration",
     5: "Start Rehabilitation Session",
     6: "Register Patient",
+    7: "Session in Progress",
+    8: "Patient",
 }
 
 PANEL_COLORS = {
@@ -80,14 +97,16 @@ PANEL_COLORS = {
     4: ( 80, 195, 195),
     5: ( 60, 140, 220),
     6: (130, 200, 140),
+    7: ( 60, 140, 220),
+    8: (150, 130, 220),
 }
 
-SIDEBAR_NAV = [
-    {"label": "Patient List",         "symbol": "👤", "idx": 0},
-    {"label": "Session History",      "symbol": "📋", "idx": 1},
-    {"label": "Analytics",            "symbol": "📊", "idx": 2},
-    {"label": "Calibration Records",  "symbol": "🎯", "idx": 3},
-]
+# Sidebar navigation is now EMPTY. The Patient List is the Therapist Dashboard
+# itself (panel 0, shown on load); Session History / Analytics / Calibration
+# Records moved into the Patient Preview panel. Panels 0-3 draw methods are
+# unchanged and still reachable code. Navigation back to the Patient List is via
+# the standard Back buttons on each sub-panel.
+SIDEBAR_NAV = []
 
 ROLES = [
     "Physical Therapist",
@@ -101,7 +120,7 @@ STROKE_TYPES  = ["Ischemic", "Hemorrhagic", "Unknown / Not Specified"]
 SEVERITY_OPTS = ["Mild", "Moderate"]
 SEX_OPTS      = ["Male", "Female", "Prefer not to say"]
 HAND_OPTS     = ["Left", "Right"]
-GAME_DURATION = ["60 seconds", "120 seconds", "180 seconds", "Custom"]
+GAME_DURATION = ["60 seconds", "120 seconds", "180 seconds"]   # no custom/specific-time entry
 
 SINGLE_SKILL_GAMES = [
     ("Catch the Falling Object", "Grip Strength"),
@@ -208,48 +227,68 @@ class TherapistDashboardScene:
                 "icon_index": 1
             }
 
-        # ── Font dictionary (all fonts scaled relative to screen height) ──
+        # ── Touch / small-display mode ───────────────────────────────
+        # The therapist dashboard also runs on a ~7-inch LCD touchscreen. On a
+        # short display we scale UI up (larger fonts) and enforce minimum tap
+        # target sizes, and the Patient List becomes scrollable. Desktop /
+        # large-monitor layout is unchanged.
         H = height
+        self._touch_ui = (H <= 820) or (os.environ.get("RECOVR_THERAPIST_TOUCH") == "1")
+        # font scale factor: normal = H/1080; on the 7-inch panel we scale text
+        # up relative to the screen (27px body -> ~25px at 600px) so it reads
+        # from a distance and every tap target clears ~48px.
+        _fs = min(H / 640.0, 1.32) if self._touch_ui else (H / 1080.0)
+        self._fs = _fs
+
+        # ── Font dictionary (all fonts scaled by _fs) ──
         _fd = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                            "assets", "font")
         def _F(name): return os.path.join(_fd, name)
         self.fnt = {
-            "logo":        pygame.font.SysFont("arialblack",                 int(51*(H/1080))),
-            "nav":         pygame.font.Font(_F("Lexend-Medium.ttf"),         int(27*(H/1080))),
-            "nav_sym":     pygame.font.SysFont("segoeuisymbol",              int(35*(H/1080))),
-            "welcome":     pygame.font.Font(_F("Sora-Light.ttf"),            int(33*(H/1080))),
-            "dash_title":  pygame.font.Font(_F("GravitasOne-Regular.ttf"),   int(60*(H/1080))),
-            "panel_title": pygame.font.Font(_F("FjallaOne-Regular.ttf"),     int(36*(H/1080))),
-            "body":        pygame.font.Font(_F("Lexend-Regular.ttf"),        int(27*(H/1080))),
-            "body_b":      pygame.font.Font(_F("Lexend-SemiBold.ttf"),       int(27*(H/1080))),
-            "small":       pygame.font.Font(_F("Lexend-Light.ttf"),          int(25*(H/1080))),
-            "small_i":     pygame.font.Font(_F("Sora-ExtraLight.ttf"),       int(25*(H/1080))),
-            "label":       pygame.font.Font(_F("Lexend-Regular.ttf"),        int(25*(H/1080))),
-            "input":       pygame.font.Font(_F("Lexend-Regular.ttf"),        int(25*(H/1080))),
-            "btn":         pygame.font.Font(_F("Lexend-SemiBold.ttf"),       int(27*(H/1080))),
-            "btn_lg":      pygame.font.Font(_F("Lexend-Bold.ttf"),           int(30*(H/1080))),
-            "profile_nm":  pygame.font.Font(_F("Sora-SemiBold.ttf"),         int(24*(H/1080))),
-            "profile":     pygame.font.Font(_F("Lexend-Light.ttf"),          int(22*(H/1080))),
-            "card_lbl":    pygame.font.Font(_F("Sora-SemiBold.ttf"),         int(25*(H/1080))),
-            "card_sym":    pygame.font.SysFont("segoeuisymbol",              int(51*(H/1080))),
-            "modal_head":  pygame.font.Font(_F("FjallaOne-Regular.ttf"),     int(42*(H/1080))),
-            "modal_lbl":   pygame.font.Font(_F("Lexend-Medium.ttf"),         int(27*(H/1080))),
-            "modal_inp":   pygame.font.Font(_F("Lexend-Regular.ttf"),        int(27*(H/1080))),
-            "modal_err":   pygame.font.Font(_F("Lexend-Light.ttf"),          int(23*(H/1080))),
-            "empty_head":  pygame.font.Font(_F("Sora-SemiBold.ttf"),         int(33*(H/1080))),
-            "section":     pygame.font.Font(_F("Lexend-SemiBold.ttf"),       int(24*(H/1080))),
-            "tag":         pygame.font.Font(_F("Lexend-Medium.ttf"),         int(22*(H/1080))),
-            "time":        pygame.font.Font(_F("ZenDots-Regular.ttf"),       int(19*(H/1080))),
-            "header_date": pygame.font.Font(_F("Lexend-Light.ttf"),          int(16*(H/1080))),
-            "breadcrumb":  pygame.font.Font(_F("Lexend-Light.ttf"),          int(24*(H/1080))),
-            "sym26":       pygame.font.SysFont("segoeuisymbol",              int(26*(H/1080))),
-            "sym29":       pygame.font.SysFont("segoeuisymbol",              int(29*(H/1080))),
+            "logo":        pygame.font.SysFont("arialblack",                 int((36 if self._touch_ui else 51)*_fs)),
+            "nav":         pygame.font.Font(_F("Lexend-Medium.ttf"),         int(27*_fs)),
+            "nav_sym":     pygame.font.SysFont("segoeuisymbol",              int(35*_fs)),
+            "welcome":     pygame.font.Font(_F("Sora-Light.ttf"),            int(33*_fs)),
+            "dash_title":  pygame.font.Font(_F("GravitasOne-Regular.ttf"),   int(60*_fs)),
+            "panel_title": pygame.font.Font(_F("FjallaOne-Regular.ttf"),     int(36*_fs)),
+            "body":        pygame.font.Font(_F("Lexend-Regular.ttf"),        int(27*_fs)),
+            "body_b":      pygame.font.Font(_F("Lexend-SemiBold.ttf"),       int(27*_fs)),
+            "small":       pygame.font.Font(_F("Lexend-Light.ttf"),          int(25*_fs)),
+            "small_i":     pygame.font.Font(_F("Sora-ExtraLight.ttf"),       int(25*_fs)),
+            "label":       pygame.font.Font(_F("Lexend-Regular.ttf"),        int(25*_fs)),
+            "input":       pygame.font.Font(_F("Lexend-Regular.ttf"),        int(25*_fs)),
+            "btn":         pygame.font.Font(_F("Lexend-SemiBold.ttf"),       int(27*_fs)),
+            "btn_lg":      pygame.font.Font(_F("Lexend-Bold.ttf"),           int(30*_fs)),
+            "profile_nm":  pygame.font.Font(_F("Sora-SemiBold.ttf"),         int(24*_fs)),
+            "profile":     pygame.font.Font(_F("Lexend-Light.ttf"),          int(22*_fs)),
+            "card_lbl":    pygame.font.Font(_F("Sora-SemiBold.ttf"),         int(25*_fs)),
+            "card_sym":    pygame.font.SysFont("segoeuisymbol",              int(51*_fs)),
+            "modal_head":  pygame.font.Font(_F("FjallaOne-Regular.ttf"),     int(42*_fs)),
+            "modal_lbl":   pygame.font.Font(_F("Lexend-Medium.ttf"),         int(27*_fs)),
+            "modal_inp":   pygame.font.Font(_F("Lexend-Regular.ttf"),        int(27*_fs)),
+            "modal_err":   pygame.font.Font(_F("Lexend-Light.ttf"),          int(23*_fs)),
+            "empty_head":  pygame.font.Font(_F("Sora-SemiBold.ttf"),         int(33*_fs)),
+            "section":     pygame.font.Font(_F("Lexend-SemiBold.ttf"),       int(24*_fs)),
+            "tag":         pygame.font.Font(_F("Lexend-Medium.ttf"),         int(22*_fs)),
+            "time":        pygame.font.Font(_F("ZenDots-Regular.ttf"),       int(19*_fs)),
+            "header_date": pygame.font.Font(_F("Lexend-Light.ttf"),          int(16*_fs)),
+            "breadcrumb":  pygame.font.Font(_F("Lexend-Light.ttf"),          int(24*_fs)),
+            "sym26":       pygame.font.SysFont("segoeuisymbol",              int(26*_fs)),
+            "sym29":       pygame.font.SysFont("segoeuisymbol",              int(29*_fs)),
         }
+
+        # Patient List scroll offset (touch: list scrolls instead of shrinking).
+        self._pl_scroll     = 0
+        self._pl_scroll_max  = 0
+        self._pl_up_rect    = pygame.Rect(0, 0, 1, 1)
+        self._pl_down_rect  = pygame.Rect(0, 0, 1, 1)
+        self._pl_drag_y     = None
 
         # Create gradient background surface for visual depth
         self.background_surface = self._gradient(width, height)
-        # Sidebar width is 20% of screen width
-        self.sidebar_w = int(width * 0.20)
+        # Sidebar width: 20% desktop; narrower on the 7-inch panel (the nav list
+        # was removed, so it only carries the profile + logout now).
+        self.sidebar_w = int(width * (0.23 if self._touch_ui else 0.20))
 
         # ── Panel state tracking ──
         # active_panel: -1 = home, 0-6 = specific panels (see NAV_IDX mapping at top)
@@ -266,6 +305,7 @@ class TherapistDashboardScene:
         self.logout_hovered    = False         # Is logout button hovered?
         self._edit_link_rect   = pygame.Rect(0, 0, 1, 1)  # Clickable rect for edit link
         self._back_btn_rect    = pygame.Rect(0, 0, 1, 1)  # Clickable rect for back button
+        self._crumb_rects      = []                       # [(Rect, target)] clickable breadcrumbs
 
         # ── Modal state ──
         self.modal           = None            # Current modal: "edit_profile", "logout_confirm", "delete_confirm", "register_success", None
@@ -276,8 +316,29 @@ class TherapistDashboardScene:
         self._rp_ok_hov      = False
 
         # ── Patient selection state ──
-        self.selected_patient = None           # Currently selected patient dict
+        self.selected_patient = None           # Patient chosen (via SELECT + confirm) for this session
         self.patients         = []             # List of patients belonging to/shared with this therapist
+
+        # ── Patient page (panel 8) state ──
+        # preview_patient is the patient whose page is open -- opening it must NOT
+        # select them. Its tabs reuse the per-patient Analytics / Calibration /
+        # Session History panels via _view_patient(); Info shows every DB field.
+        self.preview_patient          = None
+        self._pv_tab                  = "info"     # info | analytics | calibration | history
+        self._pv_tab_rects            = {}
+        self._pv_select_rect          = pygame.Rect(0, 0, 1, 1)
+        self._pv_edit_rect            = pygame.Rect(0, 0, 1, 1)
+        self._pv_info_scroll          = 0
+        self._pv_info_scroll_max      = 0
+        self._pv_info_up_rect         = pygame.Rect(0, 0, 1, 1)
+        self._pv_info_down_rect       = pygame.Rect(0, 0, 1, 1)
+        self._rp_scroll               = 0          # Register Patient (touch) form scroll offset
+        self._rp_scroll_max           = 0
+        self._rp_drag_y               = None
+        self._rp_up_rect              = pygame.Rect(0, 0, 1, 1)
+        self._rp_down_rect            = pygame.Rect(0, 0, 1, 1)
+        self._pending_select_patient  = None       # patient awaiting the SELECT confirm dialog
+        self._pending_deselect_patient = None      # patient awaiting the DESELECT confirm dialog
 
         # ── Patient search state ──
         self._pt_search_text   = ""            # Current search text in patient list
@@ -385,6 +446,30 @@ class TherapistDashboardScene:
         self.fade_surface.fill((255, 255, 255))
         self.action_triggered = False          # Flag to trigger next scene transition
 
+        # ── Dual-monitor "Session in Progress" (panel 7) state ──
+        self._sm_state    = {}                 # latest broker snapshot
+        self._sm_result   = None               # captured result on COMPLETE
+        self._sm_btn_rects = {}                # {key: (Rect, enabled)} for the controls
+        self._sm_hover    = None
+        self._sm_volume   = None               # music volume (lazy-init from broker state)
+        self._sm_stop_rect = pygame.Rect(0, 0, 1, 1)   # emergency STOP (lower-right)
+        self._sm_stopped_notice = False        # "Game Stopped" screen shown on panel 7
+        self._sm_notice_continue_rect = pygame.Rect(0, 0, 1, 1)
+        self._sm_notice_back_rect     = pygame.Rect(0, 0, 1, 1)
+        # Light/dark theme -- one shared state (constants.get_theme()). Toggled
+        # from the sidebar control; synchronised to the patient monitor.
+        try:
+            from constants import is_dark_mode as _is_dark
+            self._applied_theme_dark = bool(_is_dark())
+        except Exception:
+            self._applied_theme_dark = True
+        self._theme_btn_rect = pygame.Rect(0, 0, 1, 1)
+        self._theme_hov      = False
+        if _DUAL_MONITOR:
+            therapist_link.start()
+            therapist_link.set_present(True)     # a therapist is logged in
+            therapist_link.set_dark_mode(self._applied_theme_dark)   # start in sync
+
         # Restore state from a returning game session if set
         _panel   = getattr(_bi, 'pending_panel',   None)
         _patient = getattr(_bi, 'pending_patient', None)
@@ -396,6 +481,12 @@ class TherapistDashboardScene:
             self._open_panel(_panel)
         else:
             self._open_panel(0)
+
+        if _DUAL_MONITOR:
+            # Push the current selection to shared state so the patient monitor
+            # shows its Dashboard only when a patient is actually selected
+            # (fresh login -> none -> patient stays on the Waiting Screen).
+            self._push_selected_patient()
 
     # ──────────────────────────────────────────────────────────────────
     #  STATE INITS
@@ -518,13 +609,26 @@ class TherapistDashboardScene:
         """
         # Left edge: sidebar + padding
         mx = self.sidebar_w + int(24*(self.WIDTH/1920))
-        # Top edge: below top navigation bar (15% down)
+        # Top edge: below the header band (breadcrumb + Back live here)
         my = int(self.HEIGHT * 0.15)
         # Width: full screen - sidebar - margins
         mw = self.WIDTH - mx - int(24*(self.WIDTH/1920))
         # Height: screen - top - bottom margins
         mh = self.HEIGHT - my - int(16*(self.HEIGHT/1080))
         return pygame.Rect(mx, my, mw, mh)
+
+    def _tt(self, px):
+        """Touch-target size for an INTERACTIVE control: a 1080-referenced px,
+        never below ~50px on the 7-inch panel so a fingertip clears it."""
+        v = int(px * self._fs)
+        if self._touch_ui:
+            v = max(v, 50)
+        return v
+
+    def _sc(self, px):
+        """Plain scaled size for a NON-interactive element (dot, row height,
+        spacing) -- no tap-target floor."""
+        return max(1, int(px * self._fs))
 
     # ──────────────────────────────────────────────────────────────────
     #  EDIT PROFILE MODAL — Manages therapist profile editing interface
@@ -614,10 +718,74 @@ class TherapistDashboardScene:
         if self.action_triggered:
             return None
 
+        # ── "Session in Progress" screen (panel 7) owns all input ────
+        if self.active_panel == 7:
+            if event.type == pygame.FINGERDOWN:
+                self._sm_handle_click((int(event.x * self.WIDTH), int(event.y * self.HEIGHT)))
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                import builtins as _bi2
+                _norm = getattr(_bi2, 'normalise_pos', lambda p: p)
+                self._sm_handle_click(_norm(event.pos))
+            return None
+
         # ── Calibration window intercepts all events when active ──────
         if self._cal_win is not None:
             self._cal_win.handle_event(event)
             return None
+
+        # ── Patient List scrolling (wheel + touch drag) ──────────────
+        if self.active_panel == 0:
+            if event.type == pygame.MOUSEWHEEL:
+                step = int(60 * self._fs)
+                self._pl_scroll = max(0, min(self._pl_scroll - event.y * step,
+                                             self._pl_scroll_max))
+                return None
+            if event.type == pygame.FINGERDOWN:
+                self._pl_drag_y = event.y * self.HEIGHT
+            elif event.type == pygame.FINGERMOTION and self._pl_drag_y is not None:
+                cy = event.y * self.HEIGHT
+                self._pl_scroll = max(0, min(self._pl_scroll + (self._pl_drag_y - cy),
+                                             self._pl_scroll_max))
+                self._pl_drag_y = cy
+                return None
+            elif event.type == pygame.FINGERUP:
+                self._pl_drag_y = None
+
+        # ── Patient page Info tab: scroll the field list ────────────
+        if self.active_panel == 8 and self._pv_tab == "info":
+            if event.type == pygame.MOUSEWHEEL:
+                self._pv_info_scroll = max(0, min(
+                    self._pv_info_scroll - event.y * int(60 * self._fs),
+                    self._pv_info_scroll_max))
+                return None
+            if event.type == pygame.FINGERDOWN:
+                self._pv_drag_y = event.y * self.HEIGHT
+            elif event.type == pygame.FINGERMOTION and getattr(self, "_pv_drag_y", None) is not None:
+                cy = event.y * self.HEIGHT
+                self._pv_info_scroll = max(0, min(
+                    self._pv_info_scroll + (self._pv_drag_y - cy), self._pv_info_scroll_max))
+                self._pv_drag_y = cy
+                return None
+            elif event.type == pygame.FINGERUP:
+                self._pv_drag_y = None
+
+        # ── Register Patient (touch): scroll the form ───────────────
+        if self.active_panel == 6 and self._touch_ui:
+            if event.type == pygame.MOUSEWHEEL:
+                self._rp_scroll = max(0, min(
+                    self._rp_scroll - event.y * int(60 * self._fs),
+                    self._rp_scroll_max))
+                return None
+            if event.type == pygame.FINGERDOWN:
+                self._rp_drag_y = event.y * self.HEIGHT
+            elif event.type == pygame.FINGERMOTION and self._rp_drag_y is not None:
+                cy = event.y * self.HEIGHT
+                self._rp_scroll = max(0, min(
+                    self._rp_scroll + (self._rp_drag_y - cy), self._rp_scroll_max))
+                self._rp_drag_y = cy
+                return None
+            elif event.type == pygame.FINGERUP:
+                self._rp_drag_y = None
 
         # ── Touch screen input (mobile/tablet) ──
         if event.type == pygame.FINGERDOWN:
@@ -742,7 +910,9 @@ class TherapistDashboardScene:
                 play_click()
                 self.modal = None
                 game_type  = (self.gc.get("selected_game") or (None, None))[1] or "Grip Strength"
-                self._cal_win = CalibrationWindow(self.WIDTH, self.HEIGHT, game_type)
+                self._cal_win = CalibrationWindow(self.WIDTH, self.HEIGHT, game_type, dark_mode=self._applied_theme_dark)
+                if _DUAL_MONITOR:
+                    therapist_link.calibrate_begin(game_type)
                 self._sync_dur_to_cal()
                 return None
             if self._mismatch_cancel_rect.collidepoint(pos):
@@ -786,10 +956,37 @@ class TherapistDashboardScene:
             yr, nr = self._confirm_rects()
             if yr.collidepoint(pos):
                 play_click()
+                if _DUAL_MONITOR:
+                    therapist_link.set_present(False)   # logged out ...
+                    therapist_link.set_booting(True)    # ... back on the Login page -> patient Waiting Screen
                 self.action_triggered = True
                 return "login"
             if nr.collidepoint(pos):
                 play_click()
+                self.modal = None
+            return None
+
+        if self.modal == "select_patient_confirm":
+            yr, nr = self._confirm_rects()
+            if yr.collidepoint(pos):                    # CONFIRM
+                play_click()
+                self._confirm_select_patient()
+            elif nr.collidepoint(pos):                  # CANCEL
+                play_click()
+                self._pending_select_patient = None
+                self.modal = None
+            return None
+
+        if self.modal == "deselect_patient_confirm":
+            yr, nr = self._confirm_rects()
+            if yr.collidepoint(pos):                    # CONFIRM -> clear the selection
+                play_click()
+                self._pending_deselect_patient = None
+                self.modal = None
+                self._set_selected_patient(None)
+            elif nr.collidepoint(pos):                  # CANCEL -> keep it selected
+                play_click()
+                self._pending_deselect_patient = None
                 self.modal = None
             return None
 
@@ -805,6 +1002,11 @@ class TherapistDashboardScene:
             play_confirm_alert()
             self.modal = "logout_confirm"; return None
 
+        if self._theme_btn_rect.collidepoint(pos):
+            play_click()
+            self._apply_theme(not self._applied_theme_dark)   # -> therapist + patient
+            return None
+
         for i, r in enumerate(self.nav_rects):
             if r.collidepoint(pos):
                 play_click()
@@ -813,6 +1015,13 @@ class TherapistDashboardScene:
         # ── Back button ───────────────────────────────────────────────
         if self.active_panel != -1 and self._back_btn_rect.collidepoint(pos):
             play_click(); self._go_back(); return None
+
+        # ── Clickable breadcrumbs ─────────────────────────────────────
+        for hit, target in self._crumb_rects:
+            if hit.collidepoint(pos):
+                play_click()
+                self._nav_breadcrumb(target)
+                return None
 
         # ── Home cards ────────────────────────────────────────────────
         if self.active_panel == -1:
@@ -824,6 +1033,10 @@ class TherapistDashboardScene:
 
         # ── Panel 0: Patient List ─────────────────────────────────────
         if self.active_panel == 0:
+            if self._pl_up_rect.collidepoint(pos):
+                play_click(); self._pl_scroll_by(-1); return None
+            if self._pl_down_rect.collidepoint(pos):
+                play_click(); self._pl_scroll_by(1); return None
             if self._pt_search_rect.collidepoint(pos):
                 self._pt_search_active = True; return None
             else:
@@ -833,30 +1046,61 @@ class TherapistDashboardScene:
             for row in self._patient_rows:
                 btn_rect = row[0]
                 patient  = row[1]
-                action   = row[2] if len(row) > 2 else "select"
+                action   = row[2] if len(row) > 2 else "name"
                 if btn_rect.collidepoint(pos):
                     play_click()
                     if action == "share":
-                        self._open_share_modal(patient)
-                    elif action == "edit":
-                        self._open_ep_modal(patient)
-                    elif action == "name":
-                        self.selected_patient = patient
-                        self._init_game_config_state()
-                        self.calibration_done   = False
-                        self.calibration_result = None
-                        self._cal_win           = None
-                        self._open_panel(4)
-                    elif action == "select":
-                        if (self.selected_patient is not None and
-                                self.selected_patient.get("id") == patient.get("id")):
-                            self.selected_patient = None
-                        else:
-                            self.selected_patient = patient
+                        self._open_share_modal(patient)     # only right-side action left
+                    else:   # "name" -- the row opens the patient's own page.
+                        # Does NOT select the patient; selection happens there.
+                        self.preview_patient = patient
+                        self._pv_tab = "info"
+                        self._pv_info_scroll = 0
+                        self._open_panel(8)
                     return None
+
+        # ── Panel 8: the patient's own page (info + records + selection) ──
+        if self.active_panel == 8:
+            if self._pv_info_up_rect.collidepoint(pos):
+                play_click(); self._pv_info_scroll = max(0, self._pv_info_scroll - int(160*self._fs)); return None
+            if self._pv_info_down_rect.collidepoint(pos):
+                play_click()
+                self._pv_info_scroll = min(self._pv_info_scroll_max, self._pv_info_scroll + int(160*self._fs))
+                return None
+            for key, r in self._pv_tab_rects.items():
+                if r.collidepoint(pos):
+                    play_click()
+                    self._pv_tab = key
+                    self._pv_info_scroll = 0
+                    return None
+            if self._pv_edit_rect.collidepoint(pos) and self.preview_patient:
+                play_click()
+                self._open_ep_modal(self.preview_patient)   # same edit modal as before
+                return None
+            if self._pv_select_rect.collidepoint(pos) and self.preview_patient:
+                play_confirm_alert()
+                if self._is_selected(self.preview_patient):
+                    # DESELECT PATIENT -- confirm first, then clear (stay here).
+                    self._pending_deselect_patient = self.preview_patient
+                    self.modal = "deselect_patient_confirm"
+                else:
+                    # SELECT PATIENT -- confirm, then continue to Game Config.
+                    self._pending_select_patient = self.preview_patient
+                    self.modal = "select_patient_confirm"
+                return None
 
         # ── Panel 6: Register Patient ─────────────────────────────────
         if self.active_panel == 6:
+            if self._touch_ui:
+                if self._rp_up_rect.collidepoint(pos):
+                    play_click()
+                    self._rp_scroll = max(0, self._rp_scroll - int(160 * self._fs))
+                    return None
+                if self._rp_down_rect.collidepoint(pos):
+                    play_click()
+                    self._rp_scroll = min(self._rp_scroll_max,
+                                          self._rp_scroll + int(160 * self._fs))
+                    return None
             self._rp_handle_click(pos)
 
         # ── Panel 4: Game Configuration ───────────────────────────────
@@ -873,17 +1117,13 @@ class TherapistDashboardScene:
                 open_key, open_opts = self._ss_open_param
                 pr = self._ss_param_rects.get(open_key)
                 if pr:
-                    opt_h = int(36 * self.HEIGHT / 1080)
+                    opt_h = self._tt(44) if self._touch_ui else int(36 * self.HEIGHT / 1080)
                     for j, opt_val in enumerate(open_opts):
                         or_ = pygame.Rect(pr.x, pr.bottom + j * opt_h, pr.width, opt_h)
                         if or_.collidepoint(pos):
                             play_click()
                             self.gc[open_key] = opt_val
-                            if opt_val == "Custom":
-                                self._gc_custom_dur     = ""
-                                self._ss_custom_dur_active = True
-                            else:
-                                self._ss_custom_dur_active = False
+                            self._ss_custom_dur_active = False
                             self._ss_open_param = None
                             return None
                 self._ss_open_param = None
@@ -896,20 +1136,14 @@ class TherapistDashboardScene:
             if self._calibrate_btn_rect.collidepoint(pos):
                 play_click()
                 game_type = (self.gc.get("selected_game") or (None, None))[1] or "Grip Strength"
-                self._cal_win = CalibrationWindow(self.WIDTH, self.HEIGHT, game_type)
+                self._cal_win = CalibrationWindow(self.WIDTH, self.HEIGHT, game_type, dark_mode=self._applied_theme_dark)
+                if _DUAL_MONITOR:
+                    therapist_link.calibrate_begin(game_type)
                 self._sync_dur_to_cal()
                 return None
 
-            # ── Custom duration field ──────────────────────────────────
-            if self.gc.get("duration") == "Custom":
-                if self._ss_custom_dur_rect.collidepoint(pos):
-                    self._ss_custom_dur_active = True
-                    return None
-                else:
-                    self._ss_custom_dur_active = False
-
             # ── Duration / Speed dropdown toggle ──────────────────────
-            DUR_OPTS = ["60 seconds", "120 seconds", "180 seconds", "Custom"]
+            DUR_OPTS = ["60 seconds", "120 seconds", "180 seconds"]
             SPD_OPTS = ["Slow", "Normal", "Fast"]
             for pk, opts in [("duration", DUR_OPTS), ("speed", SPD_OPTS)]:
                 pr = self._ss_param_rects.get(pk)
@@ -931,14 +1165,120 @@ class TherapistDashboardScene:
         if self.active_panel == 6:   self._open_panel(0)
         elif self.active_panel == 4: self._open_panel(0)
         elif self.active_panel == 5: self._open_panel(4)
+        elif self.active_panel == 8: self._open_panel(0)     # patient page -> Patient List
+        elif self.active_panel == 7:
+            # Session in Progress -> Game Configuration. Terminate any active
+            # game/session first so no stale patient-side state is left behind.
+            self._sm_back()
+
+    def _nav_breadcrumb(self, target):
+        """Handle a click on a clickable breadcrumb item."""
+        kind, val = target
+        if kind == "panel":
+            self._open_panel(val)
+        elif kind == "patient" and val:
+            self.preview_patient = val
+            self._pv_tab = "info"
+            self._pv_info_scroll = 0
+            self._open_panel(8)
+
+    def _view_patient(self):
+        """Which patient the per-patient record panels (Analytics / Calibration /
+        Session History) should display: the Preview target while reviewing on
+        panel 8, otherwise the selected session patient."""
+        if self.active_panel == 8:
+            return self.preview_patient
+        return self.selected_patient
+
+    def _apply_theme(self, dark: bool):
+        """One source of truth for the RecovR light/dark theme. Called whenever
+        the therapist changes it (the calibration-window toggle). Applies it on
+        this side (constants.get_theme() drives the games / calibration window)
+        AND pushes it to the patient monitor immediately -- no reload, no new
+        session, works on whatever patient screen is showing."""
+        if dark == self._applied_theme_dark:
+            return
+        self._applied_theme_dark = dark
+        try:
+            from constants import set_dark_mode
+            set_dark_mode(dark)
+        except Exception:
+            pass
+        if _DUAL_MONITOR:
+            therapist_link.set_dark_mode(dark)
+
+    # ── selected-patient: ONE source of truth (self.selected_patient),
+    #    mirrored into the shared session so every view + the patient monitor
+    #    agree. Route ALL selection changes through _set_selected_patient(). ──
+    def _is_selected(self, patient):
+        return bool(patient and self.selected_patient
+                    and self.selected_patient.get("id") == patient.get("id"))
+
+    def _push_selected_patient(self):
+        if not _DUAL_MONITOR:
+            return
+        p = self.selected_patient
+        if not p:
+            therapist_link.set_selected_patient(None)
+            return
+        # Attach the patient's recent session history so the Patient Dashboard
+        # can show it (the patient process has no DB access of its own).
+        hist = []
+        try:
+            if hasattr(self.db, "get_sessions"):
+                for s in self.db.get_sessions(self.account["id"], patient_id=p["id"])[:20]:
+                    hist.append({
+                        "game":       s.get("game", ""),
+                        "played_at":  str(s.get("played_at", ""))[:10],
+                        "difficulty": s.get("difficulty", ""),
+                        "score":      s.get("score", ""),
+                    })
+        except Exception:
+            pass
+        therapist_link.set_selected_patient(
+            {"id": p.get("id"), "full_name": p.get("full_name", ""), "history": hist})
+
+    def _set_selected_patient(self, patient):
+        """Set (patient dict) or clear (None) the selected session patient and
+        mirror it to shared state. The patient monitor shows its Dashboard only
+        while this is set, and returns to the Waiting Screen when it is cleared."""
+        self.selected_patient = patient or None
+        self._push_selected_patient()
+
+    def _pl_scroll_by(self, direction):
+        """Scroll the Patient List (touchscreen ▲/▼ buttons and mouse wheel).
+        `direction` is -1 (up) or +1 (down); each press moves ~3 rows."""
+        step = int(120 * self._fs) * 3 * (1 if direction > 0 else -1)
+        self._pl_scroll = max(0, min(self._pl_scroll + step, self._pl_scroll_max))
+
+    def _confirm_select_patient(self):
+        """The single place a patient actually becomes the session patient:
+        reached only after the SELECT -> confirmation dialog is confirmed.
+        Sets the patient and continues to Game Configuration."""
+        patient = self._pending_select_patient
+        self._pending_select_patient = None
+        self.modal = None
+        if not patient:
+            return
+        self._set_selected_patient(patient)
+        self._init_game_config_state()
+        self.calibration_done   = False
+        self.calibration_result = None
+        self._cal_win           = None
+        self._open_panel(4)
 
     def _open_panel(self, idx):
         self.active_panel      = idx
         self._ss_open_param    = None   # close any open session-detail dropdown
         self._ss_custom_dur_active = False
+        if idx == 6:
+            self._rp_scroll  = 0
+            self._rp_drag_y  = None
         if idx == 0:
             self._pt_search_active = False
             self._pt_search_text   = ""
+            self._pl_scroll        = 0
+            self._pl_drag_y        = None
             try:
                 self.patients = (
                     self.db.get_all_patients(therapist_id=self.account["id"])
@@ -965,8 +1305,8 @@ class TherapistDashboardScene:
         """Pull CalibrationWindow Advanced Settings duration → Session Details."""
         cal_d = cal_win.adv_duration
         if cal_d == "Custom":
-            self.gc["duration"]    = "Custom"
-            self._gc_custom_dur    = cal_win.adv_custom_dur or ""
+            # specific-time entry was removed from Game Config -- keep the preset
+            pass
         else:
             try:
                 self.gc["duration"] = f"{int(cal_d.split()[0])} seconds"
@@ -1002,21 +1342,42 @@ class TherapistDashboardScene:
         import builtins
         game_name = (self.gc.get("selected_game") or (None,))[0]
         scene_key = self._GAME_SCENE_MAP.get(game_name)
-        if not scene_key:
-            return None  # game not yet implemented
+        if not scene_key and not _DUAL_MONITOR:
+            return None  # game not yet implemented (single-window path)
         dur_str = self.gc.get("duration", "60 seconds")
-        if dur_str == "Custom":
-            try:
-                dur_sec = int(self._gc_custom_dur) if self._gc_custom_dur else 60
-            except ValueError:
-                dur_sec = 60
-        else:
-            try:
-                dur_sec = int(dur_str.split()[0])
-            except (ValueError, IndexError):
-                dur_sec = 60
+        try:
+            dur_sec = int(str(dur_str).split()[0])   # "120 seconds" -> 120
+        except (ValueError, IndexError):
+            dur_sec = 60
         raw_diff  = self.gc.get("difficulty", "Easy")
         game_diff = raw_diff
+
+        # ── Dual-monitor "START SESSION": send the config, fire START_SESSION   ──
+        # ── (patient Welcome/Waiting -> How to Play; game NOT running), and     ──
+        # ── navigate to the "Session in Progress" screen (panel 7). The actual  ──
+        # ── game starts later, when the therapist clicks START there.           ──
+        if _DUAL_MONITOR:
+            # Same payload the standalone app puts in builtins.pending_game_data,
+            # so the real game on the patient monitor behaves identically.
+            therapist_link.configure({
+                "selected_game":  game_name,
+                "difficulty":     game_diff,
+                "duration_sec":   dur_sec,
+                "speed":          self.gc.get("speed", "Normal"),
+                "calibration":    self.calibration_result or {},
+                "dark_mode":      (self.calibration_result or {}).get("dark_mode", True),
+                "patient_id":     (self.selected_patient or {}).get("id"),
+                "patient_name":   (self.selected_patient or {}).get("full_name", ""),
+                "therapist_name": self.account.get("full_name", ""),
+                "account_id":     self.account.get("id"),
+            })
+            therapist_link.command(_rc_cmd.START_SESSION)
+            self._sm_result = None
+            self._sm_volume = None
+            self._sm_stopped_notice = False
+            self._open_panel(7)
+            return None                      # do NOT switch this window to a game scene
+
         builtins.pending_game_data = {
             "account_id":   self.account.get("id"),
             "account":      self.account,
@@ -1031,6 +1392,342 @@ class TherapistDashboardScene:
         builtins.pending_account = self.account
         self.action_triggered = True
         return scene_key
+
+    # ══════════════════════════════════════════════════════════════════
+    #  PANEL 7 — "SESSION IN PROGRESS"  (dual-monitor; RECOVR_DUAL_MONITOR=1)
+    #
+    #  A real dashboard screen (not a pop-up). ONE state-driven control button
+    #  START → PAUSE → RESUME → PAUSE ... → RESTART, plus Volume; the standard
+    #  dashboard Back button in the header leaves the screen (no separate Exit),
+    #  plus a separate red emergency STOP at the lower-right of the interface.
+    #  (START SESSION already sent the config + START_SESSION; the patient is now
+    #  on How to Play. This button's START sends START_GAME -> the game runs.)
+    # ══════════════════════════════════════════════════════════════════
+
+    _SM_VOL_STEPS = [0.0, 0.25, 0.5, 0.75, 1.0]
+
+    def _sm_update(self, mouse_pos):
+        st = therapist_link.get_state() or {}
+        self._sm_state = st
+        status = st.get("status", "")
+        if status == _rc_cmd.COMPLETE and self._sm_result is None:
+            self._sm_result = dict(st.get("result") or {}) or {"score": "-"}
+        if status in (_rc_cmd.RUNNING, _rc_cmd.PAUSED):
+            self._sm_result = None
+        if self._sm_volume is None:
+            try:
+                self._sm_volume = float(st.get("volume", 0.4))
+            except (TypeError, ValueError):
+                self._sm_volume = 0.4
+        self._sm_hover = None
+        for key, (r, enabled) in self._sm_btn_rects.items():
+            if enabled and r.collidepoint(mouse_pos):
+                self._sm_hover = key
+        if self._sm_stop_rect.collidepoint(mouse_pos):
+            self._sm_hover = "stop"
+        if self._sm_notice_continue_rect.collidepoint(mouse_pos):
+            self._sm_hover = "notice_continue"
+        if self._sm_notice_back_rect.collidepoint(mouse_pos):
+            self._sm_hover = "notice_back"
+
+    def _sm_primary(self, status):
+        """(icon, label, command) for the single state-driven control button."""
+        if status == _rc_cmd.RUNNING:
+            return ("pause",  "PAUSE",   _rc_cmd.PAUSE_GAME)
+        if status == _rc_cmd.PAUSED:
+            return ("start",  "RESUME",  _rc_cmd.RESUME_GAME)
+        if status == _rc_cmd.COMPLETE:
+            return ("restart", "RESTART", _rc_cmd.RESTART_GAME)
+        return ("start", "START", _rc_cmd.START_GAME)   # READY / connecting
+
+    def _sm_leave(self):
+        """Clear the session and return to Game Configuration."""
+        therapist_link.reset()
+        self._sm_result = None
+        self._sm_volume = None
+        self._sm_stopped_notice = False
+        self._open_panel(4)                 # -> Game Configuration (NOT Patient List)
+
+    def _sm_back(self):
+        """The standard dashboard Back button on panel 7: stop any active game
+        and navigate to Game Configuration -- no stale session left behind."""
+        st = self._sm_state or {}
+        if st.get("status") in (_rc_cmd.RUNNING, _rc_cmd.PAUSED):
+            therapist_link.command(_rc_cmd.STOP_GAME)
+        self._sm_leave()
+
+    def _sm_emergency_stop(self):
+        """Red STOP: HOLD the game (pause it -- state preserved) and open the
+        'Game Stopped' decision screen on BOTH monitors. The game is NOT
+        terminated yet; the therapist still chooses CONTINUE or BACK."""
+        st = self._sm_state or {}
+        if st.get("status") == _rc_cmd.RUNNING:
+            therapist_link.command(_rc_cmd.PAUSE_GAME)   # freeze; keep the instance
+        therapist_link.set_stop_pending(True)            # -> decision state, both monitors
+        self._sm_stopped_notice = True
+
+    def _sm_continue(self):
+        """CONTINUE: resume the SAME game and stay on Session in Progress.
+        No teardown, no navigation."""
+        self._sm_stopped_notice = False
+        therapist_link.set_stop_pending(False)
+        if (self._sm_state or {}).get("status") == _rc_cmd.PAUSED:
+            therapist_link.command(_rc_cmd.RESUME_GAME)  # patient resumes the same game
+
+    def _sm_end_session(self):
+        """BACK: end the current game/session -- terminate + clean up, then
+        therapist -> Game Configuration (patient -> Patient Dashboard / Waiting)."""
+        self._sm_stopped_notice = False
+        therapist_link.set_stop_pending(False)
+        if (self._sm_state or {}).get("status") in (
+                _rc_cmd.RUNNING, _rc_cmd.PAUSED, _rc_cmd.READY):
+            therapist_link.command(_rc_cmd.STOP_GAME)
+        self._sm_leave()                                 # reset() + _open_panel(4)
+
+    def _sm_handle_click(self, pos):
+        # "Game Stopped" decision screen -> CONTINUE (resume) | BACK (end session).
+        if self._sm_stopped_notice:
+            if self._sm_notice_continue_rect.collidepoint(pos):
+                play_click(); self._sm_continue()
+            elif self._sm_notice_back_rect.collidepoint(pos):
+                play_click(); self._sm_end_session()
+            return
+        # the standard dashboard Back button (drawn by _draw_panel_shell)
+        if self._back_btn_rect.collidepoint(pos):
+            play_click()
+            self._go_back()
+            return
+        # emergency STOP: separate red button
+        if self._sm_stop_rect.collidepoint(pos):
+            play_click()
+            self._sm_emergency_stop()
+            return
+        for key, (r, enabled) in list(self._sm_btn_rects.items()):
+            if not r.collidepoint(pos) or not enabled:
+                continue
+            play_click()
+            if key == "primary":
+                _icon, _lbl, command = self._sm_primary((self._sm_state or {}).get("status", ""))
+                therapist_link.command(command)
+                if command == _rc_cmd.RESTART_GAME:
+                    self._sm_result = None
+            elif key == "volume":
+                cur = self._sm_volume if self._sm_volume is not None else 0.4
+                idx = min(range(len(self._SM_VOL_STEPS)),
+                          key=lambda i: abs(self._SM_VOL_STEPS[i] - cur))
+                self._sm_volume = self._SM_VOL_STEPS[(idx + 1) % len(self._SM_VOL_STEPS)]
+                therapist_link.set_volume(self._sm_volume)
+            return
+
+    # -- draw one vector control glyph inside a button ---------------
+    def _sm_icon(self, surface, kind, cx, cy, s, col):
+        w = max(3, int(s * 0.30))
+        if kind == "pause":
+            bw = max(3, int(s * 0.34)); bh = int(s * 1.4); g = int(s * 0.34)
+            pygame.draw.rect(surface, col, (cx - g - bw, cy - bh // 2, bw, bh), border_radius=3)
+            pygame.draw.rect(surface, col, (cx + g,      cy - bh // 2, bw, bh), border_radius=3)
+        elif kind == "start":                       # play triangle (START / RESUME)
+            pygame.draw.polygon(surface, col, [
+                (cx - int(s * 0.55), cy - int(s * 0.75)),
+                (cx - int(s * 0.55), cy + int(s * 0.75)),
+                (cx + int(s * 0.80), cy)])
+        elif kind == "restart":
+            import math as _m
+            rr = pygame.Rect(cx - s, cy - s, 2 * s, 2 * s)
+            pygame.draw.arc(surface, col, rr, _m.radians(70), _m.radians(360), w)
+            ax, ay = cx + int(s * 0.34), cy - int(s * 0.94)
+            pygame.draw.polygon(surface, col, [
+                (ax, ay - int(s * 0.10)),
+                (ax + int(s * 0.55), ay + int(s * 0.05)),
+                (ax + int(s * 0.02), ay + int(s * 0.55))])
+        elif kind == "volume":
+            pygame.draw.polygon(surface, col, [
+                (cx - int(s * 0.95), cy - int(s * 0.30)),
+                (cx - int(s * 0.45), cy - int(s * 0.30)),
+                (cx + int(s * 0.05), cy - int(s * 0.80)),
+                (cx + int(s * 0.05), cy + int(s * 0.80)),
+                (cx - int(s * 0.45), cy + int(s * 0.30)),
+                (cx - int(s * 0.95), cy + int(s * 0.30))])
+            vol = self._sm_volume if self._sm_volume is not None else 0.4
+            arcs = int(round(vol * 3))
+            if arcs == 0:
+                mx = cx + int(s * 0.35)
+                pygame.draw.line(surface, col, (mx, cy - int(s * 0.4)),
+                                 (mx + int(s * 0.55), cy + int(s * 0.4)), w)
+                pygame.draw.line(surface, col, (mx, cy + int(s * 0.4)),
+                                 (mx + int(s * 0.55), cy - int(s * 0.4)), w)
+            else:
+                import math as _m
+                for i in range(arcs):
+                    rad = int(s * (0.45 + 0.42 * i))
+                    ar = pygame.Rect(cx + int(s * 0.1) - rad, cy - rad, 2 * rad, 2 * rad)
+                    pygame.draw.arc(surface, col, ar, _m.radians(-45), _m.radians(45), w)
+        elif kind == "exit":
+            x0, x1 = cx - int(s * 0.85), cx + int(s * 0.05)
+            y0, y1 = cy - int(s * 0.85), cy + int(s * 0.85)
+            pygame.draw.lines(surface, col, False,
+                              [(x1, y0), (x0, y0), (x0, y1), (x1, y1)], w)
+            pygame.draw.line(surface, col, (cx - int(s * 0.25), cy),
+                             (cx + int(s * 0.85), cy), w)
+            pygame.draw.polygon(surface, col, [
+                (cx + int(s * 0.55), cy - int(s * 0.42)),
+                (cx + int(s * 1.02), cy),
+                (cx + int(s * 0.55), cy + int(s * 0.42))])
+        elif kind == "stop":                        # filled square (emergency stop)
+            pygame.draw.rect(surface, col, (cx - int(s * 0.7), cy - int(s * 0.7),
+                                            int(s * 1.4), int(s * 1.4)), border_radius=4)
+
+    def _sm_draw(self, surface, pa):
+        """Panel-7 drawer: (surface, panel-area rect). Also draws the separate
+        emergency STOP button at the lower-right of the whole interface."""
+        F = self.fnt
+        W, H = self.WIDTH, self.HEIGHT
+        st  = self._sm_state or {}
+        status = st.get("status", "connecting")
+        tel = st.get("telemetry") or {}
+        cfg = st.get("config") or {}
+
+        running  = status == _rc_cmd.RUNNING
+        paused   = status == _rc_cmd.PAUSED
+        complete = status == _rc_cmd.COMPLETE
+        stopped  = status == _rc_cmd.STOPPED
+
+        _card_bg(surface, pa, alpha=235, radius=16)
+        pad = int(44 * (W / 1920))
+        x0  = pa.x + pad
+        y   = pa.y + pad
+
+        surface.blit(F["panel_title"].render(cfg.get("selected_game") or "Session",
+                                             True, (28, 42, 64)), (x0, y))
+        y += max(int(76 * (H / 1080)), self._sc(60))
+
+        if self._sm_stopped_notice:
+            state_txt = "Stopped — choose CONTINUE or BACK"
+        elif stopped:
+            state_txt = "Stopped"
+        elif status in (_rc_cmd.READY, _rc_cmd.IDLE, "connecting"):
+            state_txt = "Patient is on How to Play — press START"
+        elif paused:
+            state_txt = "Paused"
+        elif complete:
+            state_txt = "Complete"
+        else:
+            state_txt = "Running"
+        rows = [
+            ("Patient",    cfg.get("patient_name") or "-"),
+            ("Difficulty", cfg.get("difficulty") or "-"),
+            ("Status",     state_txt),
+        ]
+        if running or paused:
+            rows += [("Score",     tel.get("score", "-")),
+                     ("Elapsed",   f"{tel.get('elapsed_sec', '-')} s"),
+                     ("Remaining", f"{tel.get('remaining_sec', '-')} s")]
+        elif complete:
+            res = self._sm_result or {}
+            rows += [("Final score", res.get("score", "-")),
+                     ("Duration",    f"{res.get('duration_sec', '-')} s")]
+        val_dx = max(int(260 * W / 1920), self._sc(150)) if self._touch_ui \
+            else int(260 * W / 1920)
+        row_dy = max(int(42 * (H / 1080)), self._sc(40))
+        for k, v in rows:
+            surface.blit(F["body"].render(k, True, (120, 135, 160)), (x0, y))
+            surface.blit(F["body_b"].render(str(v), True, (38, 52, 78)), (x0 + val_dx, y))
+            y += row_dy
+
+        # ── control row: [ primary(START/PAUSE/RESUME/RESTART) ] [ VOLUME ] ──
+        # (EXIT removed -- use the standard dashboard Back button in the header)
+        bs  = max(int(108 * (H / 1080)), self._tt(104))
+        gap = int(34 * (W / 1920))
+        p_icon, p_label, _p_cmd = self._sm_primary(status)
+        specs = [
+            ("primary", p_icon,  p_label,  True),
+            ("volume",  "volume", "VOLUME", True),
+        ]
+        total = bs * len(specs) + gap * (len(specs) - 1)
+        bx = pa.x + (pa.width - total) // 2
+        brow_y = pa.y + pa.height - bs - int(64 * (H / 1080))
+        cap_font = F.get("small") or F["body"]
+        self._sm_btn_rects = {}
+        for key, icon, label, enabled in specs:
+            r = pygame.Rect(bx, brow_y, bs, bs)
+            self._sm_btn_rects[key] = (r, bool(enabled))
+            hovered = self._sm_hover == key and enabled
+            if key == "primary":
+                fill = (86, 162, 232) if hovered else (70, 150, 225)
+                pygame.draw.rect(surface, fill, r, border_radius=18)
+                ic = cap = (255, 255, 255)
+            else:
+                if hovered:
+                    fill, brd, ic, cap = (223, 235, 249), (90, 140, 210), (30, 48, 78), (55, 72, 100)
+                else:
+                    fill, brd, ic, cap = (236, 242, 250), (95, 145, 212), (36, 54, 86), (60, 76, 104)
+                pygame.draw.rect(surface, fill, r, border_radius=18)
+                pygame.draw.rect(surface, brd, r, 2, border_radius=18)
+            self._sm_icon(surface, icon, r.centerx, r.centery - int(bs * 0.13), int(bs * 0.22), ic)
+            cs = cap_font.render(label, True, cap)
+            surface.blit(cs, cs.get_rect(center=(r.centerx, r.bottom - int(bs * 0.20))))
+            bx += bs + gap
+
+        # ── emergency STOP: red, separate, lower-right of the interface ──
+        sw, sh = max(int(210 * W / 1920), self._tt(210)), max(int(78 * H / 1080), self._tt(70))
+        self._sm_stop_rect = pygame.Rect(W - sw - int(30 * W / 1920),
+                                         H - sh - int(30 * H / 1080), sw, sh)
+        shov = self._sm_hover == "stop"
+        pygame.draw.rect(surface, (232, 66, 60) if shov else (214, 48, 44),
+                         self._sm_stop_rect, border_radius=14)
+        pygame.draw.rect(surface, (150, 22, 20), self._sm_stop_rect, 2, border_radius=14)
+        gy = self._sm_stop_rect.centery
+        self._sm_icon(surface, "stop", self._sm_stop_rect.left + sh // 2, gy,
+                      int(sh * 0.22), (255, 255, 255))
+        ss = F["btn"].render("STOP", True, (255, 255, 255))
+        surface.blit(ss, ss.get_rect(midleft=(self._sm_stop_rect.left + sh, gy)))
+
+        # ── "Game Stopped" screen (both monitors show this) ──
+        if self._sm_stopped_notice:
+            self._sm_draw_stopped_notice(surface)
+        else:
+            self._sm_notice_continue_rect = pygame.Rect(0, 0, 1, 1)
+            self._sm_notice_back_rect     = pygame.Rect(0, 0, 1, 1)
+
+    def _sm_draw_stopped_notice(self, surface):
+        """The 'Game Stopped' decision screen: CONTINUE resumes the same game;
+        BACK ends the session -> Game Configuration / Patient Dashboard."""
+        F = self.fnt
+        W, H = self.WIDTH, self.HEIGHT
+        ov = pygame.Surface((W, H), pygame.SRCALPHA)
+        ov.fill((12, 18, 28, 190))
+        surface.blit(ov, (0, 0))
+        mw = min(W - int(40*W/1920), max(int(W * 0.46), self._tt(660)))
+        mh = max(int(H * 0.42), self._tt(320))
+        mx, my = (W - mw) // 2, (H - mh) // 2
+        mr = pygame.Rect(mx, my, mw, mh)
+        pygame.draw.rect(surface, (250, 250, 252), mr, border_radius=18)
+        pygame.draw.rect(surface, (214, 48, 44), mr, 3, border_radius=18)
+        t = F["modal_head"].render("GAME STOPPED", True, (200, 40, 40))
+        surface.blit(t, t.get_rect(centerx=mr.centerx, top=my + int(34 * H / 1080)))
+        for i, line in enumerate((
+                "CONTINUE  —  resume the current game.",
+                "BACK  —  end the session and return to Game Configuration.")):
+            s = F["small"].render(line, True, (60, 74, 96))
+            surface.blit(s, s.get_rect(centerx=mr.centerx,
+                                       top=my + int((100 + i*38) * H / 1080)))
+
+        bw, bh = max(int(230 * W / 1920), self._tt(220)), self._tt(58)
+        g = int(28 * W / 1920)
+        by = my + mh - bh - int(34 * H / 1080)
+        self._sm_notice_continue_rect = pygame.Rect(mr.centerx - bw - g // 2, by, bw, bh)
+        self._sm_notice_back_rect     = pygame.Rect(mr.centerx + g // 2,     by, bw, bh)
+        chov = self._sm_hover == "notice_continue"
+        bhov = self._sm_hover == "notice_back"
+        pygame.draw.rect(surface, (90, 165, 235) if chov else (74, 150, 225),
+                         self._sm_notice_continue_rect, border_radius=12)
+        pygame.draw.rect(surface, (205, 214, 226) if bhov else (188, 200, 214),
+                         self._sm_notice_back_rect, border_radius=12)
+        cb = F["btn"].render("CONTINUE", True, (255, 255, 255))
+        bb = F["btn"].render("BACK", True, (45, 60, 84))
+        surface.blit(cb, cb.get_rect(center=self._sm_notice_continue_rect.center))
+        surface.blit(bb, bb.get_rect(center=self._sm_notice_back_rect.center))
+
 
     # ──────────────────────────────────────────────────────────────────
     #  SHARE MODAL HELPERS
@@ -1145,6 +1842,7 @@ class TherapistDashboardScene:
         # Refresh patient name if selected
         if self.selected_patient and self.selected_patient["id"] == self._ep_patient["id"]:
             self.selected_patient["full_name"] = ep["full_name"].strip()
+            self._push_selected_patient()
         self.patients = (self.db.get_all_patients(therapist_id=self.account["id"])
                          if hasattr(self.db, "get_all_patients") else [])
         self._ep_success = "Patient updated successfully."
@@ -1154,7 +1852,7 @@ class TherapistDashboardScene:
         pid = self._ep_patient["id"]
         self.db.delete_patient(pid)
         if self.selected_patient and self.selected_patient.get("id") == pid:
-            self.selected_patient = None
+            self._set_selected_patient(None)
         self.patients = (self.db.get_all_patients(therapist_id=self.account["id"])
                          if hasattr(self.db, "get_all_patients") else [])
         self._ep_modal_open = False
@@ -1610,6 +2308,10 @@ class TherapistDashboardScene:
             mouse_pos: (x, y) tuple of current mouse position in pixels
             dt: delta time since last frame (in seconds)
         """
+        # ── "Session in Progress" screen (panel 7) ──
+        if self.active_panel == 7:
+            self._sm_update(mouse_pos)
+
         # ── Sidebar navigation hover ──
         # Reset to -1, then check each nav item for collision with mouse
         self.nav_hovered = -1
@@ -1621,6 +2323,7 @@ class TherapistDashboardScene:
         # ── Header/profile area hover ──
         self.edit_link_hovered = self._edit_link_rect.collidepoint(mouse_pos)
         self.logout_hovered    = self._logout_rect().collidepoint(mouse_pos)
+        self._theme_hov        = self._theme_btn_rect.collidepoint(mouse_pos)
 
         # ── Panel interactive elements hover ──
         self.rp_btn_hov        = self._rp_btn_rect.collidepoint(mouse_pos)         # Register Patient submit
@@ -1634,11 +2337,16 @@ class TherapistDashboardScene:
         # ── Calibration window update (delegates sensor + phase logic) ──
         if self._cal_win is not None:
             self._cal_win.update(dt)
+            # Light/dark toggle inside the calibration window -> sync BOTH
+            # interfaces immediately (no reload / new session / navigation).
+            self._apply_theme(bool(self._cal_win.dark_mode))
             if self._cal_win.done:
                 self.calibration_done   = True
                 self.calibration_result = self._cal_win.calibration_result
                 self._sync_dur_from_cal(self._cal_win)
                 self._cal_win           = None
+                if _DUAL_MONITOR:
+                    therapist_link.calibrate_end()
                 pt_id = (self.selected_patient or {}).get("id")
                 if pt_id and hasattr(self.db, "save_calibration"):
                     game_name = (self.gc.get("selected_game") or (None,))[0] or ""
@@ -1649,6 +2357,8 @@ class TherapistDashboardScene:
                     )
             elif self._cal_win.cancelled:
                 self._cal_win = None
+                if _DUAL_MONITOR:
+                    therapist_link.calibrate_end()
 
         # ── Share modal hover states ──
         self._share_search_hov  = self._share_search_rect.collidepoint(mouse_pos)
@@ -1674,7 +2384,8 @@ class TherapistDashboardScene:
             self._rp_ok_hov = self._rp_ok_rect.collidepoint(mouse_pos)
 
         # ── Confirmation modal hover ──
-        if self.modal in ("logout_confirm","delete_confirm","delete_patient_confirm"):
+        if self.modal in ("logout_confirm","delete_confirm","delete_patient_confirm",
+                          "select_patient_confirm","deselect_patient_confirm"):
             yr, nr = self._confirm_rects()
             self.confirm_yes_hov = yr.collidepoint(mouse_pos)
             self.confirm_no_hov  = nr.collidepoint(mouse_pos)
@@ -1727,15 +2438,30 @@ class TherapistDashboardScene:
             4: self._draw_game_config,
             5: self._draw_start_session,
             6: self._draw_register_patient,
+            7: self._sm_draw,               # dual-monitor "Session in Progress"
+            8: self._draw_patient_preview,  # review a patient (does NOT select them)
         }
         if self.active_panel in panel_drawers:
-            self._draw_panel_shell(surface, self.active_panel)
-            panel_drawers[self.active_panel](surface, self._panel_area())
+            # Panel 0 (Patient List) is the dashboard home now -- no Back button,
+            # no breadcrumb shell; it draws its own header and gets the full
+            # height (reclaim the header band the other panels reserve).
+            pa = self._panel_area()
+            if self.active_panel != 0:
+                self._draw_panel_shell(surface, self.active_panel)
+            else:
+                top = int(self.HEIGHT * (0.045 if self._touch_ui else 0.06))
+                pa = pygame.Rect(pa.x, top, pa.width,
+                                 self.HEIGHT - top - int(self.HEIGHT * 0.025))
+            panel_drawers[self.active_panel](surface, pa)
 
         if self.modal == "edit_profile":
             self._draw_overlay(surface); self._draw_edit_modal(surface)
         elif self.modal in ("logout_confirm","delete_confirm"):
             self._draw_overlay(surface); self._draw_confirm_modal(surface)
+        elif self.modal == "select_patient_confirm":
+            self._draw_overlay(surface); self._draw_select_confirm_modal(surface)
+        elif self.modal == "deselect_patient_confirm":
+            self._draw_overlay(surface); self._draw_deselect_confirm_modal(surface)
         elif self.modal == "register_success":
             self._draw_overlay(surface); self._draw_register_success_modal(surface)
         elif self.modal == "calibration_mismatch":
@@ -1763,6 +2489,8 @@ class TherapistDashboardScene:
         if self._cal_win is not None:
             self._cal_win.draw(surface)
 
+        # (Session in Progress = panel 7, drawn via panel_drawers above)
+
         if self.alpha < 255:
             self.fade_surface.set_alpha(255-self.alpha)
             surface.blit(self.fade_surface, (0,0))
@@ -1787,30 +2515,54 @@ class TherapistDashboardScene:
         surface.blit(s2, s2.get_rect(midleft=(lx+s1.get_width(), ly)))
 
         now = datetime.datetime.now()
-        ts  = self.fnt["time"].render(now.strftime("%I:%M %p"), True, (60,80,110))
-        ds  = self.fnt["header_date"].render(now.strftime("%b %d, %Y"), True, (110,128,150))
-        surface.blit(ts, ts.get_rect(midright=(sw-int(10*W/1920), ly-int(6*H/1080))))
-        surface.blit(ds, ds.get_rect(midright=(sw-int(10*W/1920), ly+int(14*H/1080))))
+        if self._touch_ui:
+            # clock + date, stacked, big enough to read at a glance
+            ts = self.fnt["nav"].render(now.strftime("%I:%M %p"), True, (55, 74, 104))
+            ds = self.fnt["small"].render(now.strftime("%b %d, %Y"), True, (110, 128, 150))
+            cy0 = ly + s1.get_height() // 2 + int(10 * H / 1080)
+            surface.blit(ts, (lx, cy0))
+            surface.blit(ds, (lx, cy0 + ts.get_height() + int(2 * H / 1080)))
+        else:
+            ts  = self.fnt["time"].render(now.strftime("%I:%M %p"), True, (60,80,110))
+            ds  = self.fnt["header_date"].render(now.strftime("%b %d, %Y"), True, (110,128,150))
+            surface.blit(ts, ts.get_rect(midright=(sw-int(10*W/1920), ly-int(6*H/1080))))
+            surface.blit(ds, ds.get_rect(midright=(sw-int(10*W/1920), ly+int(14*H/1080))))
 
-        pc_y = int(H*0.11); pc_h = int(H*0.13)
+        pc_y = int(H*(0.205 if self._touch_ui else 0.11)); pc_h = int(H*(0.185 if self._touch_ui else 0.13))
         pc_r = pygame.Rect(int(sw*0.05), pc_y, int(sw*0.90), pc_h)
         glass_pc = pygame.Surface((pc_r.width, pc_r.height), pygame.SRCALPHA)
         pygame.draw.rect(glass_pc, (195, 220, 255, 130),
                          (0, 0, pc_r.width, pc_r.height), border_radius=12)
         surface.blit(glass_pc, pc_r.topleft)
         pygame.draw.rect(surface, (175, 208, 240), pc_r, 1, border_radius=12)
-        ir = int(44*(H/1080)); ix = pc_r.x+int(sw*0.12); iy = pc_r.centery
+        f_nm  = self.fnt["profile_nm"]
+        f_sub = self.fnt["profile"]
+        ir = int(sw*0.13) if self._touch_ui else int(44*(H/1080))
+        ix = pc_r.x + int(sw*0.11) + ir
+        iy = pc_r.centery
         draw_icon(surface, self.account.get("icon_index",1), ix, iy, ir, shadow=False)
-        tx = ix+ir+int(26*(W/1920))
-        surface.blit(self.fnt["profile_nm"].render(self.account["full_name"],True,(40,55,75)),
-                     (tx, iy-int(32*(H/1080))))
-        surface.blit(self.fnt["profile"].render(self.account["role"],True,(100,115,140)),
-                     (tx, iy+int(2*(H/1080))))
+        tx  = ix + ir + int(12*(W/1920))
+        avail = pc_r.right - tx - int(8*W/1920)
+
+        def _fit(txt, fnt):
+            if fnt.size(txt)[0] <= avail:
+                return txt
+            while txt and fnt.size(txt + "…")[0] > avail:
+                txt = txt[:-1]
+            return txt + "…"
+
+        line_h = f_nm.get_height()
+        surface.blit(f_nm.render(_fit(self.account["full_name"], f_nm), True, (40,55,75)),
+                     (tx, iy - line_h - int(2*H/1080)))
+        surface.blit(f_sub.render(_fit(self.account.get("role",""), f_sub), True, (100,115,140)),
+                     (tx, iy + int(3*H/1080)))
         ec  = (50,120,200) if self.edit_link_hovered else (75,140,210)
-        es  = self.fnt["profile"].render("Edit Profile", True, ec)
-        ep  = (tx, iy+int(26*(H/1080)))
+        es  = f_sub.render("Edit Profile", True, ec)
+        ep  = (tx, iy + int(3*H/1080) + f_sub.get_height() + int(4*H/1080))
         surface.blit(es, ep)
-        self._edit_link_rect = pygame.Rect(ep[0], ep[1], es.get_width(), es.get_height())
+        self._edit_link_rect = pygame.Rect(ep[0]-int(8*W/1920), ep[1]-int(8*H/1080),
+                                           es.get_width()+int(16*W/1920),
+                                           es.get_height()+int(16*H/1080))
 
         for i, item in enumerate(SIDEBAR_NAV):
             r       = self.nav_rects[i]
@@ -1834,22 +2586,97 @@ class TherapistDashboardScene:
             surface.blit(sym, sym.get_rect(midleft=(px, r.centery)))
             surface.blit(lbl, lbl.get_rect(midleft=(px + sym.get_width() + int(10*W/1920), r.centery)))
 
+        if self._touch_ui:
+            # icon-only Light/Dark toggle in the rail's open middle -- easy to
+            # find + touch, not visually dominant. Syncs to the patient monitor.
+            tsz = self._tt(56)
+            tr  = pygame.Rect(int(sw*0.08), int(H*0.60), tsz, tsz)
+            self._theme_btn_rect = tr
+            tc = (60, 78, 108) if not self._theme_hov else (86, 104, 140)
+            pygame.draw.rect(surface, (236, 242, 250), tr, border_radius=14)
+            pygame.draw.rect(surface, tc, tr, 2, border_radius=14)
+            self._sun_moon_icon(surface, tr.centerx, tr.centery,
+                                int(tsz * 0.30), self._applied_theme_dark, tc)
+            cap = self.fnt["small"].render(
+                "Dark theme" if self._applied_theme_dark else "Light theme", True, (100, 118, 146))
+            surface.blit(cap, cap.get_rect(midleft=(tr.right + int(12*W/1920), tr.centery)))
+
         if self.selected_patient:
-            badge_y = self.nav_rects[-1].bottom + int(18*H/1080)
-            badge_r = pygame.Rect(int(sw*0.05), badge_y, int(sw*0.90), int(74*H/1080))
+            bh = self._tt(78) if self._touch_ui else int(74*H/1080)
+            badge_y = pc_r.bottom + int(20*H/1080)
+            badge_r = pygame.Rect(int(sw*0.05), badge_y, int(sw*0.90), bh)
             pygame.draw.rect(surface, (232,245,255), badge_r, border_radius=10)
             pygame.draw.rect(surface, (140,195,240), badge_r, 1, border_radius=10)
-            surface.blit(self.fnt["small"].render("Active Patient:", True, (90,120,160)),
-                         (badge_r.x+int(10*W/1920), badge_r.y+int(8*H/1080)))
+            surface.blit(self.fnt["small"].render("ACTIVE PATIENT", True, (90,120,160)),
+                         (badge_r.x+int(12*W/1920), badge_r.y+int(8*H/1080)))
             pname = self.selected_patient.get("full_name","—")
-            surface.blit(self.fnt["label"].render(pname, True, (40,80,140)),
-                         (badge_r.x+int(10*W/1920), badge_r.y+int(40*H/1080)))
+            pn = (self.fnt["body_b"] if self._touch_ui else self.fnt["label"])
+            surface.blit(pn.render(pname, True, (40,80,140)),
+                         (badge_r.x+int(12*W/1920), badge_r.bottom - pn.get_height() - int(8*H/1080)))
 
         lr = self._logout_rect()
+
+        if not self._touch_ui:
+            # desktop: a labelled Light/Dark pill above Logout.
+            # (touch uses the icon-only toggle by the clock, drawn above.)
+            th = max(int(46 * H / 1080), self._tt(44))
+            tr = pygame.Rect(int(sw * 0.05), lr.y - th - int(14 * H / 1080), int(sw*0.90), th)
+            self._theme_btn_rect = tr
+            dark = self._applied_theme_dark
+            tc = (58, 74, 104) if not self._theme_hov else (74, 92, 126)
+            pygame.draw.rect(surface, (236, 242, 250), tr, border_radius=10)
+            pygame.draw.rect(surface, tc, tr, 2, border_radius=10)
+            isz = int(tr.height * 0.26)
+            ls  = self.fnt["label"].render("Dark Mode" if dark else "Light Mode", True, tc)
+            grp = isz * 2 + int(10 * W / 1920) + ls.get_width()
+            ix  = tr.centerx - grp // 2 + isz
+            self._sun_moon_icon(surface, ix, tr.centery, isz, dark, tc)
+            surface.blit(ls, ls.get_rect(midleft=(ix + isz + int(10 * W / 1920), tr.centery)))
+
         lc = (165,25,25) if self.logout_hovered else (205,45,45)
         pygame.draw.rect(surface, lc, lr, border_radius=10)
         ls = self.fnt["btn"].render("Logout", True, (255,255,255))
         surface.blit(ls, ls.get_rect(center=lr.center))
+
+    def _share_icon(self, surface, cx, cy, s, col):
+        """A right-pointing arrow whose shaft arches gently upward -- 'send this
+        patient onward to another therapist'. Icon-only, vector-drawn to match
+        the rest of the RecovR glyphs."""
+        lw = max(2, int(s * 0.16))
+        # shaft: quadratic Bezier from the left, bowed upward, meeting the tip
+        tip = (cx + s * 0.92, cy - s * 0.16)          # tip -- a hair above centre
+        p0  = (cx - s * 0.98, cy + s * 0.10)
+        p1  = (cx - s * 0.05, cy - s * 0.88)          # control -> the upward arch
+        p2  = (tip[0] - s * 0.28, tip[1] + s * 0.04)
+        pts = []
+        for i in range(15):
+            t = i / 14.0
+            u = 1.0 - t
+            pts.append((int(u*u*p0[0] + 2*u*t*p1[0] + t*t*p2[0]),
+                        int(u*u*p0[1] + 2*u*t*p1[1] + t*t*p2[1])))
+        pts.append((int(tip[0]), int(tip[1])))
+        pygame.draw.lines(surface, col, False, pts, lw)
+        # arrowhead -- points to the RIGHT (wings back toward upper-left / lower-left)
+        hl, hw = s * 0.58, s * 0.52
+        pygame.draw.line(surface, col, (int(tip[0]), int(tip[1])),
+                         (int(tip[0] - hl), int(tip[1] - hw)), lw)
+        pygame.draw.line(surface, col, (int(tip[0]), int(tip[1])),
+                         (int(tip[0] - hl), int(tip[1] + hw)), lw)
+
+    def _sun_moon_icon(self, surface, cx, cy, s, dark, col):
+        """Small ☀ (light selected) / ☾ (dark selected) glyph."""
+        if dark:
+            pygame.draw.circle(surface, col, (cx, cy), s, 2)
+            pygame.draw.circle(surface, (236, 242, 250), (cx + int(s * 0.55), cy - int(s * 0.35)),
+                               int(s * 0.85))
+        else:
+            pygame.draw.circle(surface, col, (cx, cy), int(s * 0.6), 2)
+            for k in range(8):
+                import math
+                a = k * math.pi / 4
+                x1 = cx + int(math.cos(a) * s * 0.85); y1 = cy + int(math.sin(a) * s * 0.85)
+                x2 = cx + int(math.cos(a) * s * 1.15); y2 = cy + int(math.sin(a) * s * 1.15)
+                pygame.draw.line(surface, col, (x1, y1), (x2, y2), 2)
 
     # ──────────────────────────────────────────────────────────────────
     #  HOME
@@ -1898,42 +2725,95 @@ class TherapistDashboardScene:
         pa   = self._panel_area()
         W, H = self.WIDTH, self.HEIGHT
 
-        hdr = pygame.Rect(pa.x, pa.y-int(60*(H/1080)), pa.width, int(50*(H/1080)))
+        hdr_h = max(int(50*(H/1080)), self._tt(46))
+        hdr = pygame.Rect(pa.x, pa.y-hdr_h-int(10*(H/1080)), pa.width, hdr_h)
 
-        if idx in (4, 5, 6):
-            back_r = pygame.Rect(hdr.x, hdr.y, int(140*(W/1920)), hdr.height)
+        if idx in (4, 5, 6, 7, 8):
+            back_w = max(int(140*(W/1920)), self._tt(128))
+            back_r = pygame.Rect(hdr.x, hdr.y, back_w, hdr.height)
             glass_back = pygame.Surface((back_r.width, back_r.height), pygame.SRCALPHA)
             glass_back.fill((225, 238, 255, 180)); surface.blit(glass_back, back_r.topleft)
-            pygame.draw.rect(surface, (195,210,228), back_r, 1, border_radius=8)
-            bs = self.fnt["label"].render("Back", True, (75,110,170))
+            pygame.draw.rect(surface, (150,180,215), back_r, 2, border_radius=8)
+            bs = self.fnt["btn"].render("Back", True, (60,100,165))
             surface.blit(bs, bs.get_rect(center=back_r.center))
             self._back_btn_rect = back_r
-            crumb_x = hdr.x + int(160*(W/1920))
+            crumb_x = back_r.right + int(20*(W/1920))
         else:
             self._back_btn_rect = pygame.Rect(0, 0, 1, 1)
             crumb_x = hdr.x + int(12*(W/1920))
 
-        crumbs = self._breadcrumb(idx)
-        cx     = crumb_x
-        for j, crumb in enumerate(crumbs):
-            col = (30,44,65) if j==len(crumbs)-1 else (130,150,180)
-            cs  = self.fnt["breadcrumb"].render(crumb, True, col)
-            surface.blit(cs, (cx, hdr.centery - cs.get_height()//2))
+        crumbs = self._breadcrumb(idx)          # list of (label, target|None)
+        self._crumb_rects = []
+        # on the 7-inch panel the chain must not clip -> smaller crumb font,
+        # tight separators, big (full-height) hit rects still.
+        cf   = self.fnt["breadcrumb"] if self._touch_ui else self.fnt["breadcrumb"]
+        sep_f = self.fnt["breadcrumb"]
+        sep_txt = " › " if self._touch_ui else "  ›  "
+        cx   = crumb_x
+        last = len(crumbs) - 1
+        for j, (label, target) in enumerate(crumbs):
+            clickable = target is not None          # any crumb with a target navigates
+            if clickable:
+                col = (55, 110, 185)
+            else:
+                col = (26, 40, 60) if j == last else (135, 150, 175)
+            cs = cf.render(label, True, col)
+            tx = cx
+            ty = hdr.centery - cs.get_height() // 2
+            surface.blit(cs, (tx, ty))
+            if clickable:
+                pygame.draw.line(surface, col, (tx, ty + cs.get_height() + 1),
+                                 (tx + cs.get_width(), ty + cs.get_height() + 1), 2)
+                hit = pygame.Rect(tx - int(8*W/1920), hdr.y,
+                                  cs.get_width() + int(16*W/1920), hdr.height)
+                self._crumb_rects.append((hit, target))
             cx += cs.get_width()
-            if j < len(crumbs)-1:
-                sep = self.fnt["breadcrumb"].render("  ›  ", True, (180,195,215))
-                surface.blit(sep, (cx, hdr.centery - sep.get_height()//2))
-                cx += sep.get_width()
+            if j < last:
+                sp = sep_f.render(sep_txt, True, (180, 195, 215))
+                surface.blit(sp, (cx, hdr.centery - sp.get_height() // 2))
+                cx += sp.get_width()
 
+    # Breadcrumb items as (label, target). target: None = current page (not
+    # clickable); ("panel", n) = open panel n; ("patient", pt) = open that
+    # patient's page (panel 8). There is NO "Preview" level any more.
     def _breadcrumb(self, idx):
-        if idx == 6: return ["Patient List", "Register Patient"]
+        LIST = ("panel", 0)
+        # Abbreviate only when the header is genuinely narrow (the 7-inch panel).
+        # A 1280-wide touch laptop keeps the full labels.
+        t = self.WIDTH <= 1080
+        L_LIST = "List" if t else "Patient List"
+        L_GC   = "Game Config" if t else "Game Configuration"
+        L_SS   = "Start" if t else "Start Session"
+        L_SIP  = "Session" if t else "Session in Progress"
+        if idx == 6:
+            return [(L_LIST, LIST), ("Register" if t else "Register Patient", None)]
+        if idx == 8:
+            name = (self.preview_patient or {}).get("full_name", "Patient")
+            crumbs = [(L_LIST, LIST), (self._crumb_name(name), None)]
+            # Game Configuration stays reachable as long as a patient is selected
+            # -- from Info / Analytics / Calibration / Session History alike.
+            if self.selected_patient:
+                crumbs.append((L_GC, ("panel", 4)))
+            return crumbs
+        sel = self.selected_patient or {}
+        pt_crumb = (self._crumb_name(sel.get("full_name", "Patient")),
+                    ("patient", sel) if sel else None)
         if idx == 4:
-            pt = (self.selected_patient or {}).get("full_name","Patient")
-            return ["Patient List", pt, "Game Configuration"]
+            return [(L_LIST, LIST), pt_crumb, (L_GC, None)]
         if idx == 5:
-            pt = (self.selected_patient or {}).get("full_name","Patient")
-            return ["Patient List", pt, "Game Configuration", "Start Session"]
-        return [PANEL_TITLES.get(idx,"")]
+            return [(L_LIST, LIST), pt_crumb, (L_GC, ("panel", 4)), (L_SS, None)]
+        if idx == 7:
+            # Active session: breadcrumb is display-only. Leaving a running
+            # session goes through the panel-7 Back / STOP flow so nothing is
+            # left stale.
+            return [(L_LIST, None), (self._crumb_name(sel.get("full_name", "Patient")), None),
+                    (L_GC, None), (L_SIP, None)]
+        return [(PANEL_TITLES.get(idx, ""), None)]
+
+    def _crumb_name(self, name):
+        name = (name or "Patient").strip() or "Patient"
+        limit = 13 if self.WIDTH <= 1080 else 22
+        return name if len(name) <= limit else name[:limit - 1] + "…"
 
     # ──────────────────────────────────────────────────────────────────
     #  PANEL 0: PATIENT LIST
@@ -1943,146 +2823,200 @@ class TherapistDashboardScene:
         W, H = self.WIDTH, self.HEIGHT
         _card_bg(surface, pa, alpha=220)
         self._patient_rows = []
+        self._back_btn_rect = pygame.Rect(0, 0, 1, 1)   # panel 0 has no Back
+        self._crumb_rects   = []                        # ... and no breadcrumb
 
-        hint_r = pygame.Rect(pa.x+int(16*W/1920), pa.y+int(16*H/1080),
-                             int(460*W/1920), int(56*H/1080))
+        touch   = self._touch_ui
+        pad     = int(16*W/1920)
+        # panel-0 title (this panel is the dashboard home -- no breadcrumb shell)
+        title = self.fnt["panel_title"].render("Patient List", True, (30, 44, 66))
+        surface.blit(title, (pa.x+pad, pa.y+int(10*H/1080)))
+        top_y = pa.y + int(10*H/1080) + title.get_height() + int(10*H/1080)
+
+        sb_h    = self._tt(60)
+        hint_w  = int((pa.width * 0.44) if not touch else (pa.width * 0.50))
+        hint_r  = pygame.Rect(pa.x+pad, top_y, hint_w, sb_h)
         self._pt_search_rect = hint_r
         s_active = self._pt_search_active
         pygame.draw.rect(surface, (248,251,255), hint_r, border_radius=8)
         s_border = (40,160,220) if s_active else (195,210,228)
         pygame.draw.rect(surface, s_border, hint_r, 2 if s_active else 1, border_radius=8)
+        _ty = hint_r.y + (sb_h - self.fnt["input"].get_height()) // 2
         s_text = self._pt_search_text
         if s_text:
             s_surf = self.fnt["input"].render(s_text, True, (40, 55, 75))
-            surface.blit(s_surf, (hint_r.x+int(14*W/1920), hint_r.y+int(14*H/1080)))
+            surface.blit(s_surf, (hint_r.x+int(14*W/1920), _ty))
             if s_active:
                 cx_s = hint_r.x + int(14*W/1920) + s_surf.get_width() + 2
                 pygame.draw.line(surface, (40,160,220),
-                                 (cx_s, hint_r.y+int(12*H/1080)),
-                                 (cx_s, hint_r.y+int(44*H/1080)), 2)
+                                 (cx_s, hint_r.y+int(10*H/1080)),
+                                 (cx_s, hint_r.bottom-int(10*H/1080)), 2)
         else:
             ph_txt = "Search patient" if not s_active else ""
             surface.blit(self.fnt["input"].render(ph_txt, True, (170,185,205)),
-                         (hint_r.x+int(14*W/1920), hint_r.y+int(14*H/1080)))
+                         (hint_r.x+int(14*W/1920), _ty))
 
-        reg_r = pygame.Rect(pa.right-int(280*W/1920), pa.y+int(14*H/1080),
-                            int(264*W/1920), int(58*H/1080))
+        reg_w = self.fnt["btn"].size("+ Register Patient")[0] + int(36*W/1920)
+        reg_r = pygame.Rect(pa.right-pad-reg_w, hint_r.y, reg_w, sb_h)
         _btn(surface, reg_r, "+ Register Patient", self.fnt["btn"],
              (40,160,100), (28,135,80), self.register_link_hov, radius=10)
         self._register_link_rect = reg_r
 
-        hdr_y  = pa.y + int(96*H/1080)
-        # Column headers — added "Therapist" column
-        # Widened so long names fit; Patient ID (10 chars) + Age (>=5 chars) reserved.
-        cols   = ["Patient Name", "Patient ID", "Age", "Severity", "Therapist", ""]
-        col_xs = [pa.x+int(16*W/1920),  pa.x+int(360*W/1920), pa.x+int(560*W/1920),
-                  pa.x+int(680*W/1920), pa.x+int(940*W/1920), pa.x+int(1160*W/1920)]
+        hdr_y  = hint_r.bottom + int(20*H/1080)
+        # Columns: Name + Therapist on the 7-inch panel (everything else lives on
+        # the patient's own page); the full set on desktop.
+        if touch:
+            cols   = ["Patient Name", "Therapist"]
+            col_xs = [pa.x+pad, pa.x+int(pa.width*0.52)]
+        else:
+            cols   = ["Patient Name", "Patient ID", "Age", "Severity", "Therapist", ""]
+            col_xs = [pa.x+int(16*W/1920),  pa.x+int(360*W/1920), pa.x+int(560*W/1920),
+                      pa.x+int(680*W/1920), pa.x+int(940*W/1920), pa.x+int(1160*W/1920)]
         for cx, c in zip(col_xs, cols):
             surface.blit(self.fnt["section"].render(c,True,(85,105,135)), (cx, hdr_y))
-        pygame.draw.line(surface, (210,218,230),
-                         (pa.x+int(16*W/1920), hdr_y+int(36*H/1080)),
-                         (pa.right-int(16*W/1920), hdr_y+int(36*H/1080)), 1)
+        pygame.draw.line(surface, (200,212,228),
+                         (pa.x+pad, hdr_y+self.fnt["section"].get_height()+int(6*H/1080)),
+                         (pa.right-pad, hdr_y+self.fnt["section"].get_height()+int(6*H/1080)), 1)
 
         q = self._pt_search_text.strip().lower()
         visible_patients = [p for p in self.patients
                             if not q or q in p.get("full_name","").lower()
                             or q in p.get("patient_id_str","").lower()]
 
-        if not self.patients:
-            _empty_state(
-                surface,
-                pygame.Rect(pa.x, hdr_y+int(30*H/1080), pa.width,
-                            pa.bottom-hdr_y-int(60*H/1080)),
-                "👤", "No patients registered yet",
-                'Tap "+ Register Patient" above to add your first patient.',
-                self.fnt["empty_head"], self.fnt["small_i"],
-            )
-        elif not visible_patients:
-            _empty_state(
-                surface,
-                pygame.Rect(pa.x, hdr_y+int(30*H/1080), pa.width,
-                            pa.bottom-hdr_y-int(60*H/1080)),
-                "🔍", f'No results for "{self._pt_search_text}"',
-                "Try a different name or patient ID.",
-                self.fnt["empty_head"], self.fnt["small_i"],
-            )
+        if not self.patients or not visible_patients:
+            self._pl_scroll_max = 0
+            self._pl_up_rect = self._pl_down_rect = pygame.Rect(0, 0, 1, 1)
+            icon, head, sub = (("👤", "No patients registered yet",
+                                'Tap "+ Register Patient" above to add your first patient.')
+                               if not self.patients else
+                               ("🔍", f'No results for "{self._pt_search_text}"',
+                                "Try a different name or patient ID."))
+            _empty_state(surface,
+                         pygame.Rect(pa.x, hdr_y+int(30*H/1080), pa.width,
+                                     pa.bottom-hdr_y-int(60*H/1080)),
+                         icon, head, sub, self.fnt["empty_head"], self.fnt["small_i"])
+            return
+
+        # ── scrollable row area ─────────────────────────────────────
+        list_top    = hdr_y + self.fnt["section"].get_height() + int(14*H/1080)
+        list_bottom = pa.bottom - int(10*H/1080)
+        view_h      = list_bottom - list_top
+        row_h       = self._tt(84) if touch else int(72*H/1080)
+        content_h   = len(visible_patients) * row_h
+        self._pl_scroll_max = max(0, content_h - view_h)
+        self._pl_scroll     = max(0, min(self._pl_scroll, self._pl_scroll_max))
+        scrollable          = self._pl_scroll_max > 0
+
+        arrow_w = self._tt(50) if scrollable else 0
+        # keep a finger-width gap between the Share icons and the scroll arrows
+        arrow_gap = self._tt(16) if (scrollable and touch) else 0
+        btn_x_r = pa.right - pad - arrow_w - arrow_gap   # right edge available to Share icon
+        bgap    = self._tt(18) if touch else int(10*W/1920)
+        f_name  = self.fnt["body_b"] if touch else self.fnt["body"]
+        f_ther  = self.fnt["body"]   if touch else self.fnt["tag"]
+
+        mp = pygame.mouse.get_pos()
+        prev_clip = surface.get_clip()
+        surface.set_clip(pygame.Rect(pa.x+1, list_top, pa.width-2, view_h))
+        for k, pt in enumerate(visible_patients):
+            ry = list_top + k*row_h - self._pl_scroll
+            if ry + row_h <= list_top or ry >= list_bottom:
+                continue
+
+            is_owner = (pt.get("therapist_id") == self.account["id"])
+            if is_owner:
+                ther_label, ther_col = self.account.get("full_name", "You"), (46, 150, 95)
+            else:
+                _o = self.db.get_therapist_by_id(pt.get("therapist_id"))
+                ther_label = _o["full_name"] if _o else "Unknown"
+                ther_col = (55, 120, 215)
+
+            # zebra fill + a clean full-width divider under each row
+            if k % 2 == 1:
+                bg = pygame.Surface((pa.width - 2*pad, row_h), pygame.SRCALPHA)
+                bg.fill((236, 243, 255, 150)); surface.blit(bg, (pa.x + pad, ry))
+            pygame.draw.line(surface, (208, 218, 234),
+                             (pa.x + pad, ry + row_h), (pa.right - pad, ry + row_h), 1)
+
+            # Share button -- the ONLY right-side action. Large touch target,
+            # clearly separated from the name.
+            ic = self._tt(52)
+            shr_r = pygame.Rect(btn_x_r - ic, ry + (row_h - ic)//2, ic, ic)
+
+            # "Selected" tag (read-only) sits left of the Share button.
+            right_x = shr_r.x - bgap
+            if self._is_selected(pt):
+                pw = self.fnt["tag"].size("SELECTED")[0] + self._tt(20)
+                ph = self._tt(30)
+                pill = pygame.Rect(right_x - pw, ry + (row_h - ph)//2, pw, ph)
+                pygame.draw.rect(surface, (46, 150, 95), pill, border_radius=8)
+                surface.blit(self.fnt["tag"].render("SELECTED", True, (255,255,255)),
+                             self.fnt["tag"].render("SELECTED", True, (255,255,255)).get_rect(center=pill.center))
+                right_x = pill.left - bgap
+
+            # Patient name -- the primary tap target (opens the patient's page;
+            # does NOT select). Blue when the patient was shared IN to you.
+            name_val = pt.get("full_name", "—")
+            name_r = pygame.Rect(pa.x + pad, ry, right_x - (pa.x + pad), row_h)
+            self._patient_rows.append((name_r, pt, "name"))
+            n_col = (55, 120, 215) if not is_owner else (34, 46, 66)
+            if name_r.collidepoint(mp):
+                n_col = tuple(min(255, c + 25) for c in n_col)
+            ns = f_name.render(name_val, True, n_col)
+            surface.blit(ns, (col_xs[0], ry + (row_h - ns.get_height())//2))
+
+            # Therapist column
+            if touch:
+                tx = col_xs[1]
+                if tx + f_ther.size(ther_label)[0] < right_x:
+                    tsr = f_ther.render(ther_label, True, ther_col)
+                    surface.blit(tsr, (tx, ry + (row_h - tsr.get_height())//2))
+            else:
+                tya = ry + (row_h - self.fnt["body"].get_height())//2
+                for cx, v in zip(col_xs[1:], [pt.get("patient_id_str","—"),
+                                             str(pt.get("age","—")), pt.get("severity","—")]):
+                    if cx + self.fnt["body"].size(str(v))[0] < right_x:
+                        surface.blit(self.fnt["body"].render(v, True, (40,55,75)), (cx, tya))
+                if col_xs[4] + self.fnt["tag"].size(ther_label)[0] < right_x:
+                    surface.blit(self.fnt["tag"].render(ther_label, True, ther_col), (col_xs[4], tya))
+
+            enabled = is_owner
+            hov = shr_r.collidepoint(mp) and enabled
+            if not enabled:
+                shr_col = (170, 174, 184)
+            elif hov:
+                shr_col = (110, 168, 235)
+            else:
+                shr_col = (90, 150, 220)
+            pygame.draw.rect(surface, shr_col, shr_r, border_radius=12)
+            self._share_icon(surface, shr_r.centerx, shr_r.centery,
+                             int(ic * 0.32), (255, 255, 255))
+            if enabled:
+                self._patient_rows.append((shr_r, pt, "share"))
+        surface.set_clip(prev_clip)
+
+        # ── scroll arrows (only when the list overflows) ────────────
+        if scrollable:
+            ah = view_h // 2 - int(4*H/1080)
+            ax = pa.right - pad - arrow_w
+            self._pl_up_rect   = pygame.Rect(ax, list_top, arrow_w, ah)
+            self._pl_down_rect = pygame.Rect(ax, list_top + ah + int(8*H/1080), arrow_w, ah)
+            for r, tri, on in ((self._pl_up_rect, "▲", self._pl_scroll > 0),
+                               (self._pl_down_rect, "▼", self._pl_scroll < self._pl_scroll_max)):
+                pygame.draw.rect(surface, (226,238,250) if on else (238,240,244), r, border_radius=8)
+                pygame.draw.rect(surface, (150,175,210), r, 1, border_radius=8)
+                gc = (45,90,150) if on else (185,193,203)
+                g = self.fnt["nav_sym"].render(tri, True, gc)
+                surface.blit(g, g.get_rect(center=r.center))
+            # thumb
+            tb_x = ax + arrow_w + int(4*W/1920)
+            track_h = view_h
+            th = max(int(28*H/1080), int(track_h * view_h / max(content_h, 1)))
+            ty0 = list_top + int((track_h - th) * (self._pl_scroll / self._pl_scroll_max))
+            pygame.draw.rect(surface, (150,175,210),
+                             pygame.Rect(tb_x, ty0, int(6*W/1920), th), border_radius=3)
         else:
-            row_h = int(72*H/1080)
-            for k, pt in enumerate(visible_patients):
-                ry    = hdr_y + int(44*H/1080) + k*row_h
-                row_r = pygame.Rect(pa.x+int(10*W/1920), ry,
-                                    pa.width-int(20*W/1920), row_h-6)
-                if k%2==0:
-                    bg = pygame.Surface((row_r.width,row_r.height), pygame.SRCALPHA)
-                    bg.fill((240,246,255,180)); surface.blit(bg, row_r.topleft)
-                pygame.draw.rect(surface, (215,225,240), row_r, 1, border_radius=10)
-
-                # Determine ownership and resolve therapist name
-                is_owner = (pt.get("therapist_id") == self.account["id"])
-                if is_owner:
-                    owner_label = self.account.get("full_name", "You")
-                    owner_col   = (40, 140, 80)
-                else:
-                    _owner_rec = self.db.get_therapist_by_id(pt.get("therapist_id"))
-                    owner_label = _owner_rec["full_name"] if _owner_rec else "Unknown"
-                    owner_col   = (50, 100, 200)
-
-                mp = pygame.mouse.get_pos()
-
-                # Patient name — hoverable, clickable to open Game Config
-                name_val = pt.get("full_name", "—")
-                name_r = pygame.Rect(col_xs[0], ry + int(14*H/1080),
-                                     int(330*W/1920), int(44*H/1080))
-                name_hov = name_r.collidepoint(mp)
-                name_col = (40, 155, 220) if name_hov else (40, 55, 75)
-                name_surf = self.fnt["body"].render(name_val, True, name_col)
-                surface.blit(name_surf, (col_xs[0], ry + int(20*H/1080)))
-                self._patient_rows.append((name_r, pt, "name"))
-
-                # Remaining columns (skip index 0 — already drawn above)
-                rest_vals = [pt.get("patient_id_str","—"),
-                             str(pt.get("age","—")), pt.get("severity","—")]
-                for cx, v in zip(col_xs[1:], rest_vals):
-                    surface.blit(self.fnt["body"].render(v, True, (40,55,75)),
-                                 (cx, ry+int(20*H/1080)))
-
-                # Owner badge
-                own_s = self.fnt["tag"].render(owner_label, True, owner_col)
-                surface.blit(own_s, (col_xs[4], ry+int(22*H/1080)))
-
-                # Select / Deselect button — indicator only, no navigation
-                bh_row = int(34*H/1080); by_row = ry + int(19*H/1080)
-                sel_r = pygame.Rect(pa.right-int(112*W/1920), by_row,
-                                    int(100*W/1920), bh_row)
-                is_selected = (self.selected_patient is not None and
-                               self.selected_patient.get("id") == pt.get("id"))
-                sel_col = (190, 45, 45) if is_selected else (55, 140, 210)
-                sel_txt = "Deselect" if is_selected else "Select"
-                pygame.draw.rect(surface, sel_col, sel_r, border_radius=10)
-                sel_lbl = self.fnt["tag"].render(sel_txt, True, (255,255,255))
-                surface.blit(sel_lbl, sel_lbl.get_rect(center=sel_r.center))
-                self._patient_rows.append((sel_r, pt, "select"))
-
-                # Share button — active (blue) for owner, dark/disabled for others
-                shr_r = pygame.Rect(pa.right-int(218*W/1920), by_row,
-                                    int(90*W/1920), bh_row)
-                if is_owner:
-                    pygame.draw.rect(surface, (100,155,220), shr_r, border_radius=10)
-                    shr_lbl = self.fnt["tag"].render("Share", True, (255,255,255))
-                    surface.blit(shr_lbl, shr_lbl.get_rect(center=shr_r.center))
-                    self._patient_rows.append((shr_r, pt, "share"))
-                else:
-                    pygame.draw.rect(surface, (130,135,145), shr_r, border_radius=10)
-                    shr_lbl = self.fnt["tag"].render("Share", True, (190,192,198))
-                    surface.blit(shr_lbl, shr_lbl.get_rect(center=shr_r.center))
-
-                # Edit button — available to owner and shared therapists
-                edt_r = pygame.Rect(pa.right-int(324*W/1920), by_row,
-                                    int(90*W/1920), bh_row)
-                pygame.draw.rect(surface, (65,155,80), edt_r, border_radius=10)
-                edt_lbl = self.fnt["tag"].render("Edit", True, (255,255,255))
-                surface.blit(edt_lbl, edt_lbl.get_rect(center=edt_r.center))
-                self._patient_rows.append((edt_r, pt, "edit"))
+            self._pl_up_rect = self._pl_down_rect = pygame.Rect(0, 0, 1, 1)
 
     # ──────────────────────────────────────────────────────────────────
     #  SHARE PATIENT MODAL
@@ -2228,6 +3162,9 @@ class TherapistDashboardScene:
     # ──────────────────────────────────────────────────────────────────
 
     def _draw_register_patient(self, surface, pa):
+        if self._touch_ui:
+            self._draw_register_patient_touch(surface, pa)
+            return
         W, H = self.WIDTH, self.HEIGHT
         _card_bg(surface, pa, alpha=220)
         rp = self.rp
@@ -2339,6 +3276,381 @@ class TherapistDashboardScene:
              (40,160,220), (25,130,190), self.rp_btn_hov, radius=12)
         self._rp_btn_rect = rb
 
+    def _draw_register_patient_touch(self, surface, pa):
+        """Single-column, finger-scrollable registration form for the 1024x600
+        panel. Reuses self._rp_drop_rects / self._rp_btn_rect so the existing
+        _rp_handle_click / _rp_submit logic works unchanged -- only the layout
+        and the vertical scroll are new."""
+        W, H = self.WIDTH, self.HEIGHT
+        _card_bg(surface, pa, alpha=224)
+        rp = self.rp
+        self._rp_drop_rects = {}
+
+        pad = self._sc(16)
+        x0  = pa.x + pad
+        fw  = pa.width - 2 * pad
+        fh  = self._tt(50)
+        lbl_h = self.fnt["small"].get_height()
+        row_h = lbl_h + int(4 * H / 1080) + fh + self._sc(16)
+
+        FIELDS = [
+            ("full_name",      "Full Name *",                   "text", None),
+            ("age",            "Age *",                         "text", None),
+            ("sex",            "Sex *",                         "drop", SEX_OPTS),
+            ("dominant_hand",  "Dominant Hand *",               "drop", HAND_OPTS),
+            ("affected_hand",  "Affected Hand (Stroke Side) *", "drop", HAND_OPTS),
+            ("stroke_type",    "Stroke Type",                   "drop", STROKE_TYPES),
+            ("severity",       "Severity *",                    "drop", SEVERITY_OPTS),
+            ("date_of_stroke", "Date of Stroke",                "text", None),
+            ("months_stroke",  "Months Since Stroke",           "text", None),
+            ("notes_stiffness","Muscle Stiffness Notes",        "text", None),
+            ("notes_pain",     "Pain Level Notes",              "text", None),
+            ("notes_therapist","Therapist Comments",            "text", None),
+        ]
+        PLACEHOLD = {"full_name": "Enter full name", "age": "Enter age",
+                     "date_of_stroke": "MM-DD-YY", "months_stroke": "e.g. 6"}
+        open_flag_map = {"sex": "sex_open", "dominant_hand": "dominant_open",
+                         "affected_hand": "affected_open", "stroke_type": "stroke_open",
+                         "severity": "severity_open"}
+
+        # fixed footer: message line + Register button (always on screen)
+        btn_h = self._tt(56)
+        rb = pygame.Rect(x0, pa.bottom - pad - btn_h, fw, btn_h)
+        footer_top = rb.top - int(8 * H / 1080)
+        if rp["error"]:
+            msg, mcol = rp["error"], (205, 55, 55)
+        elif rp["success"]:
+            msg, mcol = rp["success"], (40, 165, 80)
+        else:
+            msg, mcol = "", None
+
+        top    = pa.y + int(12 * H / 1080)
+        bottom = footer_top - int(6 * H / 1080)
+        if msg:
+            bottom -= self.fnt["small"].get_height() + int(4 * H / 1080)
+        view_h = bottom - top
+        total  = len(FIELDS) * row_h + self._sc(10)
+        self._rp_scroll_max = max(0, total - view_h)
+        self._rp_scroll = max(0, min(self._rp_scroll, self._rp_scroll_max))
+        arrow_w = self._tt(46) if self._rp_scroll_max > 0 else 0
+        field_w = fw - (arrow_w + int(8 * W / 1920) if arrow_w else 0)
+
+        prev_clip = surface.get_clip()
+        surface.set_clip(pygame.Rect(pa.x + 1, top, pa.width - 2, view_h))
+        y = top - self._rp_scroll
+        open_overlay = None
+        for key, label, kind, opts in FIELDS:
+            fr = pygame.Rect(x0, y + lbl_h + int(4 * H / 1080), field_w, fh)
+            visible = fr.bottom >= top and fr.top <= bottom
+            self._rp_drop_rects[key] = ((fr if visible else pygame.Rect(-9, -9, 1, 1)),
+                                        [], opts or [])
+            if visible:
+                active = (rp["active_key"] == key)
+                surface.blit(self.fnt["small"].render(label, True, (78, 95, 118)), (x0, y))
+                pygame.draw.rect(surface, (255, 255, 255), fr, border_radius=9)
+                pygame.draw.rect(surface, (40, 160, 220) if active else (188, 205, 226),
+                                 fr, 2 if active else 1, border_radius=9)
+                val = rp.get(key, "")
+                if kind == "drop":
+                    disp = val or "Select"
+                    tc   = (40, 52, 68) if val else (170, 185, 202)
+                    ds   = self.fnt["input"].render(disp, True, tc)
+                    surface.blit(ds, ds.get_rect(midleft=(fr.x + int(12 * W / 1920),
+                                                          fr.centery)))
+                    chev = self.fnt["sym26"].render("▼", True, (95, 115, 145))
+                    surface.blit(chev, chev.get_rect(
+                        midright=(fr.right - int(12 * W / 1920), fr.centery)))
+                    if rp.get(open_flag_map[key]):
+                        open_overlay = (fr, opts, key)
+                else:
+                    ph = PLACEHOLD.get(key, "Optional")
+                    vs = (self.fnt["input"].render(val, True, (40, 52, 68)) if val
+                          else self.fnt["input"].render(ph, True, (183, 197, 214)))
+                    surface.blit(vs, vs.get_rect(midleft=(fr.x + int(12 * W / 1920),
+                                                          fr.centery)))
+            y += row_h
+        surface.set_clip(prev_clip)
+
+        if self._rp_scroll_max > 0:
+            ax = pa.right - int(8 * W / 1920) - arrow_w
+            ah = view_h // 2 - int(4 * H / 1080)
+            self._rp_up_rect   = pygame.Rect(ax, top, arrow_w, ah)
+            self._rp_down_rect = pygame.Rect(ax, top + ah + int(8 * H / 1080), arrow_w, ah)
+            for r, tri, on in ((self._rp_up_rect, "▲", self._rp_scroll > 0),
+                               (self._rp_down_rect, "▼",
+                                self._rp_scroll < self._rp_scroll_max)):
+                pygame.draw.rect(surface, (226, 238, 250) if on else (238, 240, 244),
+                                 r, border_radius=8)
+                pygame.draw.rect(surface, (150, 175, 210), r, 1, border_radius=8)
+                g = self.fnt["nav_sym"].render(tri, True,
+                                               (45, 90, 150) if on else (188, 196, 206))
+                surface.blit(g, g.get_rect(center=r.center))
+        else:
+            self._rp_up_rect = self._rp_down_rect = pygame.Rect(0, 0, 1, 1)
+
+        if open_overlay:
+            fr, opts, fkey = open_overlay
+            opt_h = self._tt(46)
+            lst_h = len(opts) * opt_h + 4
+            base_y = fr.top - lst_h if fr.bottom + lst_h > pa.bottom else fr.bottom
+            dp = pygame.Rect(fr.x, base_y, fr.width, lst_h)
+            pygame.draw.rect(surface, (248, 251, 255), dp, border_radius=9)
+            pygame.draw.rect(surface, (40, 160, 220), dp, 2, border_radius=9)
+            opt_rs, mp = [], pygame.mouse.get_pos()
+            for j, ov in enumerate(opts):
+                orr = pygame.Rect(fr.x, base_y + j * opt_h, fr.width, opt_h)
+                if orr.collidepoint(mp):
+                    pygame.draw.rect(surface, (220, 236, 255), orr, border_radius=6)
+                os_ = self.fnt["input"].render(ov, True, (40, 52, 68))
+                surface.blit(os_, os_.get_rect(midleft=(orr.x + int(12 * W / 1920),
+                                                        orr.centery)))
+                opt_rs.append(orr)
+            self._rp_drop_rects[fkey] = (fr, opt_rs, opts)
+
+        if msg:
+            surface.blit(self.fnt["small"].render(msg, True, mcol),
+                         (x0, footer_top - self.fnt["small"].get_height()
+                          - int(2 * H / 1080)))
+        _btn(surface, rb, "Register Patient", self.fnt["btn"],
+             (40, 160, 220), (25, 130, 190), self.rp_btn_hov, radius=12)
+        self._rp_btn_rect = rb
+
+
+    # ──────────────────────────────────────────────────────────────────
+    #  PANEL 8: THE PATIENT'S OWN PAGE  (breadcrumb: Patient List > <Name>)
+    #
+    #  Reached by clicking a patient row in the Patient List (that click does
+    #  NOT select the patient). Hosts the per-patient records (Info / Analytics
+    #  / Calibration Records / Session History) AND the only SELECT PATIENT /
+    #  DESELECT PATIENT control -- both go through a confirmation dialog.
+    # ──────────────────────────────────────────────────────────────────
+
+    _PV_TABS = [("info", "Info"), ("analytics", "Analytics"),
+                ("calibration", "Calibration Records"), ("history", "Session History")]
+    _PV_TABS_SHORT = [("info", "Info"), ("analytics", "Analytics"),
+                      ("calibration", "Calibration"), ("history", "History")]
+
+    def _draw_patient_preview(self, surface, pa):
+        W, H = self.WIDTH, self.HEIGHT
+        pt = self.preview_patient or {}
+        is_sel = self._is_selected(self.preview_patient)
+
+        # ── header row: tab strip (left) + Select/Deselect button (right) ──
+        strip_h = max(int(46 * H / 1080), self._tt(46))
+        sel_txt = "DESELECT PATIENT" if is_sel else "SELECT PATIENT"
+        sel_w   = self.fnt["label"].size("DESELECT PATIENT")[0] + int(40 * W / 1920)
+        self._pv_tab_rects = {}
+        tabs = self._PV_TABS_SHORT if self._touch_ui else self._PV_TABS
+        tx = pa.x
+        for key, label in tabs:
+            tw = self.fnt["label"].size(label)[0] + int(34 * W / 1920)
+            r  = pygame.Rect(tx, pa.y, tw, strip_h)
+            active = (self._pv_tab == key)
+            bg = pygame.Surface((r.width, r.height), pygame.SRCALPHA)
+            bg.fill((60, 140, 220, 235) if active else (232, 242, 255, 200))
+            pygame.draw.rect(bg, (0, 0, 0, 0), (0, 0, r.width, r.height), border_radius=10)
+            surface.blit(bg, r.topleft)
+            pygame.draw.rect(surface, (150, 175, 210), r, 1, border_radius=10)
+            col = (255, 255, 255) if active else (70, 95, 130)
+            ls = self.fnt["label"].render(label, True, col)
+            surface.blit(ls, ls.get_rect(center=r.center))
+            self._pv_tab_rects[key] = r
+            tx += tw + int(8 * W / 1920)
+
+        sel_r = pygame.Rect(pa.right - sel_w, pa.y, sel_w, strip_h)
+        pygame.draw.rect(surface, (190, 60, 55) if is_sel else (55, 150, 95),
+                         sel_r, border_radius=10)
+        ss = self.fnt["label"].render(sel_txt, True, (255, 255, 255))
+        surface.blit(ss, ss.get_rect(center=sel_r.center))
+        self._pv_select_rect = sel_r
+
+        # Edit (moved here from the Patient List). Opens the same edit modal.
+        edit_w = self.fnt["label"].size("Edit")[0] + int(40 * W / 1920)
+        edit_r = pygame.Rect(sel_r.x - int(10 * W / 1920) - edit_w, pa.y, edit_w, strip_h)
+        pygame.draw.rect(surface, (236, 242, 250), edit_r, border_radius=10)
+        pygame.draw.rect(surface, (95, 130, 175), edit_r, 2, border_radius=10)
+        surface.blit(self.fnt["label"].render("Edit", True, (60, 95, 150)),
+                     self.fnt["label"].render("Edit", True, (60, 95, 150)).get_rect(center=edit_r.center))
+        self._pv_edit_rect = edit_r
+
+        # ── content area below the strip ──
+        sub = pygame.Rect(pa.x, pa.y + strip_h + int(14 * H / 1080),
+                          pa.width, pa.height - strip_h - int(14 * H / 1080))
+        if self._pv_tab == "analytics":
+            self._draw_analytics(surface, sub)
+        elif self._pv_tab == "calibration":
+            self._draw_calibration(surface, sub)
+        elif self._pv_tab == "history":
+            self._draw_session_history(surface, sub)
+        else:
+            self._pv_draw_info(surface, sub, pt)
+
+    def _pv_info_fields(self, pt):
+        """Every stored patient field, grouped. Sourced from the `patients` table
+        (database.py) -- nothing invented."""
+        def g(k):
+            v = pt.get(k)
+            return "—" if v is None or str(v).strip() == "" else str(v)
+        owner = "—"
+        try:
+            o = self.db.get_therapist_by_id(pt.get("therapist_id"))
+            if o:
+                owner = o.get("full_name", "—")
+        except Exception:
+            pass
+        return [
+            ("Patient Information", [
+                ("Patient ID",   g("patient_id_str")),
+                ("Full Name",    g("full_name")),
+                ("Age",          g("age")),
+                ("Sex",          g("sex")),
+            ]),
+            ("Stroke & Therapy", [
+                ("Stroke Type",         g("stroke_type")),
+                ("Date of Stroke",      g("date_of_stroke")),
+                ("Months Since Stroke", g("months_stroke")),
+                ("Severity",            g("severity")),
+                ("Dominant Hand",       g("dominant_hand")),
+                ("Affected Hand",       g("affected_hand")),
+            ]),
+            ("Clinical Notes", [
+                ("Stiffness",       g("notes_stiffness")),
+                ("Pain",            g("notes_pain")),
+                ("Therapist Notes", g("notes_therapist")),
+            ]),
+            ("Record", [
+                ("Registered By", owner),
+                ("Registered On", str(pt.get("created_at", "—"))[:16] or "—"),
+            ]),
+        ]
+
+    def _wrap(self, text, font, max_w):
+        words, lines, cur = str(text).split(), [], ""
+        for w in words:
+            t = (cur + " " + w).strip()
+            if font.size(t)[0] <= max_w or not cur:
+                cur = t
+            else:
+                lines.append(cur); cur = w
+        if cur:
+            lines.append(cur)
+        return lines or [""]
+
+    def _pv_draw_info(self, surface, pa, pt):
+        W, H = self.WIDTH, self.HEIGHT
+        _card_bg(surface, pa, alpha=220)
+        x0    = pa.x + int(30 * W / 1920)
+        val_x = x0 + max(int(300 * W / 1920), self._tt(250))
+        lh    = max(int(38 * H / 1080), self._tt(36))
+        val_w = pa.right - int(30 * W / 1920) - val_x
+
+        # measure -> total content height
+        groups = self._pv_info_fields(pt)
+        blocks = []   # (kind, *payload)
+        for title, fields in groups:
+            blocks.append(("hdr", title))
+            for lbl, val in fields:
+                wl = self._wrap(val, self.fnt["body"], val_w)
+                blocks.append(("row", lbl, wl))
+        def block_h(b):
+            if b[0] == "hdr":
+                return lh + int(10 * H / 1080)
+            return lh * len(b[2]) + int(6 * H / 1080)
+        total = sum(block_h(b) for b in blocks) + int(20 * H / 1080)
+
+        top    = pa.y + int(16 * H / 1080)
+        bottom = pa.bottom - (self._sc(30) if self._touch_ui else int(52 * H / 1080))
+        view_h = bottom - top
+        self._pv_info_scroll_max = max(0, total - view_h)
+        self._pv_info_scroll = max(0, min(self._pv_info_scroll, self._pv_info_scroll_max))
+        arrow_w = self._tt(44) if self._pv_info_scroll_max > 0 else 0
+
+        prev = surface.get_clip()
+        surface.set_clip(pygame.Rect(pa.x + 1, top, pa.width - 2, view_h))
+        y = top - self._pv_info_scroll
+        for b in blocks:
+            if y + block_h(b) >= top and y <= bottom:
+                if b[0] == "hdr":
+                    surface.blit(self.fnt["body_b"].render(b[1], True, (46, 110, 180)), (x0, y))
+                    pygame.draw.line(surface, (200, 214, 232),
+                                     (x0, y + lh - int(4 * H / 1080)),
+                                     (pa.right - int(30 * W / 1920), y + lh - int(4 * H / 1080)), 1)
+                else:
+                    surface.blit(self.fnt["small"].render(b[1], True, (120, 135, 160)), (x0, y))
+                    yy = y
+                    for ln in b[2]:
+                        surface.blit(self.fnt["body"].render(ln, True, (40, 55, 75)), (val_x, yy))
+                        yy += lh
+            y += block_h(b)
+        surface.set_clip(prev)
+
+        if self._pv_info_scroll_max > 0:
+            ax = pa.right - int(8 * W / 1920) - arrow_w
+            ah = view_h // 2 - int(4 * H / 1080)
+            self._pv_info_up_rect   = pygame.Rect(ax, top, arrow_w, ah)
+            self._pv_info_down_rect = pygame.Rect(ax, top + ah + int(8 * H / 1080), arrow_w, ah)
+            for r, tri, on in ((self._pv_info_up_rect, "▲", self._pv_info_scroll > 0),
+                               (self._pv_info_down_rect, "▼", self._pv_info_scroll < self._pv_info_scroll_max)):
+                pygame.draw.rect(surface, (226, 238, 250) if on else (238, 240, 244), r, border_radius=8)
+                pygame.draw.rect(surface, (150, 175, 210), r, 1, border_radius=8)
+                g = self.fnt["nav_sym"].render(tri, True, (45, 90, 150) if on else (185, 193, 203))
+                surface.blit(g, g.get_rect(center=r.center))
+        else:
+            self._pv_info_up_rect = self._pv_info_down_rect = pygame.Rect(0, 0, 1, 1)
+
+        sel = self._is_selected(self.preview_patient)
+        if self._touch_ui:
+            htxt = ("Selected — use DESELECT PATIENT above." if sel
+                    else "Use SELECT PATIENT above to start a session.")
+        else:
+            htxt = ("This patient is selected — use DESELECT PATIENT (top-right) to clear it."
+                    if sel else
+                    "Use SELECT PATIENT (top-right) to start a session with this patient.")
+        hint = self.fnt["small_i"].render(htxt, True, (120, 135, 160))
+        surface.blit(hint, (x0, pa.bottom - hint.get_height() - int(6 * H / 1080)))
+
+    def _draw_choice_modal(self, surface, title, body, confirm_col, confirm_hi):
+        """Shared CANCEL | CONFIRM dialog (used for SELECT and DESELECT)."""
+        W, H = self.WIDTH, self.HEIGHT
+        mw = max(int(W * 0.34), self._tt(560))
+        mh = max(int(H * 0.24), self._tt(300))
+        mx, my = (W - mw) // 2, (H - mh) // 2
+        mr = pygame.Rect(mx, my, mw, mh)
+        ms = pygame.Surface((mw, mh), pygame.SRCALPHA)
+        pygame.draw.rect(ms, (250, 252, 255, 255), (0, 0, mw, mh), border_radius=16)
+        surface.blit(ms, mr.topleft)
+        pygame.draw.rect(surface, (195, 210, 228), mr, 2, border_radius=16)
+
+        ts = self.fnt["modal_head"].render(title, True, (38, 52, 78))
+        if ts.get_width() > mw - int(48 * W / 1920):
+            ts = self.fnt["modal_lbl"].render(title, True, (38, 52, 78))
+        bs = self.fnt["modal_lbl"].render(body, True, (98, 114, 140))
+        surface.blit(ts, ts.get_rect(center=(mr.centerx, my + int(52 * H / 1080))))
+        surface.blit(bs, bs.get_rect(center=(mr.centerx, my + int(104 * H / 1080))))
+
+        yr, nr = self._confirm_rects()
+        yc = confirm_hi if self.confirm_yes_hov else confirm_col
+        nc = (148, 162, 180) if self.confirm_no_hov else (175, 190, 210)
+        pygame.draw.rect(surface, yc, yr, border_radius=10)
+        pygame.draw.rect(surface, nc, nr, border_radius=10)
+        surface.blit(self.fnt["btn"].render("Confirm", True, (255, 255, 255)),
+                     self.fnt["btn"].render("Confirm", True, (255, 255, 255)).get_rect(center=yr.center))
+        surface.blit(self.fnt["btn"].render("Cancel", True, (255, 255, 255)),
+                     self.fnt["btn"].render("Cancel", True, (255, 255, 255)).get_rect(center=nr.center))
+
+    def _draw_select_confirm_modal(self, surface):
+        name = (self._pending_select_patient or {}).get("full_name", "this patient")
+        self._draw_choice_modal(
+            surface, f"Select {name} for this session?",
+            "You will continue to Game Configuration.",
+            (45, 150, 95), (30, 120, 75))
+
+    def _draw_deselect_confirm_modal(self, surface):
+        name = (self._pending_deselect_patient or {}).get("full_name", "this patient")
+        self._draw_choice_modal(
+            surface, f"Deselect {name}?",
+            "The patient monitor returns to the Waiting Screen.",
+            (200, 70, 60), (175, 45, 40))
 
     # ──────────────────────────────────────────────────────────────────
     #  PANEL 1: SESSION HISTORY
@@ -2357,7 +3669,7 @@ class TherapistDashboardScene:
                          (pa.x+int(16*W/1920), table_y+int(36*H/1080)),
                          (pa.right-int(16*W/1920), table_y+int(36*H/1080)), 1)
 
-        pt = self.selected_patient
+        pt = self._view_patient()
         if not pt:
             _empty_state(surface,
                          pygame.Rect(pa.x, table_y+int(48*H/1080), pa.width,
@@ -2417,7 +3729,7 @@ class TherapistDashboardScene:
         lx = pa.x + int(16*W/1920)
         ly = pa.y + int(20*H/1080)
 
-        pt = self.selected_patient
+        pt = self._view_patient()
         if not pt:
             _empty_state(surface, pygame.Rect(pa.x, ly, pa.width, pa.bottom-ly),
                          "👤", "No patient selected",
@@ -2519,7 +3831,7 @@ class TherapistDashboardScene:
         _card_bg(surface, pa, alpha=220)
         table_y = pa.y + int(28*H/1080)
 
-        pt = self.selected_patient
+        pt = self._view_patient()
         if not pt:
             _empty_state(surface,
                          pygame.Rect(pa.x, table_y+int(48*H/1080), pa.width,
@@ -2584,60 +3896,58 @@ class TherapistDashboardScene:
     def _draw_game_config(self, surface, pa):
         W, H = self.WIDTH, self.HEIGHT
         gc   = self.gc
+        touch = self._touch_ui
         _card_bg(surface, pa, alpha=220)
         self._game_tiles = []
+        pad = int(16*W/1920)
 
-        # ── Banner ────────────────────────────────────────────────────
+        # ── Banner: who we're configuring for + controller status ─────
         pt    = self.selected_patient or {}
         pt_nm = pt.get("full_name","—")
         sev   = pt.get("severity","—")
-        ban_r = pygame.Rect(pa.x+int(16*W/1920), pa.y+int(12*H/1080),
-                            pa.width-int(32*W/1920), int(50*H/1080))
-        pygame.draw.rect(surface,(232,244,255),ban_r,border_radius=8)
-        pygame.draw.rect(surface,(160,205,245),ban_r,1,border_radius=8)
-        surface.blit(self.fnt["small"].render(
-            f"Configuring session for:  {pt_nm}  ·  {sev}",
-            True,(50,100,160)),(ban_r.x+int(12*W/1920),ban_r.y+int(15*H/1080)))
-
-        # ── BLE controller status badge (right side of banner) ────────
         if input_handler.connected:
-            dot_col  = (40, 190, 90)
-            ble_text = "Controller Connected"
-            txt_col  = (30, 140, 65)
+            dot_col, txt_col = (40,190,90), (30,140,65)
+            ble_text = "Controller ready" if touch else "Controller Connected"
         else:
-            dot_col  = (200, 90, 40)
-            ble_text = "Controller Not Connected"
-            txt_col  = (170, 80, 35)
-        ble_s    = self.fnt["small"].render(ble_text, True, txt_col)
-        dot_r    = int(7 * H / 1080)
-        dot_x    = ban_r.right - ble_s.get_width() - dot_r * 2 - int(24 * W / 1920)
-        dot_y    = ban_r.centery
-        pygame.draw.circle(surface, dot_col, (dot_x, dot_y), dot_r)
-        surface.blit(ble_s, (dot_x + dot_r + int(8 * W / 1920),
-                              dot_y - ble_s.get_height() // 2))
+            dot_col, txt_col = (200,90,40), (170,80,35)
+            ble_text = "No controller" if touch else "Controller Not Connected"
 
-        # ── Game tiles — word-wrap helper ─────────────────────────────
-        def _tile_name(surf, font, text, color, max_w, x, y, lh):
-            words = text.split()
-            lines, cur = [], []
-            for w in words:
-                test = " ".join(cur + [w])
-                if font.size(test)[0] <= max_w:
-                    cur.append(w)
-                else:
-                    if cur: lines.append(" ".join(cur))
-                    cur = [w]
-            if cur: lines.append(" ".join(cur))
-            for k, line in enumerate(lines):
-                surf.blit(font.render(line, True, color), (x, y + k * lh))
-            return len(lines)
+        ban_h = self._tt(72) if touch else int(50*H/1080)
+        ban_r = pygame.Rect(pa.x+pad, pa.y+int(12*H/1080), pa.width-2*pad, ban_h)
+        pygame.draw.rect(surface,(232,244,255),ban_r,border_radius=10)
+        pygame.draw.rect(surface,(160,205,245),ban_r,1,border_radius=10)
+        f_ban = self.fnt["body"] if touch else self.fnt["small"]
+        if touch:
+            surface.blit(f_ban.render(f"Configuring for:  {pt_nm}", True,(50,100,160)),
+                         (ban_r.x+int(14*W/1920), ban_r.y+int(8*H/1080)))
+            l2 = self.fnt["small"].render(f"Severity: {sev}", True,(80,110,150))
+            surface.blit(l2, (ban_r.x+int(14*W/1920), ban_r.bottom - l2.get_height() - int(8*H/1080)))
+            bs = self.fnt["small"].render(ble_text, True, txt_col)
+            dr = int(7*H/1080)
+            bx = ban_r.right - bs.get_width() - int(20*W/1920)
+            pygame.draw.circle(surface, dot_col, (bx-dr-int(6*W/1920), ban_r.bottom-l2.get_height()//2-int(8*H/1080)), dr)
+            surface.blit(bs, (bx, ban_r.bottom - bs.get_height() - int(8*H/1080)))
+        else:
+            surface.blit(f_ban.render(f"Configuring session for:  {pt_nm}  ·  {sev}",
+                         True,(50,100,160)),(ban_r.x+int(12*W/1920),ban_r.y+int(15*H/1080)))
+            bs = self.fnt["small"].render(ble_text, True, txt_col)
+            dr = int(7*H/1080)
+            dx = ban_r.right - bs.get_width() - dr*2 - int(24*W/1920)
+            pygame.draw.circle(surface, dot_col, (dx, ban_r.centery), dr)
+            surface.blit(bs, (dx + dr + int(8*W/1920), ban_r.centery - bs.get_height()//2))
 
-        tw = int(460*W/1920); th = int(120*H/1080); tg = int(16*W/1920)
+        # ── Game tiles ───────────────────────────────────────────────
+        tg = int(14*W/1920)
+        if touch:
+            tw = (pa.width - 2*pad - 2*tg) // 3
+            th = self._tt(74)
+        else:
+            tw = int(460*W/1920); th = int(120*H/1080)
 
-        game_y = pa.y + int(78*H/1080)
-        surface.blit(self.fnt["small"].render("Single Skill Games", True, (75,95,125)),
-                     (pa.x + int(16*W/1920), game_y))
-        ty = game_y + int(32*H/1080)
+        game_y = ban_r.bottom + int((22 if touch else 24)*H/1080)
+        surface.blit((self.fnt["body_b"] if touch else self.fnt["small"]).render(
+            "Single Skill Games", True, (75,95,125)), (pa.x + pad, game_y))
+        ty = game_y + (self.fnt["body_b"] if touch else self.fnt["small"]).get_height() + int(10*H/1080)
 
         ss_total_w = len(SINGLE_SKILL_GAMES) * tw + (len(SINGLE_SKILL_GAMES) - 1) * tg
         ss_start_x = pa.x + (pa.width - ss_total_w) // 2
@@ -2647,20 +3957,21 @@ class TherapistDashboardScene:
             sel = gc["selected_game"] and gc["selected_game"][1] == gtype
             bc  = PANEL_COLORS.get(i, (180,200,220)) if sel else (210,220,235)
             _card_bg(surface, tr, alpha=245 if sel else 200, border_col=bc, border_w=2 if sel else 1)
+            _fg = self.fnt["label"] if touch else self.fnt["body_b"]
             if sel and gc["selected_game"]:
-                lbl_s = self.fnt["body_b"].render(gtype, True, bc)
-                surface.blit(lbl_s, lbl_s.get_rect(midleft=(tr.x + int(14*W/1920), tr.y + int(36*H/1080))))
+                lbl_s = _fg.render(gtype, True, bc)
+                surface.blit(lbl_s, lbl_s.get_rect(midleft=(tr.x + int(14*W/1920), tr.centery - _fg.get_height()//2)))
                 sub = self.fnt["small"].render(gc["selected_game"][0], True, bc)
-                surface.blit(sub, sub.get_rect(midleft=(tr.x + int(14*W/1920), tr.y + int(82*H/1080))))
+                surface.blit(sub, sub.get_rect(midleft=(tr.x + int(14*W/1920), tr.centery + _fg.get_height()//2)))
             else:
-                lbl_s = self.fnt["body_b"].render(gtype, True, (55,72,95))
+                lbl_s = _fg.render(gtype, True, (55,72,95))
                 surface.blit(lbl_s, lbl_s.get_rect(midleft=(tr.x + int(14*W/1920), tr.centery)))
             self._game_tiles.append((tr, (gname, gtype)))
 
-        ig_label_y = ty + th + int(50*H/1080)
-        surface.blit(self.fnt["small"].render("Integrated Games", True, (75,95,125)),
-                     (pa.x + int(16*W/1920), ig_label_y))
-        gy2 = ig_label_y + int(32*H/1080)
+        ig_label_y = ty + th + int((24 if touch else 50)*H/1080)
+        surface.blit((self.fnt["body_b"] if touch else self.fnt["small"]).render(
+            "Integrated Games", True, (75,95,125)), (pa.x + pad, ig_label_y))
+        gy2 = ig_label_y + (self.fnt["body_b"] if touch else self.fnt["small"]).get_height() + int(10*H/1080)
 
         ig_total_w = len(INTEGRATED_GAMES) * tw + (len(INTEGRATED_GAMES) - 1) * tg
         ig_start_x = pa.x + (pa.width - ig_total_w) // 2
@@ -2670,20 +3981,26 @@ class TherapistDashboardScene:
             sel = gc["selected_game"] and gc["selected_game"][1] == gtype
             bc  = PANEL_COLORS.get(i + 3, (180,200,220)) if sel else (210,220,235)
             _card_bg(surface, tr, alpha=245 if sel else 200, border_col=bc, border_w=2 if sel else 1)
+            _fg = self.fnt["label"] if touch else self.fnt["body_b"]
             if sel and gc["selected_game"]:
-                lbl_s = self.fnt["body_b"].render(gtype, True, bc)
-                surface.blit(lbl_s, lbl_s.get_rect(midleft=(tr.x + int(14*W/1920), tr.y + int(36*H/1080))))
+                lbl_s = _fg.render(gtype, True, bc)
+                surface.blit(lbl_s, lbl_s.get_rect(midleft=(tr.x + int(14*W/1920), tr.centery - _fg.get_height()//2)))
                 sub = self.fnt["small"].render(gc["selected_game"][0], True, bc)
-                surface.blit(sub, sub.get_rect(midleft=(tr.x + int(14*W/1920), tr.y + int(82*H/1080))))
+                surface.blit(sub, sub.get_rect(midleft=(tr.x + int(14*W/1920), tr.centery + _fg.get_height()//2)))
             else:
-                lbl_s = self.fnt["body_b"].render(gname, True, (55,72,95))
-                surface.blit(lbl_s, lbl_s.get_rect(center=(tr.centerx, tr.centery)))
+                lbl_s = _fg.render(gname, True, (55,72,95))
+                surface.blit(lbl_s, lbl_s.get_rect(center=tr.center))
             self._game_tiles.append((tr, (gname, gtype)))
 
         # ── Proceed to Start Calibration button ───────────────────────
         game_chosen = gc["selected_game"] is not None
-        next_r = pygame.Rect(pa.right-int(260*W/1920), pa.bottom-int(60*H/1080),
-                             int(244*W/1920), int(46*H/1080))
+        if touch:
+            bw = self.fnt["btn"].size("Start Calibration")[0] + self._tt(40)
+            next_r = pygame.Rect(pa.right - pad - bw, pa.bottom - self._tt(60) - int(8*H/1080),
+                                 bw, self._tt(58))
+        else:
+            next_r = pygame.Rect(pa.right-int(260*W/1920), pa.bottom-int(60*H/1080),
+                                 int(244*W/1920), int(46*H/1080))
         nc = (40,160,80)  if game_chosen else (175,188,202)
         nh = (28,130,62)  if game_chosen else (155,168,182)
         _btn(surface,next_r,"Start Calibration",self.fnt["btn"],
@@ -2700,11 +4017,15 @@ class TherapistDashboardScene:
         gc = self.gc
         pt = self.selected_patient or {}
 
-        cx0 = pa.x + int(20*W/1920)
-        cy0 = pa.y + int(20*H/1080)
-
         cal_done     = self.calibration_done or self.calibration_bypassed
         cal_mismatch = self._calibration_mismatched()
+
+        if self._touch_ui:
+            self._draw_start_session_touch(surface, pa, gc, pt, cal_done, cal_mismatch)
+            return
+
+        cx0 = pa.x + int(20*W/1920)
+        cy0 = pa.y + int(20*H/1080)
 
         steps = [
             ("Patient selected",             True,                             False),
@@ -2750,7 +4071,7 @@ class TherapistDashboardScene:
         _game_type = (gc.get("selected_game") or (None, ""))[1] or ""
         ss_params = [
             ("duration", "Duration", gc["duration"],
-             ["60 seconds", "120 seconds", "180 seconds", "Custom"]),
+             ["60 seconds", "120 seconds", "180 seconds"]),
         ]
         if _game_type != "Wrist Rotation":
             ss_params.append(
@@ -2953,6 +4274,128 @@ class TherapistDashboardScene:
                     ts3   = self.fnt["input"].render(ov, True, (40,50,65))
                     surface.blit(ts3, ts3.get_rect(
                         midleft=(or_.x+int(8*W/1920), or_.centery)))
+
+    # ── PANEL 5 (7-inch): single-column, touch-first layout ──────────
+    def _draw_start_session_touch(self, surface, pa, gc, pt, cal_done, cal_mismatch):
+        W, H = self.WIDTH, self.HEIGHT
+        pad = int(16*W/1920)
+        x0  = pa.x + pad
+        y   = pa.y + int(10*H/1080)
+
+        gname = gc["selected_game"][0] if gc["selected_game"] else "—"
+        gtype = (gc.get("selected_game") or (None, ""))[1] or ""
+
+        # ── readiness checklist (compact) ──
+        steps = [
+            ("Patient selected",   True),
+            ("Game configured",    gc["selected_game"] is not None),
+            ("Calibration " + ("mismatch" if cal_mismatch else "complete"),
+             cal_done and not cal_mismatch),
+            ("Ready to start",     self._session_ready() and not cal_mismatch),
+        ]
+        rh  = self._sc(42)
+        dot = self._sc(7)
+        for lbl, ok in steps:
+            col = (55,175,75) if ok else ((220,140,30) if ("mismatch" in lbl) else (196,206,220))
+            pygame.draw.circle(surface, col, (x0 + dot, y + rh//2), dot)
+            tcl = (40,55,75) if ok else ((170,105,15) if "mismatch" in lbl else (130,145,165))
+            s = self.fnt["body"].render(lbl, True, tcl)
+            surface.blit(s, (x0 + self._sc(28), y + (rh - s.get_height())//2))
+            y += rh
+        y += int(10*H/1080)
+
+        # ── session details card ──
+        sd = pygame.Rect(x0, y, pa.width - 2*pad, self._tt(210))
+        _card_bg(surface, sd, alpha=235, border_col=(185,210,240), border_w=1)
+        sy = sd.y + int(10*H/1080)
+        surface.blit(self.fnt["body_b"].render("Session Details", True, (75,95,125)),
+                     (sd.x + int(12*W/1920), sy))
+        sy += self.fnt["body_b"].get_height() + int(6*H/1080)
+        for line in (f"Patient:  {pt.get('full_name','—')}", f"Game:  {gname}"):
+            surface.blit(self.fnt["body"].render(line, True, (50,65,90)),
+                         (sd.x + int(12*W/1920), sy))
+            sy += self.fnt["body"].get_height() + int(6*H/1080)
+
+        # duration / speed dropdown fields (large)
+        params = [("duration", "Duration", gc["duration"])]
+        if gtype != "Wrist Rotation":
+            params.append(("speed", "Speed", gc["speed"]))
+        self._ss_param_rects = {}
+        fw = (sd.width - int(36*W/1920)) // 2
+        fx = sd.x + int(12*W/1920)
+        fy = sd.bottom - self._tt(52) - int(12*H/1080)
+        for pk, plbl, pval in params:
+            surface.blit(self.fnt["small"].render(plbl, True, (88,108,138)),
+                         (fx, fy - self.fnt["small"].get_height() - int(2*H/1080)))
+            pr = pygame.Rect(fx, fy, fw, self._tt(52))
+            active = self._ss_open_param and self._ss_open_param[0] == pk
+            pygame.draw.rect(surface, (255,255,255), pr, border_radius=10)
+            pygame.draw.rect(surface, (40,160,220) if active else (185,205,228),
+                             pr, 2 if active else 1, border_radius=10)
+            surface.blit(self.fnt["input"].render(pval, True, (40,55,80)),
+                         self.fnt["input"].render(pval, True, (40,55,80)).get_rect(
+                             midleft=(pr.x + int(10*W/1920), pr.centery)))
+            surface.blit(self.fnt["sym26"].render("▼", True, (90,110,140)),
+                         self.fnt["sym26"].render("▼", True, (90,110,140)).get_rect(
+                             midright=(pr.right - int(10*W/1920), pr.centery)))
+            self._ss_param_rects[pk] = pr
+            fx += fw + int(12*W/1920)
+        y = sd.bottom + int(14*H/1080)
+
+        # ── calibration status + button ──
+        if cal_mismatch:
+            cs_txt, cs_col, cal_lbl = "Sensor mismatch — recalibrate", (170,110,10), "Calibrate"
+        elif self.calibration_done and not self.calibration_bypassed:
+            cs_txt, cs_col, cal_lbl = "Calibration complete", (30,140,60), "Re-Calibrate"
+        elif cal_done:
+            cs_txt, cs_col, cal_lbl = "Calibration bypassed (DEV)", (30,140,60), None
+        else:
+            cs_txt, cs_col, cal_lbl = "Calibration required", (160,110,20), "Calibrate"
+        surface.blit(self.fnt["body_b"].render(cs_txt, True, cs_col), (x0, y + int(6*H/1080)))
+        if cal_lbl:
+            cw = self.fnt["btn"].size(cal_lbl)[0] + self._tt(36)
+            cal_r = pygame.Rect(pa.right - pad - cw, y, cw, self._tt(52))
+            _btn(surface, cal_r, cal_lbl, self.fnt["btn"], (225,165,30), (195,135,15),
+                 self._calibrate_hov, radius=10)
+            self._calibrate_btn_rect = cal_r
+        else:
+            self._calibrate_btn_rect = pygame.Rect(0,0,1,1)
+
+        # ── bottom action row: Bypass (small) + Start Session (big) ──
+        bb_lbl = "Disable Bypass" if cal_done else "Bypass Calibration"
+        bb_w = self.fnt["small"].size(bb_lbl)[0] + self._tt(28)
+        byp_r = pygame.Rect(x0, pa.bottom - self._tt(50) - int(6*H/1080), bb_w, self._tt(46))
+        _btn(surface, byp_r, bb_lbl, self.fnt["small"],
+             (160,60,60) if cal_done else (110,110,128),
+             (130,35,35) if cal_done else (85,85,105), self._bypass_hov, radius=8)
+        self._bypass_btn_rect = byp_r
+
+        ready = self._session_ready()
+        sw2 = self.fnt["btn"].size("Start Session")[0] + self._tt(52)
+        st_r = pygame.Rect(pa.right - pad - sw2, pa.bottom - self._tt(60) - int(4*H/1080),
+                           sw2, self._tt(58))
+        _btn(surface, st_r, "Start Session", self.fnt["btn"],
+             (40,160,80) if ready else (175,188,202),
+             (28,130,62) if ready else (155,168,182), self.start_hov and ready, radius=14)
+        self._start_btn_rect = st_r if ready else pygame.Rect(0,0,1,1)
+        self._ss_custom_dur_rect = pygame.Rect(0,0,1,1)
+
+        # ── open dropdown list (on top) ──
+        if self._ss_open_param:
+            open_key, open_opts = self._ss_open_param
+            pr = self._ss_param_rects.get(open_key)
+            if pr:
+                opt_h = self._tt(44)
+                dp = pygame.Rect(pr.x, pr.bottom, pr.width, len(open_opts)*opt_h + 4)
+                pygame.draw.rect(surface, (248,251,255), dp, border_radius=8)
+                pygame.draw.rect(surface, (40,160,220), dp, 2, border_radius=8)
+                for j, ov in enumerate(open_opts):
+                    orr = pygame.Rect(pr.x, pr.bottom + j*opt_h, pr.width, opt_h)
+                    if orr.collidepoint(pygame.mouse.get_pos()):
+                        pygame.draw.rect(surface, (223,238,255), orr, border_radius=6)
+                    surface.blit(self.fnt["input"].render(ov, True, (40,50,65)),
+                                 self.fnt["input"].render(ov, True, (40,50,65)).get_rect(
+                                     midleft=(orr.x + int(10*W/1920), orr.centery)))
 
     # ──────────────────────────────────────────────────────────────────
     #  EDIT PROFILE MODAL
@@ -3207,8 +4650,8 @@ class TherapistDashboardScene:
     def _draw_confirm_modal(self, surface):
         W,H=self.WIDTH,self.HEIGHT
         is_logout = (self.modal == "logout_confirm")
-        mw = int(W*0.34) if is_logout else int(W*0.26)
-        mh = int(H*0.26); mx,my=(W-mw)//2,(H-mh)//2
+        mw = max(int(W*0.34) if is_logout else int(W*0.26), self._tt(520))
+        mh = max(int(H*0.26), self._tt(320)); mx,my=(W-mw)//2,(H-mh)//2
         mr=pygame.Rect(mx,my,mw,mh)
         ms=pygame.Surface((mw,mh),pygame.SRCALPHA)
         pygame.draw.rect(ms,(250,252,255,255),(0,0,mw,mh),border_radius=16)
@@ -3242,13 +4685,14 @@ class TherapistDashboardScene:
 
     def _confirm_rects(self):
         W,H=self.WIDTH,self.HEIGHT
-        bw=int(115*W/1920); bh=int(42*H/1080); gap=int(12*W/1920)
+        bw=max(int(115*W/1920), self._tt(150)); bh=self._tt(46); gap=int(16*W/1920)
         cy=H//2+int(30*H/1080)
         return (pygame.Rect(W//2-bw-gap//2,cy,bw,bh),
                 pygame.Rect(W//2+gap//2,cy,bw,bh))
 
     def _logout_rect(self):
-        lw=int(self.WIDTH*0.11); lh=int(self.HEIGHT*0.046)
+        lw=int(self.WIDTH*(0.13 if self._touch_ui else 0.11))
+        lh=max(int(self.HEIGHT*0.046), self._tt(44))
         lx=(self.sidebar_w-lw)//2; ly=self.HEIGHT-lh-int(20*self.HEIGHT/1080)
         return pygame.Rect(lx,ly,lw,lh)
 

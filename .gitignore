@@ -1,0 +1,12 @@
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Local runtime data / logs
+*.log
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db

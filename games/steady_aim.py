@@ -424,7 +424,7 @@ class SteadyAimGame(FatigueMixin, BaseScreen):
             surface.blit(msg, (GAME_W//2 - msg.get_width()//2, GAME_H//2 - 80))
 
         surface.blit(font_sm.render(
-            "Tilt wrist to move cursor — hold inside the circle   ESC=Pause",
+            "Tilt wrist to move cursor — hold inside the circle",
             True, T["GRAY"]), (80, GAME_H - 44))
 
         if self.paused: self._draw_pause(surface)

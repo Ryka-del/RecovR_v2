@@ -21,7 +21,12 @@ import sys
 import os
 
 # --- ENVIRONMENT (must be before pygame.init) ---
-os.environ['SDL_VIDEO_WINDOW_POS'] = "0,0"
+# RECOVR_THERAPIST_DISPLAY (set by recovr/launch_production.py) targets this
+# window at a specific monitor via set_mode(display=idx); leave SDL_VIDEO_WINDOW_POS
+# unset in that case so it does not fight the display index.
+_THERAPIST_DISPLAY = os.environ.get("RECOVR_THERAPIST_DISPLAY", "").strip()
+if not _THERAPIST_DISPLAY:
+    os.environ['SDL_VIDEO_WINDOW_POS'] = "0,0"
 
 # --- Windows DPI fix ---
 if sys.platform == "win32":
@@ -38,9 +43,23 @@ if sys.platform == "win32":
 pygame.init()
 
 # --- CREATE WINDOW ---
-screen_info = pygame.display.Info()
-WIDTH, HEIGHT = screen_info.current_w, screen_info.current_h
-screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.NOFRAME)
+screen = None
+if _THERAPIST_DISPLAY:
+    # Dual-monitor: put the therapist app on the chosen physical display, sized
+    # to that monitor. Any failure falls through to the original behaviour below.
+    try:
+        _idx = int(_THERAPIST_DISPLAY)
+        _sizes = pygame.display.get_desktop_sizes()
+        if 0 <= _idx < len(_sizes):
+            WIDTH, HEIGHT = _sizes[_idx]
+            screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.NOFRAME, display=_idx)
+    except Exception as _exc:
+        print(f"[recovr] RECOVR_THERAPIST_DISPLAY ignored ({_exc}); using default display")
+        screen = None
+if screen is None:
+    screen_info = pygame.display.Info()
+    WIDTH, HEIGHT = screen_info.current_w, screen_info.current_h
+    screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.NOFRAME)
 pygame.display.set_caption("RecovR")
 
 # --- CLOSE BUTTON ---

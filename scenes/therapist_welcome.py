@@ -8,6 +8,11 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from audio import play_welcome, play_click
 
+# Dual-monitor mode only: clicking START here must also flip the shared session
+# so the patient window leaves its Welcome splash for the Waiting Screen. Inert
+# (and this import is skipped) when RECOVR_DUAL_MONITOR is unset.
+_DUAL_MONITOR = os.environ.get("RECOVR_DUAL_MONITOR") == "1"
+
 
 class TherapistWelcomeScene:
 
@@ -73,6 +78,15 @@ class TherapistWelcomeScene:
             if self.start_button.handle_click(event):
                 play_click()
                 self.launch_triggered = True
+                if _DUAL_MONITOR:
+                    # Synchronized state change: patient Welcome -> Waiting Screen
+                    # while this app goes Welcome -> Login. No timers.
+                    try:
+                        from recovr.therapist_link import therapist_link
+                        therapist_link.start()
+                        therapist_link.set_booting(True)
+                    except Exception as exc:      # pragma: no cover - defensive
+                        print(f"[recovr] welcome->waiting sync skipped ({exc})")
                 return "login"
         return None
 

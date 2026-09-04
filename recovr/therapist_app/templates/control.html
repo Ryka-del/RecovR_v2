@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RecovR &mdash; Therapist Control</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='control.css') }}">
+</head>
+<body>
+  <header>
+    <h1>RecovR <span class="tag">Therapist Control</span></h1>
+    <div id="conn" class="pill pill-warn">connecting&hellip;</div>
+  </header>
+
+  <main>
+    <!-- SESSION CONFIGURATION -->
+    <section class="card">
+      <h2>Session configuration</h2>
+      <form id="config-form">
+        <label>Patient name
+          <input name="patient_name" type="text" placeholder="e.g. Jane Cruz">
+        </label>
+        <label>Patient ID
+          <input name="patient_id" type="text" placeholder="e.g. RCVR-0001">
+        </label>
+        <label>Therapist name
+          <input name="therapist_name" type="text" placeholder="e.g. T. Reyes">
+        </label>
+        <label>Game
+          <select name="selected_game">
+            {% for g in games %}<option value="{{ g }}">{{ g }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Difficulty
+          <select name="difficulty">
+            {% for d in difficulties %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Duration (seconds)
+          <input name="duration_sec" type="number" min="5" max="3600" value="60">
+        </label>
+        <button type="submit" class="btn">Apply configuration</button>
+      </form>
+    </section>
+
+    <!-- SESSION COMMANDS -->
+    <section class="card">
+      <h2>Session commands</h2>
+      <div class="btn-row">
+        <button class="btn cmd" data-cmd="START_GAME">Start</button>
+        <button class="btn cmd" data-cmd="PAUSE_GAME">Pause</button>
+        <button class="btn cmd" data-cmd="RESUME_GAME">Resume</button>
+        <button class="btn cmd" data-cmd="STOP_GAME">Stop</button>
+        <button class="btn cmd" data-cmd="NEXT_GAME">Next game</button>
+        <button class="btn cmd" data-cmd="CALIBRATE">Calibrate</button>
+      </div>
+      <p id="cmd-msg" class="msg"></p>
+      <button id="reset-btn" class="btn btn-ghost">Reset session</button>
+    </section>
+
+    <!-- LIVE STATE -->
+    <section class="card">
+      <h2>Live session state</h2>
+      <div class="state-grid">
+        <div><span class="k">Status</span><span id="s-status" class="v big">&mdash;</span></div>
+        <div><span class="k">Session ID</span><span id="s-sid" class="v">&mdash;</span></div>
+        <div><span class="k">Patient</span><span id="s-patient" class="v">&mdash;</span></div>
+        <div><span class="k">Game</span><span id="s-game" class="v">&mdash;</span></div>
+        <div><span class="k">Difficulty</span><span id="s-diff" class="v">&mdash;</span></div>
+        <div><span class="k">command_seq</span><span id="s-cseq" class="v">0</span></div>
+        <div><span class="k">game_seq</span><span id="s-gseq" class="v">0</span></div>
+        <div><span class="k">Pending</span><span id="s-pending" class="v">&mdash;</span></div>
+      </div>
+    </section>
+
+    <!-- LIVE TELEMETRY -->
+    <section class="card">
+      <h2>Live game data</h2>
+      <div class="state-grid">
+        <div><span class="k">Score</span><span id="t-score" class="v big">&mdash;</span></div>
+        <div><span class="k">Remaining</span><span id="t-remaining" class="v big">&mdash;</span></div>
+        <div><span class="k">Elapsed</span><span id="t-elapsed" class="v">&mdash;</span></div>
+        <div><span class="k">Accuracy</span><span id="t-accuracy" class="v">&mdash;</span></div>
+        <div><span class="k">Reps</span><span id="t-reps" class="v">&mdash;</span></div>
+        <div><span class="k">Reaction (ms)</span><span id="t-rt" class="v">&mdash;</span></div>
+      </div>
+      <details>
+        <summary>Raw snapshot</summary>
+        <pre id="raw">{}</pre>
+      </details>
+    </section>
+  </main>
+
+  <script>window.RECOVR_POLL_MS = {{ poll_ms }};</script>
+  <script src="{{ url_for('static', filename='control.js') }}"></script>
+</body>
+</html>

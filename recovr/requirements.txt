@@ -1,0 +1,9 @@
+# RecovR new-architecture prototype dependencies.
+#
+# The existing app already needs: pygame, bleak
+# This prototype adds exactly one package:
+
+flask>=3.0        # therapist web control surface (the only new dependency)
+
+# The communication layer uses only the Python standard library
+# (urllib, json, threading, queue) -- no requests, no websockets, no redis.

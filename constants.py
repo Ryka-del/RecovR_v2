@@ -28,6 +28,10 @@ def set_dark_mode(dark: bool):
     _dark_mode = dark
 
 
+def is_dark_mode() -> bool:
+    return _dark_mode
+
+
 def get_theme():
     if _dark_mode:
         return {
