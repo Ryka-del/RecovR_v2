@@ -10,6 +10,7 @@
 # =============================================================================
 
 import asyncio
+import os
 import struct
 import subprocess
 import sys
@@ -42,6 +43,15 @@ class BLEReceiver:
         self._connected = False
         self._first_run = True
 
+        # Gate for the scan/connect loop. When False the loop parks and any live
+        # connection is dropped, freeing the controller for another process.
+        # In the dual-monitor app the therapist and patient processes each own a
+        # BLEReceiver but only one holds the controller at a time; they start
+        # disabled (RECOVR_BLE_START_DISABLED=1, set by recovr.launch_production)
+        # and call set_enabled() as the session moves between them. Unset env =>
+        # enabled, so the standalone app / tests are unaffected.
+        self._enabled = os.environ.get("RECOVR_BLE_START_DISABLED") != "1"
+
         t = threading.Thread(target=self._thread_main, name="BLEReceiver", daemon=True)
         t.start()
 
@@ -50,6 +60,11 @@ class BLEReceiver:
     @property
     def connected(self) -> bool:
         return self._connected
+
+    def set_enabled(self, on: bool) -> None:
+        """Enable/disable the scan+connect loop at runtime. Disabling drops any
+        active connection within ~0.1 s; enabling resumes scanning within ~0.3 s."""
+        self._enabled = bool(on)
 
     def get_latest(self) -> dict:
         with self._lock:
@@ -103,25 +118,32 @@ class BLEReceiver:
             print("[BLE] ERROR: bleak not installed.  Run:  pip install bleak")
             return
 
-        # First-run: list every visible device so user can verify ESP32 is on
-        if self._first_run:
-            self._first_run = False
-            print("[BLE] Scanning — visible BLE devices:")
-            try:
-                devs = await BleakScanner.discover(timeout=4.0)
-                if devs:
-                    for d in devs:
-                        tag = "  <-- YOUR CONTROLLER" if (
-                            d.name and any(kw in d.name.lower() for kw in _NAME_KEYWORDS)
-                        ) else ""
-                        print(f"[BLE]   {str(d.name):<32s}  {d.address}{tag}")
-                else:
-                    print("[BLE]   (none found — is Bluetooth on?)")
-            except Exception as exc:
-                print(f"[BLE]   Scan failed: {exc}")
-
         scan_count = 0
         while True:
+            # ── Park while disabled: no scanning, no connection held ──────────
+            if not self._enabled:
+                self._connected = False
+                await asyncio.sleep(0.3)
+                continue
+
+            # First-run (once we are enabled): list every visible device so the
+            # user can verify the ESP32 controller is powered on and advertising.
+            if self._first_run:
+                self._first_run = False
+                print("[BLE] Scanning — visible BLE devices:")
+                try:
+                    devs = await BleakScanner.discover(timeout=4.0)
+                    if devs:
+                        for d in devs:
+                            tag = "  <-- YOUR CONTROLLER" if (
+                                d.name and any(kw in d.name.lower() for kw in _NAME_KEYWORDS)
+                            ) else ""
+                            print(f"[BLE]   {str(d.name):<32s}  {d.address}{tag}")
+                    else:
+                        print("[BLE]   (none found — is Bluetooth on?)")
+                except Exception as exc:
+                    print(f"[BLE]   Scan failed: {exc}")
+
             # ── Scan — compatible with all bleak versions ─────────────────────
             scan_count += 1
             print(f"[BLE] Scan #{scan_count} — looking for '{DEVICE_NAME}'...")
@@ -177,19 +199,27 @@ class BLEReceiver:
                         self._connected = True
                         print("[BLE] Controller connected!  Sensor data is live.")
                         await client.start_notify(CHAR_UUID, self._on_notification)
-                        while client.is_connected:
+                        # Hold the connection until it drops OR this receiver is
+                        # disabled (session handed the controller to the other
+                        # process). Leaving the `async with` disconnects cleanly.
+                        while client.is_connected and self._enabled:
                             await asyncio.sleep(0.1)
 
                 self._connected = False
-                print("[BLE] Controller disconnected. Scanning again...")
+                if self._enabled:
+                    print("[BLE] Controller disconnected. Scanning again...")
+                else:
+                    print("[BLE] Controller released (receiver disabled).")
 
             except Exception as exc:
                 self._connected = False
                 print(f"[BLE] Connection error: {type(exc).__name__}: {exc}")
 
-            # Reset adapter so BlueZ doesn't cache the old connection
-            self._reset_adapter()
-            await asyncio.sleep(_RECONNECT_DELAY)
+            # Reset the adapter so BlueZ doesn't cache the old connection — but
+            # not on a deliberate release, so we don't disturb the other process.
+            if self._enabled:
+                self._reset_adapter()
+                await asyncio.sleep(_RECONNECT_DELAY)
 
     # ── Notification handler ──────────────────────────────────────────────────
 

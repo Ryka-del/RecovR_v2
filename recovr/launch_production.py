@@ -79,6 +79,11 @@ def _shutdown(*_a):
 def main():
     base_env = os.environ.copy()
     base_env["RECOVR_DUAL_MONITOR"] = "1"
+    # The therapist and patient processes each hold a BLEReceiver, but only one
+    # may own the controller at a time. Start both with BLE parked; each enables
+    # it when the session gives it the controller (therapist: a patient is
+    # selected and not mid-game; patient: How-to-Play + gameplay).
+    base_env["RECOVR_BLE_START_DISABLED"] = "1"
 
     atexit.register(_shutdown)
     for sig_name in ("SIGINT", "SIGTERM", "SIGBREAK"):

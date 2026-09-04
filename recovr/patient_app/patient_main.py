@@ -518,6 +518,21 @@ class PatientApp:
         self.mode_t = 0.0
         if mode == INSTRUCTIONS:
             self.instr_elapsed = 0.0
+        # BLE controller ownership: the patient process holds the controller only
+        # for How-to-Play (connecting during the therapist's ~5 s START lock) and
+        # the running game. Every other mode releases it so the therapist process
+        # can own it (patient selection / Game Config / calibration).
+        self._reconcile_ble(mode in (HOWTOPLAY, PLAYING))
+
+    def _reconcile_ble(self, want: bool):
+        if getattr(self, "_ble_want", None) == want:
+            return
+        self._ble_want = want
+        try:
+            from sensors.ble_receiver import ble_receiver
+            ble_receiver.set_enabled(want)
+        except Exception:
+            pass
 
     def _begin_session(self, config: dict):
         self._teardown_runner()

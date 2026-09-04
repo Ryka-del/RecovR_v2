@@ -43,6 +43,10 @@ from scenes.icon_renderer import draw_icon, ICONS
 from scenes.calibration_window import CalibrationWindow
 from audio import play_confirm_alert, play_start_session, play_click
 from sensors.input_handler import input_handler
+try:
+    from sensors.ble_receiver import ble_receiver as _ble_receiver
+except Exception:
+    _ble_receiver = None
 
 # ── Dual-monitor mode (opt-in via recovr/launch_production.py) ────────────
 # When RECOVR_DUAL_MONITOR=1, "Start Session" hands the game to the patient
@@ -450,6 +454,9 @@ class TherapistDashboardScene:
         self._sm_state    = {}                 # latest broker snapshot
         self._sm_result   = None               # captured result on COMPLETE
         self._sm_btn_rects = {}                # {key: (Rect, enabled)} for the controls
+        self._sm_started_ms = 0                # pygame ticks when "Start Session" was pressed
+        self._sm_start_lock_ms = 5000          # START held for this long -> BLE handoff window
+        self._ble_want    = None               # last enable/disable pushed to the BLE receiver
         self._sm_hover    = None
         self._sm_volume   = None               # music volume (lazy-init from broker state)
         self._sm_stop_rect = pygame.Rect(0, 0, 1, 1)   # emergency STOP (lower-right)
@@ -1375,6 +1382,7 @@ class TherapistDashboardScene:
             self._sm_result = None
             self._sm_volume = None
             self._sm_stopped_notice = False
+            self._sm_started_ms = pygame.time.get_ticks()   # START locked for the BLE handoff window
             self._open_panel(7)
             return None                      # do NOT switch this window to a game scene
 
@@ -1639,8 +1647,19 @@ class TherapistDashboardScene:
         bs  = max(int(108 * (H / 1080)), self._tt(104))
         gap = int(34 * (W / 1920))
         p_icon, p_label, _p_cmd = self._sm_primary(status)
+        # The initial START is held for a few seconds after "Start Session" so the
+        # BLE controller can move from this process to the patient process before
+        # the game runs. RESUME / RESTART / PAUSE are never locked.
+        lock_ms_left = self._sm_start_lock_ms - (pygame.time.get_ticks() - self._sm_started_ms)
+        primary_locked = (
+            _p_cmd == _rc_cmd.START_GAME
+            and status in (_rc_cmd.READY, _rc_cmd.IDLE, "connecting")
+            and lock_ms_left > 0
+        )
+        if primary_locked:
+            p_label = f"START  {lock_ms_left // 1000 + 1}"
         specs = [
-            ("primary", p_icon,  p_label,  True),
+            ("primary", p_icon,  p_label,  not primary_locked),
             ("volume",  "volume", "VOLUME", True),
         ]
         total = bs * len(specs) + gap * (len(specs) - 1)
@@ -1653,7 +1672,10 @@ class TherapistDashboardScene:
             self._sm_btn_rects[key] = (r, bool(enabled))
             hovered = self._sm_hover == key and enabled
             if key == "primary":
-                fill = (86, 162, 232) if hovered else (70, 150, 225)
+                if not enabled:
+                    fill = (176, 190, 205)          # locked during the BLE handoff window
+                else:
+                    fill = (86, 162, 232) if hovered else (70, 150, 225)
                 pygame.draw.rect(surface, fill, r, border_radius=18)
                 ic = cap = (255, 255, 255)
             else:
@@ -2311,6 +2333,21 @@ class TherapistDashboardScene:
         # ── "Session in Progress" screen (panel 7) ──
         if self.active_panel == 7:
             self._sm_update(mouse_pos)
+
+        # ── BLE controller ownership (dual-monitor) ──
+        # The therapist process holds the controller while a patient is selected
+        # and we are NOT on "Session in Progress" (select -> Game Config ->
+        # calibration all read the live sensor here). Entering panel 7 releases
+        # it so the patient process can take it for the game; leaving panel 7
+        # with a patient still selected reclaims it. Deselect always releases.
+        if _DUAL_MONITOR and _ble_receiver is not None:
+            want_ble = bool(self.selected_patient) and self.active_panel != 7
+            if want_ble != self._ble_want:
+                self._ble_want = want_ble
+                try:
+                    _ble_receiver.set_enabled(want_ble)
+                except Exception:
+                    pass
 
         # ── Sidebar navigation hover ──
         # Reset to -1, then check each nav item for collision with mouse
