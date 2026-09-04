@@ -471,6 +471,8 @@ class TherapistDashboardScene:
         except Exception:
             self._applied_theme_dark = True
         self._theme_btn_rect = pygame.Rect(0, 0, 1, 1)
+        self._ctrl_btn_rect  = pygame.Rect(0, 0, 1, 1)   # ESP32 status block (tap = rescan)
+        self._ctrl_hov       = False
         self._theme_hov      = False
         if _DUAL_MONITOR:
             therapist_link.start()
@@ -1012,6 +1014,17 @@ class TherapistDashboardScene:
         if self._theme_btn_rect.collidepoint(pos):
             play_click()
             self._apply_theme(not self._applied_theme_dark)   # -> therapist + patient
+            return None
+
+        # Controller monitor: tap to force a fresh BLE scan (manual retry).
+        if self._ctrl_btn_rect.collidepoint(pos):
+            play_click()
+            if _ble_receiver is not None and (not _DUAL_MONITOR or self.selected_patient):
+                try:
+                    _ble_receiver.rescan()
+                    self._ble_want = True        # keep the reconcile in step
+                except Exception:
+                    pass
             return None
 
         for i, r in enumerate(self.nav_rects):
@@ -2361,6 +2374,7 @@ class TherapistDashboardScene:
         self.edit_link_hovered = self._edit_link_rect.collidepoint(mouse_pos)
         self.logout_hovered    = self._logout_rect().collidepoint(mouse_pos)
         self._theme_hov        = self._theme_btn_rect.collidepoint(mouse_pos)
+        self._ctrl_hov         = self._ctrl_btn_rect.collidepoint(mouse_pos)
 
         # ── Panel interactive elements hover ──
         self.rp_btn_hov        = self._rp_btn_rect.collidepoint(mouse_pos)         # Register Patient submit
@@ -2669,11 +2683,122 @@ class TherapistDashboardScene:
             ix  = tr.centerx - grp // 2 + isz
             self._sun_moon_icon(surface, ix, tr.centery, isz, dark, tc)
             surface.blit(ls, ls.get_rect(midleft=(ix + isz + int(10 * W / 1920), tr.centery)))
+            anchor_y = tr.y                      # monitor sits above the theme pill
+        else:
+            anchor_y = lr.y                      # touch: above Logout
+
+        # ── ESP32 controller connection monitor (always visible) ──
+        self._draw_controller_monitor(surface, sw, anchor_y)
 
         lc = (165,25,25) if self.logout_hovered else (205,45,45)
         pygame.draw.rect(surface, lc, lr, border_radius=10)
         ls = self.fnt["btn"].render("Logout", True, (255,255,255))
         surface.blit(ls, ls.get_rect(center=lr.center))
+
+    # ──────────────────────────────────────────────────────────────────
+    #  ESP32 CONTROLLER CONNECTION MONITOR
+    # ──────────────────────────────────────────────────────────────────
+
+    #   stage -> (label, dot colour, text colour)
+    _CTRL_LOOK = {
+        "connected":     ("Controller connected", (40, 190, 90),  (28, 130, 66)),
+        "stalled":       ("Signal stalled",       (230, 165, 30), (166, 112, 12)),
+        "connecting":    ("Connecting…",     (230, 165, 30), (166, 112, 12)),
+        "scanning":      ("Searching…",      (230, 165, 30), (166, 112, 12)),
+        "handed_off":    ("On patient screen",    (60, 140, 225), (40, 100, 175)),
+        "idle":          ("Controller idle",      (172, 184, 198), (118, 132, 150)),
+        "disabled":      ("Controller off",       (172, 184, 198), (118, 132, 150)),
+        "old_firmware":  ("Old firmware",         (215, 60, 55),  (170, 40, 36)),
+        "bluetooth_off": ("Bluetooth is off",     (215, 60, 55),  (170, 40, 36)),
+        "no_bleak":      ("bleak not installed",  (215, 60, 55),  (170, 40, 36)),
+        "no_permission": ("No BLE permission",    (215, 60, 55),  (170, 40, 36)),
+        "error":         ("Controller error",     (215, 60, 55),  (170, 40, 36)),
+    }
+
+    def _controller_status(self):
+        """(stage, label, detail, dot_col, txt_col) for the controller monitor.
+
+        Handoff-aware: with RECOVR_DUAL_MONITOR the therapist process gives the
+        controller up on purpose (no patient selected, or the patient process is
+        running the game), so 'not connected' there is normal, not a fault."""
+        st = {}
+        if _ble_receiver is not None:
+            try:
+                st = _ble_receiver.status()
+            except Exception:
+                st = {}
+
+        # Keep every detail line short -- the sidebar rail is ~200 px wide.
+        if _DUAL_MONITOR and self.active_panel == 7:
+            stage, detail = "handed_off", "used by the game"
+        elif _DUAL_MONITOR and not self.selected_patient:
+            stage, detail = "idle", "select a patient"
+        else:
+            stage  = st.get("stage", "error")
+            detail = st.get("detail", "")
+            if stage == "connected":
+                age = st.get("data_age")
+                if age is not None and age > 2.0:
+                    stage, detail = "stalled", f"no data {age:.0f}s"
+                else:
+                    detail = st.get("device") or "sensor live"
+            elif stage == "scanning":
+                n = len(st.get("seen") or [])
+                s = st.get("scans", 0)
+                detail = f"scan {s} · {n} nearby" if n else f"scan {s} · none nearby"
+            elif stage == "connecting":
+                detail = st.get("device") or "pairing"
+            elif stage == "bluetooth_off":
+                detail = "turn Bluetooth on"
+            elif stage == "no_permission":
+                detail = "see console hint"
+            elif stage == "no_bleak":
+                detail = "pip install bleak"
+            elif stage == "old_firmware":
+                detail = "re-flash the ESP32"
+
+        label, dot, txt = self._CTRL_LOOK.get(stage, self._CTRL_LOOK["error"])
+        return stage, label, detail, dot, txt
+
+    def _draw_controller_monitor(self, surface, sw, anchor_y):
+        """Compact always-visible ESP32 status block at the foot of the sidebar.
+        Tapping it forces a fresh BLE scan."""
+        W, H = self.WIDTH, self.HEIGHT
+        stage, label, detail, dot_col, txt_col = self._controller_status()
+
+        bh = self._tt(62) if self._touch_ui else max(int(58 * H / 1080), 44)
+        r  = pygame.Rect(int(sw * 0.05), anchor_y - bh - int(14 * H / 1080),
+                         int(sw * 0.90), bh)
+        self._ctrl_btn_rect = r
+
+        bg = (247, 250, 254) if not self._ctrl_hov else (236, 243, 252)
+        pygame.draw.rect(surface, bg, r, border_radius=10)
+        pygame.draw.rect(surface, (196, 212, 232), r, 1, border_radius=10)
+
+        # status dot -- pulses while it is actively trying to connect
+        dr = max(4, int(6 * self._fs))
+        cx = r.x + int(12 * W / 1920) + dr
+        cy = r.y + int(14 * H / 1080) + dr
+        if stage in ("scanning", "connecting"):
+            t = (pygame.time.get_ticks() % 1200) / 1200.0
+            pulse = 1.0 + 0.45 * abs(1.0 - 2.0 * t)
+            pygame.draw.circle(surface, (245, 226, 190), (cx, cy), int(dr * pulse * 1.7))
+        pygame.draw.circle(surface, dot_col, (cx, cy), dr)
+
+        f_lab = self.fnt["small"] if self._touch_ui else self.fnt["small"]
+        ls = f_lab.render(label, True, txt_col)
+        surface.blit(ls, (cx + dr + int(9 * W / 1920), r.y + int(7 * H / 1080)))
+
+        if detail:
+            ds = self.fnt["small_i"].render(detail, True, (128, 142, 162))
+            avail = r.width - int(18 * W / 1920)
+            if ds.get_width() > avail:                     # ellipsize
+                txt = detail
+                while txt and self.fnt["small_i"].size(txt + "…")[0] > avail:
+                    txt = txt[:-1]
+                ds = self.fnt["small_i"].render(txt + "…", True, (128, 142, 162))
+            surface.blit(ds, (r.x + int(12 * W / 1920),
+                              r.bottom - ds.get_height() - int(6 * H / 1080)))
 
     def _share_icon(self, surface, cx, cy, s, col):
         """A right-pointing arrow whose shaft arches gently upward -- 'send this
@@ -2945,8 +3070,10 @@ class TherapistDashboardScene:
         scrollable          = self._pl_scroll_max > 0
 
         arrow_w = self._tt(50) if scrollable else 0
-        # keep a finger-width gap between the Share icons and the scroll arrows
-        arrow_gap = self._tt(16) if (scrollable and touch) else 0
+        # keep a clear gap between the Share icons and the scroll arrows.
+        # (_sc, not _tt -- this is spacing, not a tap target: _tt would floor to 50 px
+        #  and squeeze the Therapist column out of the row.)
+        arrow_gap = self._sc(16) if (scrollable and touch) else 0
         btn_x_r = pa.right - pad - arrow_w - arrow_gap   # right edge available to Share icon
         bgap    = self._tt(18) if touch else int(10*W/1920)
         f_name  = self.fnt["body_b"] if touch else self.fnt["body"]
@@ -3942,12 +4069,14 @@ class TherapistDashboardScene:
         pt    = self.selected_patient or {}
         pt_nm = pt.get("full_name","—")
         sev   = pt.get("severity","—")
-        if input_handler.connected:
-            dot_col, txt_col = (40,190,90), (30,140,65)
-            ble_text = "Controller ready" if touch else "Controller Connected"
+        # Same source of truth as the sidebar monitor, so the two never disagree.
+        _stage, _lab, _det, dot_col, txt_col = self._controller_status()
+        if touch:
+            ble_text = {"connected": "Controller ready",
+                        "scanning":  "Searching…",
+                        "connecting": "Connecting…"}.get(_stage, _lab)
         else:
-            dot_col, txt_col = (200,90,40), (170,80,35)
-            ble_text = "No controller" if touch else "Controller Not Connected"
+            ble_text = _lab if _stage != "connected" else "Controller Connected"
 
         ban_h = self._tt(72) if touch else int(50*H/1080)
         ban_r = pygame.Rect(pa.x+pad, pa.y+int(12*H/1080), pa.width-2*pad, ban_h)
