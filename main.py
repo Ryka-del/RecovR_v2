@@ -1,6 +1,19 @@
 # =============================================================================
-# main.py
+# main.py  —  RecovR entry point
 # =============================================================================
+#
+#   python main.py
+#       → launches the DUAL-MONITOR production application via
+#         recovr.launch_production (the single, existing startup logic):
+#           • session broker      — recovr.run_therapist  (headless Flask)
+#           • Therapist Interface — this same file, re-run with
+#                                   RECOVR_ROLE=therapist  (the scene loop below)
+#           • Patient Interface   — recovr.run_patient
+#
+#   recovr.launch_production spawns the Therapist Interface by re-invoking this
+#   file with RECOVR_ROLE=therapist; that path runs the therapist touchscreen
+#   UI (scene loop below). No standalone startup happens any more — `python
+#   main.py` is now the dual-monitor launcher.
 #
 # TOUCH vs MOUSE handling:
 #   DO NOT set SDL_MOUSE_TOUCH_EVENTS=1.
@@ -16,9 +29,33 @@
 #
 # =============================================================================
 
-import pygame
-import sys
 import os
+import sys
+
+# --- ENTRY-POINT DISPATCH -----------------------------------------------------
+# `python main.py` with no role = the dual-monitor production launcher.
+# recovr.launch_production re-invokes this file with RECOVR_ROLE=therapist for
+# the Therapist Interface process; that (and a plain `import main`) skips the
+# dispatch and falls through to the scene loop below.
+_ROLE = os.environ.get("RECOVR_ROLE", "").strip().lower()
+
+if __name__ == "__main__" and _ROLE != "therapist":
+    try:
+        from recovr.launch_production import main as _launch_production
+    except Exception as _exc:
+        sys.stderr.write(
+            f"[RecovR] cannot start the dual-monitor launcher: {_exc}\n"
+            "Run from the repository root with the 'recovr' package present "
+            "and Flask installed (pip install flask).\n")
+        raise SystemExit(1)
+    raise SystemExit(_launch_production())
+
+# ---------------------------------------------------------------------------
+#  THERAPIST INTERFACE
+#  (started by recovr.launch_production with RECOVR_ROLE=therapist)
+# ---------------------------------------------------------------------------
+
+import pygame
 
 # --- ENVIRONMENT (must be before pygame.init) ---
 # RECOVR_THERAPIST_DISPLAY (set by recovr/launch_production.py) targets this

@@ -112,6 +112,7 @@ def main():
 
     # 2. Therapist app (real main.py) on Monitor 2
     ther_env = base_env.copy()
+    ther_env["RECOVR_ROLE"] = "therapist"   # main.py: run the scene loop, not the launcher
     if dual:
         t_mon = monitors.therapist_monitor()
         ther_env["RECOVR_THERAPIST_DISPLAY"] = str(t_mon.index)
