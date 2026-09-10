@@ -58,11 +58,19 @@ if __name__ == "__main__" and _ROLE != "therapist":
 import pygame
 
 # --- ENVIRONMENT (must be before pygame.init) ---
-# RECOVR_THERAPIST_DISPLAY (set by recovr/launch_production.py) targets this
-# window at a specific monitor via set_mode(display=idx); leave SDL_VIDEO_WINDOW_POS
-# unset in that case so it does not fight the display index.
+# recovr/launch_production.py hands this process its monitor two ways:
+#   RECOVR_THERAPIST_POS  "x,y"  + RECOVR_THERAPIST_SIZE "WxH"  (absolute)
+#   RECOVR_THERAPIST_DISPLAY "n"                                (SDL display index)
+# The absolute pair wins because on Linux/X11 both panels usually share ONE
+# combined X screen, where a display index cannot separate them but an x/y
+# offset can. Windows keeps working either way.
 _THERAPIST_DISPLAY = os.environ.get("RECOVR_THERAPIST_DISPLAY", "").strip()
-if not _THERAPIST_DISPLAY:
+_THERAPIST_POS     = os.environ.get("RECOVR_THERAPIST_POS", "").strip()
+_THERAPIST_SIZE    = os.environ.get("RECOVR_THERAPIST_SIZE", "").strip()
+
+if _THERAPIST_POS:
+    os.environ['SDL_VIDEO_WINDOW_POS'] = _THERAPIST_POS
+elif not _THERAPIST_DISPLAY:
     os.environ['SDL_VIDEO_WINDOW_POS'] = "0,0"
 
 # --- Windows DPI fix ---
@@ -81,9 +89,19 @@ pygame.init()
 
 # --- CREATE WINDOW ---
 screen = None
-if _THERAPIST_DISPLAY:
-    # Dual-monitor: put the therapist app on the chosen physical display, sized
-    # to that monitor. Any failure falls through to the original behaviour below.
+
+# 1. Absolute placement (works on a combined X screen -- Raspberry Pi OS / X11).
+if _THERAPIST_POS and _THERAPIST_SIZE:
+    try:
+        WIDTH, HEIGHT = (int(v) for v in _THERAPIST_SIZE.lower().split("x"))
+        screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.NOFRAME)
+        print(f"[recovr] therapist window {WIDTH}x{HEIGHT} at ({_THERAPIST_POS})")
+    except Exception as _exc:
+        print(f"[recovr] RECOVR_THERAPIST_POS/SIZE ignored ({_exc})")
+        screen = None
+
+# 2. SDL display index (Windows, or X11 with truly separate screens).
+if screen is None and _THERAPIST_DISPLAY:
     try:
         _idx = int(_THERAPIST_DISPLAY)
         _sizes = pygame.display.get_desktop_sizes()
@@ -93,6 +111,8 @@ if _THERAPIST_DISPLAY:
     except Exception as _exc:
         print(f"[recovr] RECOVR_THERAPIST_DISPLAY ignored ({_exc}); using default display")
         screen = None
+
+# 3. Fall back to the whole desktop (original behaviour).
 if screen is None:
     screen_info = pygame.display.Info()
     WIDTH, HEIGHT = screen_info.current_w, screen_info.current_h

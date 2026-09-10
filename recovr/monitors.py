@@ -19,6 +19,8 @@ Environment overrides (all optional):
 """
 
 import os
+import re
+import subprocess
 import sys
 from dataclasses import dataclass
 
@@ -89,6 +91,36 @@ def _detect_windows() -> list[Monitor]:
     return found
 
 
+def _detect_xrandr() -> list[Monitor]:
+    """Linux / Raspberry Pi OS under X11: real geometry INCLUDING x/y offsets.
+
+    Parses `xrandr --listmonitors`, e.g.
+
+        Monitors: 2
+         0: +*HDMI-1 1920/598x1080/336+0+0  HDMI-1
+         1: +DSI-1 800/154x480/86+1920+0  DSI-1
+
+    The x/y offsets are what makes placement work on a combined X screen, where
+    SDL reports ONE desktop and a display index alone cannot separate the two
+    physical panels. Returns [] on Wayland, headless, or if xrandr is absent.
+    """
+    try:
+        out = subprocess.run(["xrandr", "--listmonitors"],
+                             capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return []
+    pat = re.compile(r"^\s*(\d+):\s+\+(\*?)(\S+)\s+(\d+)/\d+x(\d+)/\d+\+(\d+)\+(\d+)")
+    mons: list[Monitor] = []
+    for line in out.splitlines():
+        m = pat.match(line)
+        if not m:
+            continue
+        _i, star, name, w, h, x, y = m.groups()
+        mons.append(Monitor(name=name, x=int(x), y=int(y),
+                            w=int(w), h=int(h), primary=bool(star)))
+    return mons
+
+
 def _detect_pygame() -> list[Monitor]:
     """Fallback: monitor count + sizes only (SDL gives no x/y offsets)."""
     try:
@@ -105,6 +137,18 @@ def _detect_pygame() -> list[Monitor]:
     return mons
 
 
+def _detect_native() -> list[Monitor]:
+    """Best per-platform detection: Win32 on Windows, xrandr on Linux/Pi."""
+    try:
+        if sys.platform == "win32":
+            return _detect_windows()
+        if sys.platform.startswith("linux"):
+            return _detect_xrandr()
+    except Exception as exc:
+        print(f"[recovr.monitors] native detection failed ({exc}); trying pygame")
+    return []
+
+
 def detect_monitors() -> list[Monitor]:
     """Ordered list of physical monitors: primary first, then by x, then y.
 
@@ -112,20 +156,14 @@ def detect_monitors() -> list[Monitor]:
     (primary == 0). It is best-effort; use RECOVR_PATIENT_DISPLAY to pin it.
     """
     if os.environ.get("RECOVR_SINGLE_MONITOR") == "1":
-        mons = (_detect_windows() if sys.platform == "win32" else []) or _detect_pygame()
+        mons = _detect_native() or _detect_pygame()
         # prefer the primary; fall back to the first enumerated / the default
         first = next((m for m in mons if m.primary), mons[0] if mons else _DEFAULT)
         first.index = 0
         return [first]
 
-    mons: list[Monitor] = []
-    if sys.platform == "win32":
-        try:
-            mons = _detect_windows()
-        except Exception as exc:
-            print(f"[recovr.monitors] Windows detection failed ({exc}); trying pygame")
+    mons = _detect_native()
     if not mons:
-        # TODO: xrandr parsing for Raspberry Pi OS.
         mons = _detect_pygame()
     if not mons:
         return [_DEFAULT]

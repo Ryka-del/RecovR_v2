@@ -107,13 +107,22 @@ def main():
     # monitor assignment
     single = os.environ.get("RECOVR_SINGLE_MONITOR") == "1"
     mons = monitors.detect_monitors()
-    dual = (not single) and len(mons) >= 2
+    # Explicit geometry always wins: if the user has pinned both rects by hand,
+    # honour them even when auto-detection could only find one screen.
+    forced = bool(os.environ.get("RECOVR_PATIENT_MONITOR")
+                  and os.environ.get("RECOVR_THERAPIST_MONITOR"))
+    dual = (not single) and (len(mons) >= 2 or forced)
     if dual:
-        print("[launch] monitors: " + ", ".join(
-            f"#{m.index} {m.w}x{m.h}@({m.x},{m.y}){'*' if m.primary else ''}" for m in mons))
+        if forced and len(mons) < 2:
+            print("[launch] using RECOVR_PATIENT_MONITOR / RECOVR_THERAPIST_MONITOR overrides")
+        else:
+            print("[launch] monitors: " + ", ".join(
+                f"#{m.index} {m.w}x{m.h}@({m.x},{m.y}){'*' if m.primary else ''}" for m in mons))
     else:
         why = "RECOVR_SINGLE_MONITOR=1" if single else f"{len(mons)} monitor(s) detected"
         print(f"[launch] single-monitor mode ({why}) -- no forced window placement")
+        if not single:
+            print("[launch] run 'python -m recovr.diagnose_displays' to see why")
 
     # 2. Therapist app (real main.py) on Monitor 2
     ther_env = base_env.copy()
@@ -121,7 +130,13 @@ def main():
     if dual:
         t_mon = monitors.therapist_monitor()
         ther_env["RECOVR_THERAPIST_DISPLAY"] = str(t_mon.index)
-        print(f"[launch] therapist app (main.py) -> display #{t_mon.index}")
+        # Absolute geometry as well as the display index: on Linux/X11 both
+        # panels usually live in ONE combined X screen, where a display index
+        # cannot separate them but an x/y offset can.
+        ther_env["RECOVR_THERAPIST_POS"]  = f"{t_mon.x},{t_mon.y}"
+        ther_env["RECOVR_THERAPIST_SIZE"] = f"{t_mon.w}x{t_mon.h}"
+        print(f"[launch] therapist app (main.py) -> display #{t_mon.index} "
+              f"{t_mon.w}x{t_mon.h}@({t_mon.x},{t_mon.y})")
     print("[launch] starting therapist app ...")
     _PROCS["therapist"] = _spawn([sys.executable, "main.py"], ther_env)
 
@@ -130,8 +145,12 @@ def main():
     pat_env.setdefault("RECOVR_FULLSCREEN", "1")
     if dual:
         p_idx = monitors.patient_display_index()
+        p_mon = monitors.patient_monitor()
         pat_env["RECOVR_PATIENT_DISPLAY"] = str(p_idx)
-        print(f"[launch] patient window -> display #{p_idx} (full-screen)")
+        pat_env["RECOVR_PATIENT_POS"]  = f"{p_mon.x},{p_mon.y}"
+        pat_env["RECOVR_PATIENT_SIZE"] = f"{p_mon.w}x{p_mon.h}"
+        print(f"[launch] patient window -> display #{p_idx} "
+              f"{p_mon.w}x{p_mon.h}@({p_mon.x},{p_mon.y})")
     print("[launch] starting patient window ...")
     _PROCS["patient"] = _spawn([sys.executable, "-m", "recovr.run_patient"], pat_env)
 

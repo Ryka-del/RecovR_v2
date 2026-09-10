@@ -68,11 +68,24 @@ CALIBRATION_SECONDS = 3.0
 
 
 def _window_size():
+    raw = os.environ.get("RECOVR_PATIENT_SIZE", "").strip()
+    pos = os.environ.get("RECOVR_PATIENT_POS", "").strip()
+
+    # On Linux/X11 both panels normally share ONE combined X screen, so a true
+    # FULLSCREEN window covers BOTH monitors. When the launcher has told us this
+    # monitor's exact geometry, use a borderless window of that size at that
+    # offset instead -- visually identical, but confined to one panel.
+    if raw and pos and not sys.platform.startswith("win"):
+        try:
+            w, h = (int(x) for x in raw.lower().split("x"))
+            return (w, h), pygame.NOFRAME
+        except ValueError:
+            pass
+
     if os.environ.get("RECOVR_FULLSCREEN") == "1":
         return (0, 0), pygame.FULLSCREEN
-    raw = os.environ.get("RECOVR_PATIENT_SIZE", "1280x720")
     try:
-        w, h = (int(x) for x in raw.lower().split("x"))
+        w, h = (int(x) for x in (raw or "1280x720").lower().split("x"))
     except ValueError:
         w, h = 1280, 720
     return (w, h), 0
