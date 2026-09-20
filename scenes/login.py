@@ -41,34 +41,48 @@ class LoginScene:
         self.db       = Database()
         self.accounts = self.db.get_all_therapists()
 
+
         # --- FONTS ---
         _fd = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                            "assets", "font")
         def _F(n): return os.path.join(_fd, n)
         H = height
-        self.font_heading   = pygame.font.Font(_F("FjallaOne-Regular.ttf"),  int(44 * (H / 1080)))
-        self.font_username  = pygame.font.Font(_F("Lexend-Regular.ttf"),     int(18 * (H / 1080)))
-        self.font_add_lbl   = pygame.font.Font(_F("Lexend-Light.ttf"),       int(18 * (H / 1080)))
-        self.font_plus      = pygame.font.Font(_F("GravitasOne-Regular.ttf"),int(50 * (H / 1080)))
-        self.font_pin_lbl   = pygame.font.Font(_F("Lexend-Medium.ttf"),      int(22 * (H / 1080)))
-        self.font_name_big  = pygame.font.Font(_F("Lexend-SemiBold.ttf"),    int(26 * (H / 1080)))
-        self.font_error     = pygame.font.Font(_F("Lexend-Light.ttf"),       int(17 * (H / 1080)))
-        self.font_back      = pygame.font.Font(_F("Lexend-Light.ttf"),       int(18 * (H / 1080)))
-        self.font_lock      = pygame.font.Font(_F("Lexend-SemiBold.ttf"),    int(20 * (H / 1080)))
-        self.font_lock_sub  = pygame.font.Font(_F("Lexend-Light.ttf"),       int(15 * (H / 1080)))
-        self.font_forgot    = pygame.font.Font(_F("Lexend-Light.ttf"),       int(15 * (H / 1080)))
-        self.font_attempts  = pygame.font.Font(_F("Lexend-Light.ttf"),       int(14 * (H / 1080)))
-        self.font_sq_title  = pygame.font.Font(_F("FjallaOne-Regular.ttf"), int(30 * (H / 1080)))
-        self.font_sq_lbl    = pygame.font.Font(_F("Lexend-Regular.ttf"),    int(16 * (H / 1080)))
-        self.font_sq_inp    = pygame.font.Font(_F("Lexend-Regular.ttf"),    int(17 * (H / 1080)))
-        self.font_sq_btn    = pygame.font.Font(_F("Lexend-SemiBold.ttf"),   int(17 * (H / 1080)))
+        # ── Touch scaling (mirrors scenes/therapist_dashboard.py) ──
+        # The therapist LCD is 800x480. A plain H/1080 reference gives 0.44
+        # here, i.e. 8px labels and 19px buttons on a 7-inch panel. _fs uses a
+        # H/512 reference in touch mode so text and targets stay legible, and
+        # _tt() floors every interactive control at a fingertip-sized 50px.
+        self._touch_ui = (H <= 820) or (os.environ.get("RECOVR_THERAPIST_TOUCH") == "1")
+        self._fs = min(H / 512.0, 1.32) if self._touch_ui else (H / 1080.0)
+        _s = self._fs
+
+        self.font_heading   = pygame.font.Font(_F("FjallaOne-Regular.ttf"),  int(44 * _s))
+        self.font_username  = pygame.font.Font(_F("Lexend-Regular.ttf"),     int(19 * _s))
+        self.font_add_lbl   = pygame.font.Font(_F("Lexend-Light.ttf"),       int(19 * _s))
+        self.font_plus      = pygame.font.Font(_F("GravitasOne-Regular.ttf"),int(50 * _s))
+        self.font_pin_lbl   = pygame.font.Font(_F("Lexend-Medium.ttf"),      int(23 * _s))
+        self.font_name_big  = pygame.font.Font(_F("Lexend-SemiBold.ttf"),    int(27 * _s))
+        self.font_error     = pygame.font.Font(_F("Lexend-Light.ttf"),       int(19 * _s))
+        self.font_back      = pygame.font.Font(_F("Lexend-SemiBold.ttf"),    int(22 * _s))
+        self.font_lock      = pygame.font.Font(_F("Lexend-SemiBold.ttf"),    int(22 * _s))
+        self.font_lock_sub  = pygame.font.Font(_F("Lexend-Light.ttf"),       int(17 * _s))
+        self.font_forgot    = pygame.font.Font(_F("Lexend-Light.ttf"),       int(18 * _s))
+        self.font_attempts  = pygame.font.Font(_F("Lexend-Light.ttf"),       int(16 * _s))
+        self.font_keypad    = pygame.font.Font(_F("Lexend-SemiBold.ttf"),    int(30 * _s))
+        self.font_sq_title  = pygame.font.Font(_F("FjallaOne-Regular.ttf"),  int(30 * _s))
+        self.font_sq_lbl    = pygame.font.Font(_F("Lexend-Regular.ttf"),     int(18 * _s))
+        self.font_sq_inp    = pygame.font.Font(_F("Lexend-Regular.ttf"),     int(19 * _s))
+        self.font_sq_btn    = pygame.font.Font(_F("Lexend-SemiBold.ttf"),    int(19 * _s))
 
         # --- BACKGROUND ---
         self.background_surface = self._create_gradient(width, height)
 
         # --- LAYOUT ---
-        self.circle_r   = int(72 * (height / 1080))
-        self.add_radius = int(72 * (height / 1080))
+        # Account circles must be comfortably tappable on the 7-inch panel.
+        self.circle_r   = self._tt(72) if self._touch_ui else int(72 * (height / 1080))
+        self.add_radius = self.circle_r
+        self._keypad_rects = {}          # {"0".."9","del": Rect} -- built in draw
+        self._forgot_touch_rect = pygame.Rect(0, 0, 1, 1)
         self._compute_layout()
 
         n = len(self.accounts) + 1
@@ -161,18 +175,45 @@ class LoginScene:
         self.fade_surface = pygame.Surface((width, height))
         self.fade_surface.fill((255, 255, 255))
 
+    def _tt(self, px):
+        """Touch-target size for an INTERACTIVE control -- a 1080-referenced px,
+        never below ~50px on the 7-inch panel so a fingertip clears it."""
+        v = int(px * self._fs)
+        if self._touch_ui:
+            v = max(v, 50)
+        return v
+
+    def _sc(self, px):
+        """Plain scaled size for NON-interactive spacing -- no tap-target floor."""
+        return max(1, int(px * self._fs))
+
     def _compute_layout(self):
         r         = self.circle_r
         diam      = 2 * r
-        h_spacing = int(56 * (self.WIDTH  / 1920))
-        v_step    = int(210 * (self.HEIGHT / 1080))
+        h_spacing = max(int(56 * (self.WIDTH / 1920)), self._sc(40))
+        v_step    = max(int(210 * (self.HEIGHT / 1080)), diam + self._sc(46))
 
         n_total = len(self.accounts) + 1  # accounts + add button
+
+        # How many circles actually fit across THIS screen. On the 800px panel
+        # a fixed 8-column grid runs off both edges, so the column count is
+        # derived from the real width and the circles shrink only if even two
+        # will not fit.
+        margin = self._sc(24)
+        usable = self.WIDTH - 2 * margin
+        cols   = max(1, (usable + h_spacing) // (diam + h_spacing))
+        if cols < 2 and self.WIDTH > 0:
+            r    = max(self._sc(30), (usable - h_spacing) // 4)
+            diam = 2 * r
+            self.circle_r = r
+            self.add_radius = r
+            cols = max(1, (usable + h_spacing) // (diam + h_spacing))
+        grid_cols = int(min(GRID_COLS, cols))
 
         self.account_circles = []
         self.account_rects   = []
 
-        if n_total <= GRID_COLS:
+        if n_total <= grid_cols:
             # ── Single centered row ──────────────────────────────────
             row_w    = n_total * diam + (n_total - 1) * h_spacing
             row_left = (self.WIDTH - row_w) // 2
@@ -189,22 +230,26 @@ class LoginScene:
             self.add_rect   = pygame.Rect(cx_add - r, cy - r, diam, diam)
 
         else:
-            # ── 8-column grid ────────────────────────────────────────
-            total_grid_w = GRID_COLS * diam + (GRID_COLS - 1) * h_spacing
+            # ── grid, sized to however many columns fit this screen ──
+            rows_n       = (n_total + grid_cols - 1) // grid_cols
+            total_grid_w = grid_cols * diam + (grid_cols - 1) * h_spacing
             row_left     = (self.WIDTH - total_grid_w) // 2
-            cy_row0      = int(self.HEIGHT * 0.39)
+            grid_h       = rows_n * diam + (rows_n - 1) * (v_step - diam)
+            cy_row0      = max(int(self.HEIGHT * 0.39),
+                               (self.HEIGHT - grid_h) // 2 + r) \
+                if not self._touch_ui else (self.HEIGHT - grid_h) // 2 + r
 
             for i in range(len(self.accounts)):
-                col = i % GRID_COLS
-                row = i // GRID_COLS
+                col = i % grid_cols
+                row = i // grid_cols
                 cx  = row_left + col * (diam + h_spacing) + r
                 cy  = cy_row0  + row * v_step
                 self.account_circles.append((cx, cy))
                 self.account_rects.append(pygame.Rect(cx - r, cy - r, diam, diam))
 
             add_idx = len(self.accounts)
-            add_col = add_idx % GRID_COLS
-            add_row = add_idx // GRID_COLS
+            add_col = add_idx % grid_cols
+            add_row = add_idx // grid_cols
             cx_add  = row_left + add_col * (diam + h_spacing) + r
             cy_add  = cy_row0  + add_row * v_step
             self.add_center = (cx_add, cy_add)
@@ -215,6 +260,11 @@ class LoginScene:
     # ------------------------------------------------------------------
 
     def _hit_test(self, pos):
+        # On-screen keypad first: its keys sit well outside the "tap outside to
+        # cancel" radius, so this must be consumed before any cancel check.
+        if (self.selected is not None or self.show_forgot) and self._keypad_click(pos):
+            return None
+
         # Forgot PIN interactive workflow tap-outside validation logic
         if self.show_forgot:
             if self.forgot_success_msg:
@@ -232,6 +282,12 @@ class LoginScene:
             # Forgot PIN link click detection
             if self._forgot_rect().collidepoint(pos):
                 self._start_forgot_workflow()
+                return None
+            if self._touch_ui:
+                # Landscape layout: cancel only on a tap in the empty margin,
+                # not on a radius that would swallow the keypad.
+                if not self._pin_panel_rect().collidepoint(pos):
+                    self._cancel_selection()
                 return None
             # Tap outside cancels selection
             cx, cy = self.WIDTH // 2, int(self.HEIGHT * 0.38)
@@ -714,6 +770,10 @@ class LoginScene:
         ))
 
     def _draw_pin_panel(self, surface):
+        if self._touch_ui:
+            self._draw_pin_panel_touch(surface)
+            return
+
         alpha_factor = self.dim_alpha / 220.0
 
         acc = self.selected
@@ -769,9 +829,134 @@ class LoginScene:
         panel.set_alpha(int(255 * alpha_factor))
         surface.blit(panel, (0, 0))
 
+    # ------------------------------------------------------------------
+    # TOUCH PIN PANEL  (7-inch 800x480 landscape)
+    # ------------------------------------------------------------------
+
+    _KEYPAD_LAYOUT = [["1", "2", "3"],
+                      ["4", "5", "6"],
+                      ["7", "8", "9"],
+                      ["",  "0", "del"]]
+
+    def _draw_pin_panel_touch(self, surface):
+        """Landscape PIN panel: identity on the left, on-screen keypad on the
+        right. The keypad exists because the therapist LCD is touch-only --
+        without it there is no way to enter a PIN on the device at all."""
+        W, H = self.WIDTH, self.HEIGHT
+        acc  = self.selected
+        panel = pygame.Surface((W, H), pygame.SRCALPHA)
+
+        # ── keypad geometry (right half) ──
+        kw, kh = self._sc(104), self._sc(78)
+        kgap   = self._sc(9)
+        grid_w = kw * 3 + kgap * 2
+        grid_h = kh * 4 + kgap * 3
+        kx0    = W - self._sc(28) - grid_w
+        ky0    = (H - grid_h) // 2
+
+        # ── left column: avatar, name, PIN dots ──
+        lx = (kx0 - self._sc(20)) // 2
+        r  = self._sc(48)
+        cy = ky0 + r + self._sc(4)
+        draw_icon(panel, acc.get("icon_index", 1), lx, cy, r,
+                  shadow=True, border_color=(255, 255, 255), border_width=3)
+
+        ns = self.font_name_big.render(acc["full_name"], True, (230, 235, 248))
+        if ns.get_width() > kx0 - self._sc(24):
+            ns = self.font_pin_lbl.render(acc["full_name"], True, (230, 235, 248))
+        panel.blit(ns, ns.get_rect(center=(lx, cy + r + self._sc(18))))
+
+        ps = self.font_pin_lbl.render("Enter PIN", True, (180, 195, 220))
+        panel.blit(ps, ps.get_rect(center=(lx, cy + r + self._sc(48))))
+
+        box_y = cy + r + self._sc(66)
+        self._draw_pin_boxes(panel, lx, box_y, len(self.pin_entered))
+
+        info_y = box_y + self._tt(46) + self._sc(12)
+        if self.lock_attempts > 0:
+            att_s = self.font_attempts.render(
+                f"{self.lock_attempts}/{MAX_PIN_ATTEMPTS} attempts used",
+                True, (200, 110, 110) if self.lock_attempts >= 3 else (160, 178, 205))
+            panel.blit(att_s, att_s.get_rect(center=(lx, info_y)))
+            info_y += self._sc(22)
+        if self.pin_error:
+            es = self.font_error.render(self.pin_error, True, (255, 120, 120))
+            panel.blit(es, es.get_rect(center=(lx, info_y)))
+            info_y += self._sc(22)
+
+        # "Forgot PIN?" -- a real tap target, stored for hit-testing
+        fw, fh = self._tt(150), self._tt(44)
+        self._forgot_touch_rect = pygame.Rect(lx - fw // 2, info_y + self._sc(4), fw, fh)
+        fc = (140, 180, 230) if self.forgot_hovered else (120, 148, 195)
+        pygame.draw.rect(panel, (255, 255, 255, 26), self._forgot_touch_rect, border_radius=9)
+        pygame.draw.rect(panel, fc, self._forgot_touch_rect, 1, border_radius=9)
+        fts = self.font_forgot.render("Forgot PIN?", True, fc)
+        panel.blit(fts, fts.get_rect(center=self._forgot_touch_rect.center))
+
+        # ── keypad ──
+        self._keypad_rects = {}
+        mp = pygame.mouse.get_pos()
+        for ri, row in enumerate(self._KEYPAD_LAYOUT):
+            for ci, key in enumerate(row):
+                if not key:
+                    continue
+                kr = pygame.Rect(kx0 + ci * (kw + kgap), ky0 + ri * (kh + kgap), kw, kh)
+                self._keypad_rects[key] = kr
+                hov = kr.collidepoint(mp)
+                if key == "del":
+                    base = (92, 62, 72) if not hov else (120, 78, 90)
+                    lbl, lf = "Del", self.font_pin_lbl
+                else:
+                    base = (58, 74, 104) if not hov else (78, 98, 134)
+                    lbl, lf = key, self.font_keypad
+                pygame.draw.rect(panel, (*base, 235), kr, border_radius=12)
+                pygame.draw.rect(panel, (150, 175, 215), kr, 1, border_radius=12)
+                ks = lf.render(lbl, True, (240, 246, 255))
+                panel.blit(ks, ks.get_rect(center=kr.center))
+
+        hs = self.font_error.render("Tap outside to cancel", True, (130, 148, 175))
+        panel.blit(hs, hs.get_rect(center=(lx, H - self._sc(26))))
+
+        # Live area = identity column + keypad, padded. Anything outside is the
+        # cancel zone (see _pin_panel_rect).
+        pad_l = self._sc(14)
+        left_col = pygame.Rect(lx - r - pad_l, cy - r - pad_l,
+                               2 * (r + pad_l), (info_y + self._tt(44)) - (cy - r) + pad_l * 2)
+        keypad_r = pygame.Rect(kx0 - pad_l, ky0 - pad_l,
+                               grid_w + pad_l * 2, grid_h + pad_l * 2)
+        self._pin_live_rect = left_col.union(keypad_r).clip(
+            pygame.Rect(0, 0, W, H))
+
+        panel.set_alpha(int(255 * (self.dim_alpha / 220.0)))
+        surface.blit(panel, (0, 0))
+
+    def _keypad_click(self, pos):
+        """Route a keypad tap into the same path as a physical keypress.
+        Returns True when the tap was consumed."""
+        for key, r in (self._keypad_rects or {}).items():
+            if not r.collidepoint(pos):
+                continue
+            if key == "del":
+                ev = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_BACKSPACE,
+                                        unicode="", mod=0, scancode=0)
+            else:
+                ev = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_0 + int(key),
+                                        unicode=key, mod=0, scancode=0)
+            play_click()
+            # Route through the normal key path so PIN entry, the 4th-digit
+            # auto-commit and the forgot-PIN wizard all behave identically
+            # whether the digit came from a keyboard or from this keypad.
+            self._handle_key(ev)
+            return True
+        return False
+
     def _draw_pin_boxes(self, surface, cx, top_y, current_length):
-        box = int(54 * self.HEIGHT / 1080)
-        gap = int(16 * self.WIDTH  / 1920)
+        if self._touch_ui:
+            box = self._tt(46)
+            gap = self._sc(12)
+        else:
+            box = int(54 * self.HEIGHT / 1080)
+            gap = int(16 * self.WIDTH  / 1920)
         tw  = 4 * box + 3 * gap
         sx  = cx - tw // 2 + self.pin_shake_x
         for i in range(4):
@@ -1202,26 +1387,46 @@ class LoginScene:
         surface.blit(ok_s, ok_s.get_rect(center=ok_r.center))
 
     def _draw_back_link(self, surface):
-        col  = (80, 105, 140) if self.back_hovered else (160, 175, 195)
-        surf = self.font_back.render("← Back", True, col)
-        rect = surf.get_rect(
-            bottomleft=(int(30 * self.WIDTH/1920),
-                        self.HEIGHT - int(24 * self.HEIGHT/1080))
-        )
-        surface.blit(surf, rect)
+        """Text-only Back button.
+
+        The old label was the literal string "<- Back" using U+2190, which
+        Lexend-Light has no glyph for -- it rendered as an empty tofu box next
+        to the word. There is no icon here at all now, and the button is drawn
+        as a real bordered pill matching the dashboard's Back control."""
+        r = self._back_rect()
+        hov = self.back_hovered
+        pygame.draw.rect(surface, (255, 255, 255) if not hov else (236, 243, 252),
+                         r, border_radius=10)
+        pygame.draw.rect(surface, (95, 130, 175) if hov else (150, 175, 210),
+                         r, 2, border_radius=10)
+        col = (45, 80, 130) if hov else (70, 95, 130)
+        s = self.font_back.render("Back", True, col)
+        surface.blit(s, s.get_rect(center=r.center))
 
     # ------------------------------------------------------------------
     # RECTS
     # ------------------------------------------------------------------
 
     def _back_rect(self):
-        return pygame.Rect(
-            0, self.HEIGHT - int(55 * self.HEIGHT/1080),
-            int(130 * self.WIDTH/1920), int(44 * self.HEIGHT/1080)
-        )
+        """Hit area == the drawn pill. (It used to start at x=0 while the text
+        was drawn at x=30, so the tappable area did not match what you saw.)"""
+        bw = max(self._tt(120), self.font_back.size("Back")[0] + self._sc(40))
+        bh = self._tt(48)
+        m  = self._sc(16)
+        return pygame.Rect(m, self.HEIGHT - bh - m, bw, bh)
+
+    def _pin_panel_rect(self):
+        """Touch layout: the live area of the PIN panel -- the union of the
+        identity column and the keypad, computed during draw. A tap outside it
+        cancels the selection, so the generous empty margins stay usable as a
+        'get me out of here' zone."""
+        return getattr(self, "_pin_live_rect", None) or \
+            pygame.Rect(0, 0, self.WIDTH, self.HEIGHT)
 
     def _forgot_rect(self):
         """Clickable area for the 'Forgot PIN?' link in the PIN panel."""
+        if self._touch_ui:
+            return self._forgot_touch_rect
         cy = int(self.HEIGHT * 0.36)
         r  = int(82 * self.HEIGHT / 1080)
         dot_y = cy + r + int(158 * self.HEIGHT/1080)

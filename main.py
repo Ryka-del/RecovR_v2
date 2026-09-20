@@ -119,6 +119,22 @@ if screen is None:
     screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.NOFRAME)
 pygame.display.set_caption("RecovR")
 
+# --- 7-inch touch scaling (mirrors scenes/login.py / therapist_dashboard.py) ---
+# The confirm-exit dialog below was sized purely from H/1080, giving a 19px
+# button height on the 800x480 panel. _fs uses a H/512 reference in touch
+# mode so it stays finger-sized; _tt() floors every interactive control at a
+# fingertip-sized 50px. Desktop (_touch_ui False) is unaffected -- _fs reduces
+# to the original H/1080 reference.
+_TOUCH_UI = (HEIGHT <= 820) or (os.environ.get("RECOVR_THERAPIST_TOUCH") == "1")
+_DLG_FS   = min(HEIGHT / 512.0, 1.32) if _TOUCH_UI else (HEIGHT / 1080.0)
+
+def _dlg_tt(px):
+    v = int(px * _DLG_FS)
+    return max(v, 50) if _TOUCH_UI else v
+
+def _dlg_sc(px):
+    return max(1, int(px * _DLG_FS))
+
 # --- CLOSE BUTTON ---
 _close_font  = pygame.font.SysFont("segoeuisymbol", int(26 * HEIGHT / 1080))
 _close_rect  = pygame.Rect(WIDTH - 56, 0, 56, 46)
@@ -126,22 +142,34 @@ _close_hover = False
 
 # --- CONFIRM-EXIT DIALOG ---
 _confirm_open    = False                          # True while dialog is visible
-_dlg_font_title  = pygame.font.SysFont("segoeui", int(28 * HEIGHT / 1080))
-_dlg_font_body   = pygame.font.SysFont("segoeui", int(20 * HEIGHT / 1080))
-_dlg_font_btn    = pygame.font.SysFont("segoeui", int(20 * HEIGHT / 1080))
+_dlg_font_title  = pygame.font.SysFont("segoeui", int(28 * _DLG_FS))
+_dlg_font_body   = pygame.font.SysFont("segoeui", int(21 * _DLG_FS))
+_dlg_font_btn    = pygame.font.SysFont("segoeui", int(21 * _DLG_FS))
 
-_dlg_w  = int(420 * WIDTH  / 1920)
-_dlg_h  = int(200 * HEIGHT / 1080)
-_dlg_x  = (WIDTH  - _dlg_w) // 2
-_dlg_y  = (HEIGHT - _dlg_h) // 2
-_dlg_r  = pygame.Rect(_dlg_x, _dlg_y, _dlg_w, _dlg_h)
+_dlg_title_s = _dlg_font_title.render("Close RecovR?", True, (30, 45, 70))
+_dlg_body_s  = _dlg_font_body.render("All unsaved changes will be lost.", True, (100, 115, 140))
+_dlg_pad     = _dlg_sc(28)
+_dlg_btn_h   = _dlg_tt(48)
+_dlg_btn_gap = _dlg_sc(20)
+_dlg_btn_w   = max(_dlg_sc(150), _dlg_font_btn.size("Yes, Close")[0] + _dlg_sc(40))
 
-_btn_w  = int(140 * WIDTH  / 1920)
-_btn_h  = int(44  * HEIGHT / 1080)
-_btn_gap = int(20 * WIDTH  / 1920)
+_dlg_w = max(_dlg_sc(420),
+            _dlg_pad * 2 + 2 * _dlg_btn_w + _dlg_btn_gap,
+            _dlg_title_s.get_width() + _dlg_pad * 2,
+            _dlg_body_s.get_width() + _dlg_pad * 2)
+_dlg_w = min(_dlg_w, int(WIDTH * 0.92))
+_dlg_h = (_dlg_pad + _dlg_title_s.get_height() + _dlg_sc(14)
+         + _dlg_body_s.get_height() + _dlg_sc(28) + _dlg_btn_h + _dlg_pad)
+_dlg_x = (WIDTH  - _dlg_w) // 2
+_dlg_y = (HEIGHT - _dlg_h) // 2
+_dlg_r = pygame.Rect(_dlg_x, _dlg_y, _dlg_w, _dlg_h)
+
+_btn_w  = _dlg_btn_w
+_btn_h  = _dlg_btn_h
+_btn_gap = _dlg_btn_gap
 _yes_rect = pygame.Rect(
     _dlg_r.centerx - _btn_w - _btn_gap // 2,
-    _dlg_r.bottom  - _btn_h - int(24 * HEIGHT / 1080),
+    _dlg_r.bottom  - _btn_h - _dlg_pad,
     _btn_w, _btn_h,
 )
 _no_rect = pygame.Rect(
@@ -222,19 +250,20 @@ def _draw_confirm_dialog():
     dim.fill((10, 14, 22, 180))
     screen.blit(dim, (0, 0))
 
-    # Card background
+    # Card background -- size/position computed once above from the actual
+    # rendered text and button sizes, so title/body/buttons are never cramped
+    # or clipped on the 7-inch panel (previously a fixed 200px-tall dialog
+    # with 19px-tall buttons at 480px height).
     pygame.draw.rect(screen, (245, 247, 252), _dlg_r, border_radius=16)
     pygame.draw.rect(screen, (200, 210, 230), _dlg_r, 2, border_radius=16)
 
     # Title
-    title_s = _dlg_font_title.render("Close RecovR?", True, (30, 45, 70))
-    screen.blit(title_s, title_s.get_rect(center=(_dlg_r.centerx,
-                                                   _dlg_r.y + int(52 * HEIGHT / 1080))))
+    ty = _dlg_r.y + _dlg_pad
+    screen.blit(_dlg_title_s, _dlg_title_s.get_rect(midtop=(_dlg_r.centerx, ty)))
 
     # Body
-    body_s = _dlg_font_body.render("All unsaved changes will be lost.", True, (100, 115, 140))
-    screen.blit(body_s, body_s.get_rect(center=(_dlg_r.centerx,
-                                                  _dlg_r.y + int(100 * HEIGHT / 1080))))
+    by = ty + _dlg_title_s.get_height() + _dlg_sc(14)
+    screen.blit(_dlg_body_s, _dlg_body_s.get_rect(midtop=(_dlg_r.centerx, by)))
 
     # Yes button (red)
     yes_col = (200, 40, 40) if _yes_hov else (160, 30, 30)

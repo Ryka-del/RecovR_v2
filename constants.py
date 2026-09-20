@@ -20,7 +20,9 @@ RED     = (220, 60,  60)
 BLUE    = (60,  120, 220)
 
 
-_dark_mode = True   # module-level flag set by set_dark_mode()
+_dark_mode = False  # module-level flag set by set_dark_mode().
+                    # Light is the product default; a patient's stored
+                    # theme is applied when they are selected.
 
 
 def set_dark_mode(dark: bool):

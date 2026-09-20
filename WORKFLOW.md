@@ -256,7 +256,7 @@ Fields:
 |-------|------|
 | Full Name | Text |
 | Age | Number |
-| Sex | Dropdown (Male / Female / Prefer not to say) |
+| Sex | Dropdown (Male / Female) — required |
 | Dominant Hand | Dropdown (Left / Right) |
 | Affected Hand | Dropdown (Left / Right) |
 | Stroke Type | Dropdown (Ischemic / Hemorrhagic / Unknown) |
@@ -536,7 +536,7 @@ Session results (score, duration, difficulty) are saved to the database automati
 |-------|------|-------|
 | Full Name | Text | Required |
 | Age | Number | Required |
-| Sex | Dropdown | Male / Female / Prefer not to say |
+| Sex | Dropdown | Male / Female — Required |
 | Dominant Hand | Dropdown | Left / Right |
 | Affected Hand | Dropdown | Left / Right — Required |
 | Stroke Type | Dropdown | Ischemic / Hemorrhagic / Unknown |

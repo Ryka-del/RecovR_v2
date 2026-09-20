@@ -165,7 +165,8 @@ class PatientApp:
         self._result_posted = False    # session result POSTed once per game
         self._cal_acked = False
         self._unavailable_game = None   # set when the therapist picks an unknown game
-        self._applied_dark = True       # last theme applied from the therapist (DUAL)
+        self._applied_dark = False      # last theme applied from the therapist (DUAL);
+                                # Light is the default until a patient is selected
         self._applied_volume = None     # last music volume applied from the therapist (DUAL)
 
     # ------------------------------------------------------------------ #
@@ -413,7 +414,7 @@ class PatientApp:
             cfg = snap.get("config", {})
             # top-level dark_mode is the source of truth; config.dark_mode is a
             # mirror kept for the game-launch payload.
-            want_dark = bool(snap.get("dark_mode", cfg.get("dark_mode", True)))
+            want_dark = bool(snap.get("dark_mode", cfg.get("dark_mode", False)))
             if want_dark != self._applied_dark:
                 self._applied_dark = want_dark
                 try:
@@ -572,7 +573,7 @@ class PatientApp:
             # game is constructed -- exactly what scenes/game_scene.py does.
             try:
                 from constants import set_dark_mode
-                set_dark_mode(bool(config.get("dark_mode", True)))
+                set_dark_mode(bool(config.get("dark_mode", False)))
             except Exception:
                 pass
             # give the real game the same context the standalone main.py app
@@ -585,7 +586,7 @@ class PatientApp:
                 "account": None,
                 "speed": config.get("speed", "Normal"),
                 "calibration": config.get("calibration") or {},
-                "dark_mode": bool(config.get("dark_mode", True)),
+                "dark_mode": bool(config.get("dark_mode", False)),
             })
         self.runner = GameRunner(spec, runner_cfg)
         # Not paused: the game is frozen simply because runner.update() is not

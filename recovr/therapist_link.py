@@ -71,8 +71,9 @@ class TherapistLink:
 
     def set_selected_patient(self, patient: dict | None):
         """Mirror the therapist's ONE selected session patient into shared state.
-        `patient` = {"id":.., "full_name":..} or None to clear. Patient monitor:
-        none -> Waiting Screen, set -> Patient Dashboard."""
+        `patient` = {"id":.., "full_name":.., "sex":.., "history":..} or None to
+        clear. Patient monitor: none -> Waiting Screen, set -> Patient Dashboard
+        (which picks its male/female illustration from "sex")."""
         self._enqueue(protocol.EP_THERAPIST, {"selected_patient": patient or {}})
 
     def set_stop_pending(self, value: bool):

@@ -142,6 +142,15 @@ class Database:
         except Exception:
             pass
 
+        # Per-patient theme. 0 = Light (the default for every existing patient),
+        # 1 = Dark. Idempotent: ALTER raises once the column exists.
+        try:
+            self.conn.execute(
+                "ALTER TABLE patients ADD COLUMN theme_dark INTEGER NOT NULL DEFAULT 0")
+            self.conn.commit()
+        except Exception:
+            pass
+
         self.conn.commit()
 
     # ── CALIBRATION RECORDS ───────────────────────────────────────────
@@ -394,9 +403,29 @@ class Database:
 
     # ── THERAPIST DELETE ──────────────────────────────────────────────
 
+    def count_owned_patients(self, therapist_id: int) -> int:
+        """How many patients this therapist CURRENTLY owns (patients.therapist_id),
+        regardless of who originally registered them. This is the count that
+        gates account deletion -- a patient transferred away no longer counts
+        against the therapist who registered them, and a patient transferred IN
+        does count against its new owner."""
+        c = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM patients WHERE therapist_id=?", (therapist_id,))
+        return c.fetchone()["n"]
+
     def delete_therapist(self, tid):
+        """Delete a therapist account.
+
+        Refuses (returns False, no-op) while the therapist still CURRENTLY owns
+        any patients -- they must be transferred to another therapist first.
+        This is a current-ownership check, not "patients they originally
+        registered": a patient they transferred away no longer blocks them,
+        and a patient transferred TO them does."""
+        if self.count_owned_patients(tid) > 0:
+            return False
         self.conn.execute("DELETE FROM therapists WHERE id=?", (tid,))
         self.conn.commit()
+        return True
 
     # ── PATIENT CRUD ──────────────────────────────────────────────────
 
@@ -468,8 +497,16 @@ class Database:
     def share_patient(self, patient_id: int, target_therapist_id: int, shared_by: int):
         """
         Grants target_therapist_id access to patient_id.
-        Returns True on success, False if already shared or error.
+        Returns True on success, False if already shared, invalid, or error.
+
+        Refuses sharing with yourself, and refuses sharing with the patient's
+        own owner (they already have full access -- a share row there would be
+        a meaningless duplicate ownership relationship).
         """
+        if target_therapist_id == shared_by:
+            return False
+        if target_therapist_id == self.get_patient_owner(patient_id):
+            return False
         try:
             self.conn.execute("""
                 INSERT OR IGNORE INTO patient_shares (patient_id, therapist_id, shared_by)
@@ -487,6 +524,36 @@ class Database:
             WHERE patient_id = ? AND therapist_id = ?
         """, (patient_id, target_therapist_id))
         self.conn.commit()
+
+    def transfer_patient(self, patient_id: int, new_owner_id: int, acting_therapist_id: int = None):
+        """OWNERSHIP CHANGE: new_owner_id becomes the owner of patient_id and the
+        current owner loses ownership -- unlike share_patient, this reassigns
+        patients.therapist_id itself, not just an entry in patient_shares.
+
+        - Only the CURRENT owner may transfer (enforced here when
+          acting_therapist_id is given, not just hidden in the UI).
+        - Refuses a self-transfer (new_owner_id == current owner) --
+          nothing to do, and it would be a no-op ownership change.
+        - The new owner no longer needs a patient_shares row (they own it
+          outright now), so any pre-existing share for them is cleared to
+          avoid a redundant/conflicting "shared with the owner" row. Shares
+          with OTHER therapists are left untouched -- transferring ownership
+          does not revoke anyone else's existing access.
+        """
+        current_owner = self.get_patient_owner(patient_id)
+        if current_owner is None:
+            return False
+        if acting_therapist_id is not None and current_owner != acting_therapist_id:
+            return False
+        if new_owner_id == current_owner:
+            return False
+        self.conn.execute("UPDATE patients SET therapist_id=? WHERE id=?",
+                          (new_owner_id, patient_id))
+        self.conn.execute(
+            "DELETE FROM patient_shares WHERE patient_id=? AND therapist_id=?",
+            (patient_id, new_owner_id))
+        self.conn.commit()
+        return True
 
     def get_patient_owner(self, patient_id: int):
         """Returns the therapist_id of the patient's original registering therapist."""
@@ -518,8 +585,17 @@ class Database:
         """, (patient_id, therapist_id))
         return c.fetchone() is not None
 
-    def update_patient(self, patient_id: int, data: dict):
-        """Update an existing patient's fields by internal row id."""
+    def update_patient(self, patient_id: int, data: dict, acting_therapist_id: int = None):
+        """Update an existing patient's fields by internal row id.
+
+        Ownership is enforced here, not just in the UI: when acting_therapist_id
+        is given, the write is refused (returns False, no-op) unless that
+        therapist currently OWNS the patient. A shared (non-owner) therapist
+        must never be able to edit patient information, even by calling this
+        directly. Existing callers that don't pass acting_therapist_id keep the
+        old unrestricted behaviour."""
+        if acting_therapist_id is not None and not self.is_patient_owner(patient_id, acting_therapist_id):
+            return False
         self.conn.execute("""
             UPDATE patients SET
               full_name=?, age=?, sex=?, dominant_hand=?, affected_hand=?,
@@ -542,12 +618,41 @@ class Database:
             patient_id,
         ))
         self.conn.commit()
+        return True
 
-    def delete_patient(self, patient_id: int):
-        """Permanently remove a patient and all their share records."""
+    def delete_patient(self, patient_id: int, acting_therapist_id: int = None):
+        """Permanently remove a patient and all their share records.
+
+        Ownership-enforced the same way as update_patient: a shared (non-owner)
+        therapist must never be able to delete a patient they don't own."""
+        if acting_therapist_id is not None and not self.is_patient_owner(patient_id, acting_therapist_id):
+            return False
         self.conn.execute("DELETE FROM patient_shares WHERE patient_id=?", (patient_id,))
         self.conn.execute("DELETE FROM patients WHERE id=?", (patient_id,))
         self.conn.commit()
+        return True
+
+    def is_patient_owner(self, patient_id: int, therapist_id: int) -> bool:
+        """True when therapist_id currently OWNS patient_id (not merely shared)."""
+        return self.get_patient_owner(patient_id) == therapist_id
+
+    # ── PER-PATIENT THEME ─────────────────────────────────────────────
+
+    def set_patient_theme(self, patient_id: int, dark: bool):
+        """Remember this patient's light/dark preference.
+
+        The theme belongs to the patient, not to the app: selecting a patient
+        restores whatever was last applied for them. 0 = Light, 1 = Dark."""
+        self.conn.execute("UPDATE patients SET theme_dark=? WHERE id=?",
+                          (1 if dark else 0, patient_id))
+        self.conn.commit()
+
+    def get_patient_theme(self, patient_id: int) -> bool:
+        """True when this patient is set to Dark. Defaults to Light (False)
+        for patients registered before the column existed."""
+        c = self.conn.execute("SELECT theme_dark FROM patients WHERE id=?", (patient_id,))
+        r = c.fetchone()
+        return bool(r["theme_dark"]) if r and r["theme_dark"] is not None else False
 
     # ── SECURITY QUESTIONS ────────────────────────────────────────────
 

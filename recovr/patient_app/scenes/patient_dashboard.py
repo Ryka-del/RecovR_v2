@@ -15,22 +15,41 @@ dual-monitor sync. Session-state -> screen routing lives in
 recovr/patient_app/patient_main.py (`_reconcile_dual` / `_draw`); the patient
 Dashboard is only ever shown when a patient is actually selected.
 
-Layout follows the provided reference: a fixed left sidebar (RecovR mark, clock,
-a prominent Welcome card, Session History) beside a large, calm main area with a
-centred "please wait" message. Everything is proportional to the real patient
-display size and theme-aware.
+Same left sidebar (RecovR mark, clock, Welcome card, Session History) beside a
+calm main "please wait" area, now sharing the Waiting Screen's visual language
+(scenes/common.py: recovr_gradient, draw_recovr_wordmark, draw_glass_card) --
+pastel gradient backdrop, translucent frosted cards, and the same reused
+RecovR wordmark -- so the two patient-facing screens read as one product
+instead of two different UI styles bolted together.
 """
 
 import os
 import datetime
 import pygame
 
-from recovr.patient_app.scenes.common import PALETTE
+from recovr.patient_app.scenes.common import (
+    PALETTE, recovr_gradient, draw_recovr_wordmark, draw_glass_card,
+    carousel_frame, sprite as _sprite,
+)
+# The exact same card "rectangle" (geometry + timing) as the Waiting Screen's
+# instruction cards -- imported, not re-derived, so both screens use one
+# definition and can never quietly drift apart. WAITING_INSTRUCTIONS and the
+# WaitingScreen class itself (for its already-built wrap/shrink _draw_card,
+# which already knows its own card geometry/style constants) are reused too,
+# so the Dashboard's carousel shows the exact same instruction cards --
+# sprite + wording + look -- as the Waiting Screen.
+from recovr.patient_app.scenes.waiting_screen import (
+    WaitingScreen, WAITING_INSTRUCTIONS,
+    ENTER_MS as _CARD_ENTER_MS, HOLD_MS as _CARD_HOLD_MS,
+    EXIT_MS as _CARD_EXIT_MS, OVERLAP_MS as _CARD_OVERLAP_MS,
+    CARD_W_FRAC, CARD_H_FRAC,
+)
+
+_SEX_SPRITES = {"male": "patient_male.png", "female": "patient_female.png"}
 
 _FONT_DIR = os.path.abspath(os.path.join(
     os.path.dirname(__file__), "..", "..", "..", "..", "assets", "font"))
 _font_cache: dict = {}
-_grad_cache: dict = {}
 
 
 def _font(name, size, italic=False, bold=False):
@@ -57,24 +76,15 @@ def _mix(a, b, t):
             int(a[2] + (b[2] - a[2]) * t))
 
 
-def _main_gradient(w, h, bg, accent):
-    """A soft 2x2 bilinear wash for the main area -- lighter top-left, a faint
-    accent tint bottom-right (matches the reference's calm background)."""
-    key = (w, h, bg, accent)
-    g = _grad_cache.get(key)
-    if g is None:
-        s = pygame.Surface((2, 2))
-        s.set_at((0, 0), _mix(bg, (255, 255, 255), 0.55))
-        s.set_at((1, 0), _mix(bg, (255, 255, 255), 0.35))
-        s.set_at((0, 1), _mix(bg, (255, 255, 255), 0.28))
-        s.set_at((1, 1), _mix(bg, accent, 0.20))
-        g = pygame.transform.smoothscale(s, (max(2, w), max(2, h)))
-        _grad_cache.clear() if len(_grad_cache) > 6 else None
-        _grad_cache[key] = g
-    return g
-
-
 class PatientDashboardScreen:
+
+    def __init__(self):
+        self._t0 = None      # first-draw timestamp for the card's own animation clock
+        # Reused only for its _draw_card() (wrap-to-fit text + icon-left/
+        # text-right rendering, with its own text cache) -- never .draw()n;
+        # this is what lets the Dashboard's carousel show the exact same
+        # instruction cards as the Waiting Screen instead of a re-implementation.
+        self._instr_card = WaitingScreen()
 
     def draw(self, surface: pygame.Surface, snapshot: dict | None = None):
         W, H = surface.get_size()
@@ -85,54 +95,85 @@ class PatientDashboardScreen:
         name = (sel.get("full_name") or cfg.get("patient_name") or "Patient").strip() or "Patient"
         history = sel.get("history") or []
         therapist = (cfg.get("therapist_name") or "").strip()
-        game = (cfg.get("selected_game") or "").strip()
+        sex_sprite = _SEX_SPRITES.get(str(sel.get("sex") or "").strip().lower())
 
-        BG, PANEL = PALETTE["bg"], PALETTE["panel"]
+        now = pygame.time.get_ticks()
+        if self._t0 is None:
+            self._t0 = now
+        t = now - self._t0
+
         TEXT, MUTED, ACCENT = PALETTE["text"], PALETTE["muted"], PALETTE["accent"]
+        dark = PALETTE["bg"][0] < 40
 
-        # ── main area background (calm wash) ─────────────────────────
-        surface.fill(BG)
-        rail_w = int(W * 0.235)
-        surface.blit(_main_gradient(W - rail_w, H, BG, ACCENT), (rail_w, 0))
+        # ── shared pastel backdrop (identical to the Waiting Screen) ────
+        surface.blit(recovr_gradient(W, H), (0, 0))
 
-        # ── left sidebar ────────────────────────────────────────────
-        pygame.draw.rect(surface, _mix(PANEL, ACCENT, 0.10), (0, 0, rail_w, H))
-        pygame.draw.rect(surface, _mix(PANEL, (255, 255, 255), 0.5), (0, 0, rail_w, max(3, int(H*0.006))))
-        pygame.draw.line(surface, _mix(ACCENT, PANEL, 0.35), (rail_w, 0), (rail_w, H), 2)
+        margin = int(W * 0.02)
+        gap    = int(W * 0.022)
 
-        pad = int(rail_w * 0.12)
+        # ── left sidebar: solid, flush against the edges -- same treatment
+        #    as the therapist dashboard's sidebar (no rounded corners, no
+        #    margin/floating, no shadow; just an opaque panel + a thin top
+        #    highlight and a right-edge border line).
+        rail_w = int(W * 0.27)
+        rail = pygame.Rect(0, 0, rail_w, H)
+        # PALETTE["panel"] is pure white in light mode -- same as the white
+        # corner of the gradient behind it, so a technically-opaque fill
+        # still looked like the gradient was showing through. Use the same
+        # distinct light blue-grey the therapist dashboard's sidebar uses
+        # (dark mode's panel colour is already distinct from its background).
+        rail_fill = PALETTE["panel"] if dark else (230, 240, 252)
+        surface.fill(rail_fill, rail)
+        hl = pygame.Surface((rail_w, 3), pygame.SRCALPHA)
+        hl.fill((255, 255, 255, 200)); surface.blit(hl, (0, 0))
+        pygame.draw.line(surface, _mix(rail_fill, (0, 0, 0), 0.12),
+                         (rail_w, 0), (rail_w, H), 1)
 
-        # RecovR mark
-        logo_sz = int(H * 0.058)
-        f_logo = _font("GravitasOne-Regular.ttf", logo_sz)
-        s1 = f_logo.render("Recov", True, _mix(TEXT, (0, 0, 0), 0.15))
-        s2 = f_logo.render("R", True, (215, 40, 40))
-        ly = int(H * 0.045)
-        surface.blit(s1, (pad, ly))
-        surface.blit(s2, (pad + s1.get_width(), ly))
+        pad = int(rail.width * 0.11)
+
+        # RecovR mark -- the same reused wordmark as the Waiting Screen /
+        # Welcome page, sized to fit the sidebar instead of the full screen.
+        logo_bottom = draw_recovr_wordmark(
+            surface, rail.centerx, rail.top + int(rail.height * 0.035),
+            int(rail.width * 0.82), int(rail.height * 0.075))
 
         # clock + date
         now = datetime.datetime.now()
         f_time = _font("ZenDots-Regular.ttf", int(H * 0.030))
         f_date = _font("Lexend-Light.ttf", int(H * 0.020))
-        ty = ly + s1.get_height() + int(H * 0.028)
-        surface.blit(f_time.render(now.strftime("%I:%M %p"), True, _mix(TEXT, MUTED, 0.15)),
-                     (pad + int(rail_w * 0.02), ty))
-        surface.blit(f_date.render(now.strftime("%b %d, %Y"), True, MUTED),
-                     (pad + int(rail_w * 0.02), ty + int(H * 0.040)))
+        ty = logo_bottom + int(H * 0.026)
+        t_time = f_time.render(now.strftime("%I:%M %p"), True, _mix(TEXT, MUTED, 0.15))
+        t_date = f_date.render(now.strftime("%b %d, %Y"), True, MUTED)
+        surface.blit(t_time, t_time.get_rect(midtop=(rail.centerx, ty)))
+        date_y = ty + t_time.get_height() + int(H * 0.006)
+        surface.blit(t_date, t_date.get_rect(midtop=(rail.centerx, date_y)))
 
-        # Welcome card
-        card = pygame.Rect(int(rail_w * 0.045), int(H * 0.235),
-                           int(rail_w * 0.91), int(H * 0.16))
-        pygame.draw.rect(surface, _mix(PANEL, ACCENT, 0.18), card, border_radius=int(H * 0.018))
-        pygame.draw.rect(surface, _mix(ACCENT, PANEL, 0.30), card, 1, border_radius=int(H * 0.018))
-        f_hi   = _font("FjallaOne-Regular.ttf", int(H * 0.040))
+        # Welcome card -- a slightly warmer frosted card nested in the rail.
+        # The patient's own male/female illustration sits to the LEFT of
+        # their name (same placement as the reference mock-up); falls back
+        # to the previous centred text if the patient has no sex on file.
+        card = pygame.Rect(rail.x + int(rail.width * 0.045),
+                           date_y + t_date.get_height() + int(H * 0.03),
+                           int(rail.width * 0.91), int(H * 0.155))
+        draw_glass_card(surface, card, radius_frac=0.16, fill_alpha=60, border_alpha=110,
+                        shadow_alpha=0, fill_color=_mix((255, 255, 255), ACCENT, 0.12))
+
+        pad_c = int(card.width * 0.07)
+        text_left = card.left + pad_c
+        if sex_sprite:
+            icon_size = int(card.height * 0.68)
+            spr = _sprite(sex_sprite, icon_size)
+            if spr is not None:
+                surface.blit(spr, spr.get_rect(midleft=(card.left + pad_c, card.centery)))
+                text_left = card.left + pad_c + icon_size + int(card.width * 0.06)
+
+        f_hi   = _font("FjallaOne-Regular.ttf", int(H * 0.036))
         w_line = f_hi.render("Welcome,", True, _mix(TEXT, MUTED, 0.1))
-        max_nw = card.width - int(rail_w * 0.10)
-        n_col  = _mix(TEXT, ACCENT, 0.18)
+        max_nw = card.right - int(card.width * 0.06) - text_left
+        n_col  = _mix(TEXT, ACCENT, 0.22)
         n_txt  = f"{name}!"
         n_line = None
-        for px in (int(H * 0.046), int(H * 0.040), int(H * 0.034), int(H * 0.028)):
+        for px in (int(H * 0.042), int(H * 0.036), int(H * 0.030), int(H * 0.025)):
             f_name = _font("FjallaOne-Regular.ttf", px)
             n_line = f_name.render(n_txt, True, n_col)
             if n_line.get_width() <= max_nw:
@@ -142,69 +183,112 @@ class PatientDashboardScreen:
             while t and f_name.size(t + "…!")[0] > max_nw:
                 t = t[:-1]
             n_line = f_name.render((t + "…!") if t else "!", True, n_col)
-        gap = int(H * 0.010)
-        block_h = w_line.get_height() + gap + n_line.get_height()
-        yy = card.y + (card.height - block_h) // 2
-        surface.blit(w_line, w_line.get_rect(midtop=(card.centerx, yy)))
-        surface.blit(n_line, n_line.get_rect(midtop=(card.centerx, yy + w_line.get_height() + gap)))
+        vgap = int(H * 0.010)
+        block_h = w_line.get_height() + vgap + n_line.get_height()
+        yy = card.centery - block_h // 2
+        if sex_sprite:
+            surface.blit(w_line, (text_left, yy))
+            surface.blit(n_line, (text_left, yy + w_line.get_height() + vgap))
+        else:
+            surface.blit(w_line, w_line.get_rect(midtop=(card.centerx, yy)))
+            surface.blit(n_line, n_line.get_rect(midtop=(card.centerx, yy + w_line.get_height() + vgap)))
 
-        # divider
-        dv_y = card.bottom + int(H * 0.030)
-        pygame.draw.line(surface, _mix(MUTED, PANEL, 0.55),
-                         (int(rail_w * 0.06), dv_y), (rail_w - int(rail_w * 0.06), dv_y), 1)
-
-        # Session History
-        f_sh = _font("Lexend-SemiBold.ttf", int(H * 0.026))
-        sh_y = dv_y + int(H * 0.020)
+        # Session History -- same list, restyled as light translucent chips
+        f_sh = _font("Lexend-SemiBold.ttf", int(H * 0.025))
+        sh_y = card.bottom + int(H * 0.032)
         surface.blit(f_sh.render("Session History", True, _mix(TEXT, MUTED, 0.2)),
-                     (int(rail_w * 0.07), sh_y))
+                     (rail.x + int(rail.width * 0.07), sh_y))
 
         list_top = sh_y + f_sh.get_height() + int(H * 0.016)
         row_h    = max(int(H * 0.048), 24)
-        f_row    = _font("Lexend-Regular.ttf", int(H * 0.022))
-        f_meta   = _font("Lexend-Light.ttf", int(H * 0.018))
-        clip = pygame.Rect(0, list_top, rail_w, H - list_top - int(H * 0.02))
+        f_row    = _font("Lexend-Regular.ttf", int(H * 0.021))
+        f_meta   = _font("Lexend-Light.ttf", int(H * 0.017))
+        clip = pygame.Rect(rail.x, list_top, rail.width, rail.bottom - list_top - int(H * 0.02))
         prev_clip = surface.get_clip()
         surface.set_clip(clip)
         if not history:
             surface.blit(f_meta.render("No sessions recorded yet.", True, MUTED),
-                         (int(rail_w * 0.07), list_top + int(H * 0.006)))
+                         (rail.x + int(rail.width * 0.07), list_top + int(H * 0.006)))
         else:
+            row_gap = max(1, int(H * 0.006))
             for i, h in enumerate(history):
                 ry = list_top + i * row_h
                 if ry + row_h > clip.bottom:
                     break
-                r = pygame.Rect(int(rail_w * 0.04), ry, rail_w - int(rail_w * 0.08), row_h - int(H * 0.006))
-                if i % 2 == 0:
-                    pygame.draw.rect(surface, _mix(PANEL, ACCENT, 0.06), r, border_radius=6)
-                pygame.draw.rect(surface, _mix(ACCENT, PANEL, 0.7), r, 1, border_radius=6)
+                r = pygame.Rect(rail.x + int(rail.width * 0.045), ry,
+                                rail.width - int(rail.width * 0.09), row_h - row_gap)
+                # Was barely-there (alpha 26/12) against a near-white rail;
+                # raised so each row reads as a clearly visible chip in light mode.
+                chip_alpha = 150 if i % 2 == 0 else 90
+                draw_glass_card(surface, r, radius_frac=0.28, fill_alpha=chip_alpha,
+                                border_alpha=100, shadow_alpha=0)
                 gs = f_row.render(str(h.get("game", "-")), True, _mix(TEXT, MUTED, 0.08))
-                surface.blit(gs, gs.get_rect(midleft=(r.x + int(rail_w * 0.04), r.centery)))
+                surface.blit(gs, gs.get_rect(midleft=(r.x + int(rail.width * 0.045), r.centery)))
                 dt = str(h.get("played_at", ""))[:10]
                 if dt:
                     ds = f_meta.render(dt, True, MUTED)
-                    if gs.get_width() + ds.get_width() + int(rail_w * 0.10) < r.width:
-                        surface.blit(ds, ds.get_rect(midright=(r.right - int(rail_w * 0.04), r.centery)))
+                    if gs.get_width() + ds.get_width() + int(rail.width * 0.10) < r.width:
+                        surface.blit(ds, ds.get_rect(midright=(r.right - int(rail.width * 0.045), r.centery)))
         surface.set_clip(prev_clip)
 
-        # ── main content: calm "please wait" messaging ──────────────
-        mcx = rail_w + (W - rail_w) // 2
-        f_msg = _font("Sora-Light.ttf", int(H * 0.048), italic=True)
-        lines = ["Your therapy is preparing your session.", "Please wait…"]
-        rendered = [f_msg.render(t, True, _mix(TEXT, MUTED, 0.28)) for t in lines]
-        lg = int(H * 0.014)
-        total = sum(s.get_height() for s in rendered) + lg * (len(rendered) - 1)
-        my = int(H * 0.5) - total // 2
-        for s in rendered:
-            surface.blit(s, s.get_rect(midtop=(mcx, my)))
-            my += s.get_height() + lg
+        # ── main area: a STILL, centred title sitting above a carousel of
+        #    cards -- the exact same "rectangle" recipe as the Waiting Screen
+        #    (same geometry fractions, same frosted-glass shell, same
+        #    slide-in/hold/slide-out motion). The cards themselves are the
+        #    SAME four preparation instructions -- text and sprite -- shown on
+        #    the Waiting Screen (WAITING_INSTRUCTIONS), reusing WaitingScreen's
+        #    own _draw_card so they are pixel-identical, not a
+        #    re-implementation. No personalised/sex-icon card here anymore. ──
+        main_x = rail.right + gap
+        main = pygame.Rect(main_x, margin, W - main_x - margin, H - 2 * margin)
 
-        f_sub = _font("Lexend-Light.ttf", int(H * 0.024))
-        sub = (f"Upcoming activity:  {game}" if game
-               else "Your therapist will begin the session shortly.")
-        surface.blit(f_sub.render(sub, True, MUTED),
-                     f_sub.render(sub, True, MUTED).get_rect(midtop=(mcx, my + int(H * 0.02))))
+        f_wait = _font("Sora-Light.ttf", int(H * 0.026), italic=True)
+        # darken the accent slightly in light mode for contrast against the
+        # pale gradient backdrop; dark mode keeps the accent as-is (already light)
+        accent_col = ACCENT if dark else _mix(ACCENT, (10, 20, 45), 0.28)
+        # matches the Waiting Screen's own instruction-card text colour exactly
+        instr_text_col = TEXT if dark else (92, 94, 104)
+
+        # One line, one style (same bold + accent look "preparing your
+        # session." used to have alone) -- shrink-to-fit so it never wraps.
+        head_txt  = "Your therapist is preparing your session."
+        head_size = int(H * 0.043)
+        max_head_w = int(main.width * 0.96)
+        f_head = _font("Sora-Bold.ttf", head_size, bold=True)
+        l1 = f_head.render(head_txt, True, accent_col)
+        while l1.get_width() > max_head_w and head_size > 14:
+            head_size -= 1
+            f_head = _font("Sora-Bold.ttf", head_size, bold=True)
+            l1 = f_head.render(head_txt, True, accent_col)
+        l3 = f_wait.render("Please wait…", True, MUTED)
+
+        ty2 = main.top + int(H * 0.075)   # a little lower than before
+        for line in (l1, l3):
+            surface.blit(line, line.get_rect(midtop=(main.centerx, ty2)))
+            ty2 += line.get_height() + int(H * 0.012)
+        title_bottom = ty2 + int(H * 0.015)
+
+        # the carousel of instruction cards, sized/positioned in the space
+        # left below the still title (and above the therapist line at the
+        # very bottom), using the Waiting Screen's own proportions
+        card_w = int(main.width * CARD_W_FRAC)
+        avail_bottom = main.bottom - int(H * 0.06)
+        card_h = min(int(main.height * CARD_H_FRAC), max(1, avail_bottom - title_bottom))
+        card_y = title_bottom + max(0, (avail_bottom - title_bottom - card_h) // 2)
+        card = pygame.Rect(0, card_y, card_w, card_h)
+
+        N = len(WAITING_INSTRUCTIONS)
+        frame = carousel_frame(t, main.width, card_w, N, enter_ms=_CARD_ENTER_MS,
+                               hold_ms=_CARD_HOLD_MS, exit_ms=_CARD_EXIT_MS,
+                               overlap_ms=_CARD_OVERLAP_MS)
+        for idx, x, a in frame:
+            r = card.copy()
+            r.centerx = main.left + x
+            instr_text, instr_sprite = WAITING_INSTRUCTIONS[idx]
+            self._instr_card._draw_card(surface, r, instr_text_col, instr_text,
+                                        sprite_name=instr_sprite, alpha_scale=a)
+
         if therapist:
-            f_th = _font("Lexend-Light.ttf", int(H * 0.022))
+            f_th = _font("Lexend-Light.ttf", int(H * 0.021))
             ts = f_th.render(f"Therapist:  {therapist}", True, _mix(MUTED, ACCENT, 0.3))
-            surface.blit(ts, ts.get_rect(midbottom=(mcx, H - int(H * 0.06))))
+            surface.blit(ts, ts.get_rect(midbottom=(main.centerx, main.bottom - int(H * 0.015))))

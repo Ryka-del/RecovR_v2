@@ -95,7 +95,7 @@ def therapist_present():
     if "stop_pending" in data:
         snap = store.set_stop_pending(data.get("stop_pending", False))
     if "dark_mode" in data:
-        snap = store.set_dark_mode(data.get("dark_mode", True))
+        snap = store.set_dark_mode(data.get("dark_mode", False))
     if "present" in data:
         snap = store.set_therapist_present(data.get("present", False))
     return jsonify(snap)

@@ -38,7 +38,7 @@ class SessionConfig:
     difficulty: str = "Easy"
     duration_sec: int = 60
     speed: str = "Normal"
-    dark_mode: bool = True              # therapist's light/dark choice (from calibration)
+    dark_mode: bool = False             # mirror of the live theme for the game payload
     calibration: dict = field(default_factory=dict)   # calibration_result passed to the game
 
     def apply(self, data: dict) -> None:
@@ -100,7 +100,7 @@ class SessionState:
                                                      # state preserved) while the therapist chooses
                                                      # CONTINUE (resume) or BACK (end session).
                                                      # Both monitors show the "Game Stopped" screen.
-    dark_mode: bool = True                           # THE single source of truth for the RecovR
+    dark_mode: bool = False                          # THE single source of truth for the RecovR
                                                      # light/dark theme. Therapist toggles it; the
                                                      # patient applies it live on every screen.
     updated_at: float = field(default_factory=time.time)
@@ -219,6 +219,7 @@ class SessionStore:
                 self._state.selected_patient = {
                     "id":        data.get("id"),
                     "full_name": str(data.get("full_name", "")),
+                    "sex":       str(data.get("sex", "")),   # Dashboard's male/female illustration
                     "history":   hist,     # recent sessions for the Patient Dashboard
                 }
             else:

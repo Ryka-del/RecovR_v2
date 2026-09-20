@@ -76,6 +76,6 @@ def make_game_scene(game_class):
         data = getattr(builtins, "pending_game_data", {})
         builtins.pending_game_data = {}
         from constants import set_dark_mode
-        set_dark_mode(data.get("dark_mode", True))
+        set_dark_mode(data.get("dark_mode", False))
         return GameScene(screen, width, height, game_class, data)
     return factory
