@@ -384,19 +384,32 @@ while True:
     current_scene.draw(screen)
 
     # Position for THIS frame's visuals + next frame's hit-testing: read the
-    # scene's own close-button slot (e.g. the Therapist Dashboard places it
-    # beside its Light/Dark toggle) if it published one this draw, else fall
-    # back to the fixed corner rect (Welcome/Login/games never publish one).
-    _close_rect = getattr(current_scene, "_close_btn_rect", None) or _DEFAULT_CLOSE_RECT
-    if _close_rect.width <= 1:               # scene explicitly hid it (e.g. (0,0,1,1))
-        _close_rect = _DEFAULT_CLOSE_RECT
+    # scene's own close-button slot (currently only the Therapist Dashboard
+    # publishes one, beside its Light/Dark toggle) if it published one this
+    # draw, else fall back to the fixed corner rect and the original look
+    # (Welcome/Login/Register/games: reverted back to the plain red box + X
+    # for now, at the original fixed position -- only the Therapist
+    # Dashboard uses the close_button.png asset and the repositioned slot).
+    _scene_close_rect = getattr(current_scene, "_close_btn_rect", None)
+    if _scene_close_rect is not None and _scene_close_rect.width > 1:
+        _close_rect      = _scene_close_rect
+        _use_close_asset = True
+    else:
+        _close_rect      = _DEFAULT_CLOSE_RECT
+        _use_close_asset = False
 
     # Draw close button — hidden during games and calibration
     _in_game        = _current_scene_name in _game_scene_names
     _in_calibration = getattr(current_scene, "_cal_win", None) is not None
     if not _in_game and not _in_calibration:
         _close_hover = _close_rect.collidepoint(mouse_pos)
-        _draw_close_icon(_close_rect)
+        if _use_close_asset:
+            _draw_close_icon(_close_rect)
+        else:
+            _bg = (190, 35, 35) if _close_hover else (110, 25, 25)
+            pygame.draw.rect(screen, _bg, _close_rect)
+            _xs = _close_font.render("✕", True, (255, 255, 255))
+            screen.blit(_xs, _xs.get_rect(center=_close_rect.center))
 
     # Draw confirm dialog on top of everything
     if _confirm_open:
