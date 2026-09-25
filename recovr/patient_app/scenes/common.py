@@ -101,13 +101,21 @@ def draw_banner(surface: pygame.Surface, text: str, color=None):
 
 
 _grad_cache: dict = {}
+_bg_img_cache: dict = {}
 
 
 def recovr_gradient(w: int, h: int) -> pygame.Surface:
-    """The RecovR pastel diagonal gradient (blue / white / purple) used behind
-    the Waiting Screen and the patient Dashboard -- one shared implementation
-    so both screens stay visually identical instead of drifting apart."""
+    """The background behind the Waiting Screen and the patient Dashboard --
+    one shared implementation so both screens stay visually identical instead
+    of drifting apart. Light theme uses the uploaded pd_bg.png artwork
+    (scaled to fill exactly w x h); dark theme keeps the programmatic pastel
+    gradient below, since no dark variant of that artwork exists and the
+    light image would look washed out/out of place there."""
     dark = PALETTE["bg"][0] < 40
+    if not dark:
+        img = _pd_bg_image(w, h)
+        if img is not None:
+            return img
     key = (w, h, dark)
     g = _grad_cache.get(key)
     if g is not None:
@@ -137,6 +145,25 @@ def recovr_gradient(w: int, h: int) -> pygame.Surface:
         _grad_cache.clear()
     _grad_cache[key] = g
     return g
+
+
+def _pd_bg_image(w: int, h: int):
+    """The uploaded pd_bg.png background artwork, scaled to fill exactly
+    w x h and cached. Returns None (silently) if the file is missing, so
+    recovr_gradient() falls back to the programmatic gradient instead of
+    crashing."""
+    key = (w, h)
+    img = _bg_img_cache.get(key)
+    if img is None and key not in _bg_img_cache:
+        try:
+            raw = pygame.image.load(os.path.join(_IMG_DIR, "pd_bg.png")).convert()
+            img = pygame.transform.smoothscale(raw, (w, h))
+        except Exception:
+            img = None
+        if len(_bg_img_cache) > 6:
+            _bg_img_cache.clear()
+        _bg_img_cache[key] = img
+    return img
 
 
 def fit_font(make_font, text, max_w, max_h, lo=8, hi=400):
