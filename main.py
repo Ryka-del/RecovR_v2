@@ -136,9 +136,32 @@ def _dlg_sc(px):
     return max(1, int(px * _DLG_FS))
 
 # --- CLOSE BUTTON ---
-_close_font  = pygame.font.SysFont("segoeuisymbol", int(26 * HEIGHT / 1080))
-_close_rect  = pygame.Rect(WIDTH - 56, 0, 56, 46)
-_close_hover = False
+# Position is normally read from the current scene's own _close_btn_rect
+# (the Therapist Dashboard places it beside its Light/Dark toggle); this
+# fixed corner rect is only the fallback for scenes that don't define one
+# (Welcome, Login, games).
+_close_font       = pygame.font.SysFont("segoeuisymbol", int(26 * HEIGHT / 1080))
+_DEFAULT_CLOSE_RECT = pygame.Rect(WIDTH - 56, 0, 56, 46)
+_close_rect       = _DEFAULT_CLOSE_RECT
+_close_hover      = False
+
+
+def _draw_close_icon(rect):
+    """The close_button.png asset, scaled to fit `rect` without distortion
+    (it's a circular icon), falling back to the original vector box+X if
+    the asset is missing."""
+    size = min(rect.width, rect.height)
+    img = _dash_img("close_button.png", size)
+    if img is not None:
+        screen.blit(img, img.get_rect(center=rect.center))
+        if _close_hover:
+            pygame.draw.circle(screen, (255, 255, 255), rect.center,
+                               size // 2, max(1, int(2 * _DLG_FS)))
+    else:
+        _bg = (190, 35, 35) if _close_hover else (110, 25, 25)
+        pygame.draw.rect(screen, _bg, rect)
+        _xs = _close_font.render("✕", True, (255, 255, 255))
+        screen.blit(_xs, _xs.get_rect(center=rect.center))
 
 # --- CONFIRM-EXIT DIALOG ---
 _confirm_open    = False                          # True while dialog is visible
@@ -199,7 +222,7 @@ from scenes.therapist_welcome   import TherapistWelcomeScene
 from scenes.patient_welcome     import PatientWelcomeScene
 from scenes.login               import LoginScene
 from scenes.register            import RegisterScene
-from scenes.therapist_dashboard import TherapistDashboardScene
+from scenes.therapist_dashboard import TherapistDashboardScene, _img as _dash_img
 from scenes.patient_dashboard   import PatientDashboardScene
 from scenes.game_scene          import make_game_scene
 
@@ -360,15 +383,20 @@ while True:
 
     current_scene.draw(screen)
 
+    # Position for THIS frame's visuals + next frame's hit-testing: read the
+    # scene's own close-button slot (e.g. the Therapist Dashboard places it
+    # beside its Light/Dark toggle) if it published one this draw, else fall
+    # back to the fixed corner rect (Welcome/Login/games never publish one).
+    _close_rect = getattr(current_scene, "_close_btn_rect", None) or _DEFAULT_CLOSE_RECT
+    if _close_rect.width <= 1:               # scene explicitly hid it (e.g. (0,0,1,1))
+        _close_rect = _DEFAULT_CLOSE_RECT
+
     # Draw close button — hidden during games and calibration
     _in_game        = _current_scene_name in _game_scene_names
     _in_calibration = getattr(current_scene, "_cal_win", None) is not None
     if not _in_game and not _in_calibration:
         _close_hover = _close_rect.collidepoint(mouse_pos)
-        _bg = (190, 35, 35) if _close_hover else (110, 25, 25)
-        pygame.draw.rect(screen, _bg, _close_rect)
-        _xs = _close_font.render("✕", True, (255, 255, 255))
-        screen.blit(_xs, _xs.get_rect(center=_close_rect.center))
+        _draw_close_icon(_close_rect)
 
     # Draw confirm dialog on top of everything
     if _confirm_open:

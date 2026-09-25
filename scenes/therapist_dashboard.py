@@ -211,6 +211,37 @@ def _img(name, size=None):
     return im
 
 
+_img_bbox_cache: dict = {}
+_img_fit_cache: dict = {}
+
+
+def _img_fit(name, w, h):
+    """Like _img(), but for assets that bake extra transparent padding into
+    a square canvas (e.g. a wide pill-shaped button centered in a 3375x3375
+    file) -- crops to the actual opaque content once, then scales it to fit
+    within w x h preserving its own aspect ratio (never stretched into an
+    oval/squished pill), centered by the caller via get_rect(center=...)."""
+    key = (name, w, h)
+    if key in _img_fit_cache:
+        return _img_fit_cache[key]
+    cropped = _img_bbox_cache.get(name)
+    if cropped is None and name not in _img_bbox_cache:
+        try:
+            raw = pygame.image.load(os.path.join(_IMG_DIR, name)).convert_alpha()
+            cropped = raw.subsurface(raw.get_bounding_rect(min_alpha=10)).copy()
+        except Exception:
+            cropped = None
+        _img_bbox_cache[name] = cropped
+    if cropped is None:
+        _img_fit_cache[key] = None
+        return None
+    cw, ch = cropped.get_size()
+    scale = min(w / cw, h / ch)
+    result = pygame.transform.smoothscale(cropped, (max(1, int(cw * scale)), max(1, int(ch * scale))))
+    _img_fit_cache[key] = result
+    return result
+
+
 # ─────────────────────────────────────────────────────────────────────
 #  MAIN CLASS
 # ─────────────────────────────────────────────────────────────────────
@@ -545,6 +576,11 @@ class TherapistDashboardScene:
         except Exception:
             self._applied_theme_dark = True
         self._theme_btn_rect = pygame.Rect(0, 0, 1, 1)
+        # Close (X) button -- main.py reads this each frame instead of a
+        # fixed screen-corner rect, so it can sit beside the Light/Dark
+        # toggle in the header row. Falls back to its own fixed corner rect
+        # on scenes that never populate this (login, welcome, games).
+        self._close_btn_rect = pygame.Rect(0, 0, 1, 1)
         self._ctrl_btn_rect  = pygame.Rect(0, 0, 1, 1)   # ESP32 status block (tap = rescan)
         self._ctrl_hov       = False
         self._theme_hov      = False
@@ -706,20 +742,21 @@ class TherapistDashboardScene:
         return pygame.Rect(mx, my, mw, mh)
 
     def _bar_top(self):
-        """Y where the top-right clock/theme bar (and, on touch, Patient
-        List's own header row) starts: just below the fixed-size close (X)
-        button main.py draws over everything -- a small gap, not the button's
-        full height again, so the title/controls read as the SAME header row
-        as the X button rather than a separate band underneath it. Single
-        source of truth so the bar, Patient List's header and
+        """Y where the top-right clock/theme/close bar (and, on touch,
+        Patient List's own header row) starts. The close (X) button used to
+        float above this row at a fixed screen position, so this returned
+        room to clear it; now main.py reads the close button's rect FROM
+        this bar (see _draw_top_right_bar), so it's just a plain top margin.
+        Single source of truth so the bar, Patient List's header and
         _panel_area()'s margin can't drift apart from one another."""
-        return 46 + self._sc(6)
+        return self._sc(12)
 
     def _bar_height(self):
-        """Tallest control _draw_top_right_bar draws (the Light/Dark toggle:
-        a label line + the track). _panel_area() uses this -- instead of a
-        guess -- to keep every other panel's header clear of this bar."""
-        return self.fnt["tag"].get_height() + self._sc(3) + self._sc(28)
+        """Tallest control _draw_top_right_bar draws -- the calendar/time
+        pill, the Light/Dark toggle and the close button all share this same
+        container height. _panel_area() uses this -- instead of a guess --
+        to keep every other panel's header clear of this bar."""
+        return self._sc(40)
 
     def _tt(self, px):
         """Touch-target size for an INTERACTIVE control: a 1080-referenced px,
@@ -3097,67 +3134,82 @@ class TherapistDashboardScene:
         # toggle in _draw_top_right_bar (called from draw(), on every panel)
         # is now the only theme control.
 
-        lc = (165,25,25) if self.logout_hovered else (205,45,45)
-        pygame.draw.rect(surface, lc, lr, border_radius=10)
-        ls = self.fnt["btn"].render("Logout", True, (255,255,255))
-        surface.blit(ls, ls.get_rect(center=lr.center))
+        logout_img = _img_fit("logout_button.png", lr.width, lr.height)
+        if logout_img is not None:
+            surface.blit(logout_img, logout_img.get_rect(center=lr.center))
+            if self.logout_hovered:
+                hi = pygame.Surface(lr.size, pygame.SRCALPHA)
+                pygame.draw.rect(hi, (255, 255, 255, 40), hi.get_rect(), border_radius=10)
+                surface.blit(hi, lr.topleft)
+        else:
+            lc = (165,25,25) if self.logout_hovered else (205,45,45)
+            pygame.draw.rect(surface, lc, lr, border_radius=10)
+            ls = self.fnt["btn"].render("Logout", True, (255,255,255))
+            surface.blit(ls, ls.get_rect(center=lr.center))
 
     def _draw_top_right_bar(self, surface):
-        """Clock/date + the light/dark theme toggle, top-right of the whole
-        window -- moved out of the sidebar so the wordmark could be centred.
-        Sits in the same header row as the always-on-top close (X) button
-        main.py draws (a fixed 56x46 rect at the top-right corner), just
-        clear of its x-range, so the two read as one header line.
+        """Calendar/time pill + the Light/Dark theme toggle + the close (X)
+        button's reserved slot, top-right of the whole window -- moved out
+        of the sidebar so the wordmark could be centred. All three share one
+        container height (_bar_height()) and sit in one row, left to right:
+        [date/time pill] [Light/Dark toggle] [close button].
+
+        The close (X) button itself is drawn by main.py (always on top, so
+        it still works over modals/overlays) -- this method only reserves
+        and publishes self._close_btn_rect, which main.py reads each frame
+        instead of using a fixed screen-corner position. That rect is
+        published unconditionally (not patient-dependent), since the close
+        button must always be reachable.
 
         The theme toggle keeps its exact original behaviour: it belongs to
         the selected patient, so with nobody selected it is not drawn and
         self._theme_btn_rect collapses to (0,0,1,1) so a stray tap can't
         fire it -- only WHERE/HOW it is drawn changed, not the logic.
         """
-        W, H = self.WIDTH, self.HEIGHT
-        top    = self._bar_top()            # same header row as the close (X) button
+        top    = self._bar_top()
         # Right edge = the panel card's own right edge (not the raw screen
         # edge), inset enough to stay clear of its rounded corner -- this is
-        # what keeps the pill/toggle from visually spilling past the card.
+        # what keeps the row from visually spilling past the card.
         card_right = self._panel_area().right
         pad_r  = self._sc(20)
+        gap    = self._sc(10)
+        row_h  = self._bar_height()      # shared container height for all three controls
 
-        # ── Light | Dark toggle switch (replaces the old icon-only button) ──
-        f_tog = self.fnt["tag"]
-        lab_h = f_tog.get_height()
-        gap_lab = self._sc(3)
-        track_h = self._sc(28)
-        tog_h = lab_h + gap_lab + track_h
-        tog_w = self._tt(136)
+        # ── Close (X) button slot -- always reserved, rightmost ──────────
+        close_r = pygame.Rect(card_right - pad_r - row_h, top, row_h, row_h)
+        self._close_btn_rect = close_r
 
+        # ── Light | Dark toggle -- icons only now, sized to just fit the
+        #    two knob positions ("shorten the toggle to fit just the
+        #    circles" instead of the old label-driven width) ──────────────
+        track_h = row_h
         if self.selected_patient:
             dark = self._applied_theme_dark
-            tr = pygame.Rect(card_right - pad_r - tog_w, top, tog_w, tog_h)
+            tog_w = track_h * 2
+            tr = pygame.Rect(close_r.left - gap - tog_w, top, tog_w, track_h)
             self._theme_btn_rect = tr
 
-            active_col, dim_col = (35, 95, 165), (150, 160, 175)
-            ls = f_tog.render("Light", True, dim_col if dark else active_col)
-            ds = f_tog.render("Dark", True, active_col if dark else dim_col)
-            surface.blit(ls, ls.get_rect(topleft=(tr.left, tr.top)))
-            surface.blit(ds, ds.get_rect(topright=(tr.right, tr.top)))
-
-            track_r = pygame.Rect(tr.left, tr.top + lab_h + gap_lab, tog_w, track_h)
             track_col = (34, 46, 66) if dark else (210, 222, 240)
-            pygame.draw.rect(surface, track_col, track_r, border_radius=track_h // 2)
+            pygame.draw.rect(surface, track_col, tr, border_radius=track_h // 2)
             pygame.draw.rect(surface, (255, 255, 255) if not self._theme_hov else (235, 240, 248),
-                             track_r, max(1, int(2 * self._fs)), border_radius=track_h // 2)
-            knob_r = track_h // 2 - self._sc(2)
-            knob_cx = (track_r.right - track_h // 2) if dark else (track_r.left + track_h // 2)
-            pygame.draw.circle(surface, (255, 255, 255), (knob_cx, track_r.centery), knob_r)
-            pygame.draw.circle(surface, (190, 200, 215), (knob_cx, track_r.centery), knob_r, 1)
+                             tr, max(1, int(2 * self._fs)), border_radius=track_h // 2)
+            knob_d  = track_h - self._sc(6)
+            knob_cx = (tr.right - track_h // 2) if dark else (tr.left + track_h // 2)
+            knob_img = _img("dark_mode.png" if dark else "light_mode.png", knob_d)
+            if knob_img is not None:
+                surface.blit(knob_img, knob_img.get_rect(center=(knob_cx, tr.centery)))
+            else:
+                pygame.draw.circle(surface, (255, 255, 255), (knob_cx, tr.centery), knob_d // 2)
+                pygame.draw.circle(surface, (190, 200, 215), (knob_cx, tr.centery), knob_d // 2, 1)
+            anchor_left = tr.left
         else:
-            tr = pygame.Rect(0, 0, 1, 1)
-            self._theme_btn_rect = tr
+            self._theme_btn_rect = pygame.Rect(0, 0, 1, 1)
+            anchor_left = close_r.left
 
         # Date/time pill -- calendar icon + two stacked lines, sized with its
         # OWN small fonts (not fonts sized for other controls) so both lines
         # sit fully inside the pill instead of touching its top/bottom edge.
-        pill_h = self._sc(40)
+        pill_h = row_h
         now = datetime.datetime.now()
         f_time = pygame.font.SysFont("segoeui,arial", int(16 * self._fs), bold=True)
         f_date = pygame.font.SysFont("segoeui,arial", int(12 * self._fs))
@@ -3168,7 +3220,7 @@ class TherapistDashboardScene:
         text_w = max(t_surf.get_width(), d_surf.get_width())
         pill_w = self._sc(12) + cal_sz + gap_in + text_w + self._sc(14)
         pill_r = pygame.Rect(0, top, pill_w, pill_h)
-        pill_r.right = (tr.left - self._sc(10)) if self.selected_patient else (card_right - pad_r)
+        pill_r.right = anchor_left - gap
 
         pygame.draw.rect(surface, (255, 255, 255), pill_r, border_radius=pill_h // 2)
         pygame.draw.rect(surface, (222, 232, 246), pill_r, 1, border_radius=pill_h // 2)
@@ -4418,8 +4470,7 @@ class TherapistDashboardScene:
         # Only the OWNER may edit. A shared patient is read-only here, so the
         # per-section Edit buttons are simply not drawn for a non-owner.
         can_edit = self._is_owner(pt)
-        edit_w   = self.fnt["small"].size("Edit")[0] + self._sc(28)
-        edit_h   = self._tt(40)
+        edit_w   = edit_h = self._tt(34)
 
         # measure -> total content height
         groups = self._pv_info_fields(pt)
@@ -4464,10 +4515,14 @@ class TherapistDashboardScene:
                                          edit_w, edit_h)
                         if er.right > right_edge:      # never spill past the arrows
                             er.right = right_edge
-                        pygame.draw.rect(surface, (236, 242, 250), er, border_radius=9)
-                        pygame.draw.rect(surface, (95, 130, 175), er, 2, border_radius=9)
-                        es = self.fnt["small"].render("Edit", True, (60, 95, 150))
-                        surface.blit(es, es.get_rect(center=er.center))
+                        edit_img = _img("edit_button.png", min(er.width, er.height))
+                        if edit_img is not None:
+                            surface.blit(edit_img, edit_img.get_rect(center=er.center))
+                        else:
+                            pygame.draw.rect(surface, (236, 242, 250), er, border_radius=9)
+                            pygame.draw.rect(surface, (95, 130, 175), er, 2, border_radius=9)
+                            es = self.fnt["small"].render("Edit", True, (60, 95, 150))
+                            surface.blit(es, es.get_rect(center=er.center))
                         # only clickable while actually on screen
                         if er.top >= top and er.bottom <= bottom:
                             self._pv_sec_edit_rects[sec] = er
