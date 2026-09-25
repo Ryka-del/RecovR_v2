@@ -7,6 +7,14 @@ __pycache__/
 # Local runtime data / logs
 *.log
 
+# Each machine's own database -- the dev machine's test data and the Pi's
+# live patient data are supposed to diverge, so tracking this file made
+# every "git pull" on the Pi fail with "local changes would be overwritten".
+recovr.db
+recovr.db-journal
+recovr.db-wal
+recovr.db-shm
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db
