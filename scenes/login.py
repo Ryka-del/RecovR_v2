@@ -839,93 +839,67 @@ class LoginScene:
                       ["",  "0", "del"]]
 
     def _draw_pin_panel_touch(self, surface):
-        """Landscape PIN panel: identity on the left, on-screen keypad on the
-        right. The keypad exists because the therapist LCD is touch-only --
-        without it there is no way to enter a PIN on the device at all."""
+        """Landscape PIN panel, centred -- identity, then the PIN dots. The
+        on-screen keypad was removed (PIN digits now come from a physical
+        keypad/keyboard's KEYDOWN events, the same path _handle_key already
+        used for that); self._keypad_rects stays empty so _keypad_click()
+        harmlessly matches nothing instead of needing its own removal."""
         W, H = self.WIDTH, self.HEIGHT
         acc  = self.selected
         panel = pygame.Surface((W, H), pygame.SRCALPHA)
+        self._keypad_rects = {}
 
-        # ── keypad geometry (right half) ──
-        kw, kh = self._sc(104), self._sc(78)
-        kgap   = self._sc(9)
-        grid_w = kw * 3 + kgap * 2
-        grid_h = kh * 4 + kgap * 3
-        kx0    = W - self._sc(28) - grid_w
-        ky0    = (H - grid_h) // 2
-
-        # ── left column: avatar, name, PIN dots ──
-        lx = (kx0 - self._sc(20)) // 2
-        r  = self._sc(48)
-        cy = ky0 + r + self._sc(4)
-        draw_icon(panel, acc.get("icon_index", 1), lx, cy, r,
+        cx = W // 2
+        r  = self._sc(64)
+        cy = int(H * 0.30)
+        draw_icon(panel, acc.get("icon_index", 1), cx, cy, r,
                   shadow=True, border_color=(255, 255, 255), border_width=3)
 
         ns = self.font_name_big.render(acc["full_name"], True, (230, 235, 248))
-        if ns.get_width() > kx0 - self._sc(24):
+        if ns.get_width() > W - self._sc(48):
             ns = self.font_pin_lbl.render(acc["full_name"], True, (230, 235, 248))
-        panel.blit(ns, ns.get_rect(center=(lx, cy + r + self._sc(18))))
+        panel.blit(ns, ns.get_rect(center=(cx, cy + r + self._sc(22))))
 
         ps = self.font_pin_lbl.render("Enter PIN", True, (180, 195, 220))
-        panel.blit(ps, ps.get_rect(center=(lx, cy + r + self._sc(48))))
+        panel.blit(ps, ps.get_rect(center=(cx, cy + r + self._sc(56))))
 
-        box_y = cy + r + self._sc(66)
-        self._draw_pin_boxes(panel, lx, box_y, len(self.pin_entered))
+        box_y = cy + r + self._sc(82)
+        self._draw_pin_boxes(panel, cx, box_y, len(self.pin_entered))
 
-        info_y = box_y + self._tt(46) + self._sc(12)
+        info_y = box_y + self._tt(46) + self._sc(14)
         if self.lock_attempts > 0:
             att_s = self.font_attempts.render(
                 f"{self.lock_attempts}/{MAX_PIN_ATTEMPTS} attempts used",
                 True, (200, 110, 110) if self.lock_attempts >= 3 else (160, 178, 205))
-            panel.blit(att_s, att_s.get_rect(center=(lx, info_y)))
-            info_y += self._sc(22)
+            panel.blit(att_s, att_s.get_rect(center=(cx, info_y)))
+            info_y += self._sc(24)
         if self.pin_error:
             es = self.font_error.render(self.pin_error, True, (255, 120, 120))
-            panel.blit(es, es.get_rect(center=(lx, info_y)))
-            info_y += self._sc(22)
+            panel.blit(es, es.get_rect(center=(cx, info_y)))
+            info_y += self._sc(24)
 
         # "Forgot PIN?" -- a real tap target, stored for hit-testing
         fw, fh = self._tt(150), self._tt(44)
-        self._forgot_touch_rect = pygame.Rect(lx - fw // 2, info_y + self._sc(4), fw, fh)
+        self._forgot_touch_rect = pygame.Rect(cx - fw // 2, info_y + self._sc(4), fw, fh)
         fc = (140, 180, 230) if self.forgot_hovered else (120, 148, 195)
         pygame.draw.rect(panel, (255, 255, 255, 26), self._forgot_touch_rect, border_radius=9)
         pygame.draw.rect(panel, fc, self._forgot_touch_rect, 1, border_radius=9)
         fts = self.font_forgot.render("Forgot PIN?", True, fc)
         panel.blit(fts, fts.get_rect(center=self._forgot_touch_rect.center))
 
-        # ── keypad ──
-        self._keypad_rects = {}
-        mp = pygame.mouse.get_pos()
-        for ri, row in enumerate(self._KEYPAD_LAYOUT):
-            for ci, key in enumerate(row):
-                if not key:
-                    continue
-                kr = pygame.Rect(kx0 + ci * (kw + kgap), ky0 + ri * (kh + kgap), kw, kh)
-                self._keypad_rects[key] = kr
-                hov = kr.collidepoint(mp)
-                if key == "del":
-                    base = (92, 62, 72) if not hov else (120, 78, 90)
-                    lbl, lf = "Del", self.font_pin_lbl
-                else:
-                    base = (58, 74, 104) if not hov else (78, 98, 134)
-                    lbl, lf = key, self.font_keypad
-                pygame.draw.rect(panel, (*base, 235), kr, border_radius=12)
-                pygame.draw.rect(panel, (150, 175, 215), kr, 1, border_radius=12)
-                ks = lf.render(lbl, True, (240, 246, 255))
-                panel.blit(ks, ks.get_rect(center=kr.center))
+        hs = self.font_error.render("Type the PIN on your keypad, or tap outside to cancel",
+                                    True, (130, 148, 175))
+        if hs.get_width() > W - self._sc(40):
+            hs = self.font_error.render("Tap outside to cancel", True, (130, 148, 175))
+        panel.blit(hs, hs.get_rect(center=(cx, H - self._sc(26))))
 
-        hs = self.font_error.render("Tap outside to cancel", True, (130, 148, 175))
-        panel.blit(hs, hs.get_rect(center=(lx, H - self._sc(26))))
-
-        # Live area = identity column + keypad, padded. Anything outside is the
-        # cancel zone (see _pin_panel_rect).
-        pad_l = self._sc(14)
-        left_col = pygame.Rect(lx - r - pad_l, cy - r - pad_l,
-                               2 * (r + pad_l), (info_y + self._tt(44)) - (cy - r) + pad_l * 2)
-        keypad_r = pygame.Rect(kx0 - pad_l, ky0 - pad_l,
-                               grid_w + pad_l * 2, grid_h + pad_l * 2)
-        self._pin_live_rect = left_col.union(keypad_r).clip(
-            pygame.Rect(0, 0, W, H))
+        # Live area = identity column + PIN entry, padded. Anything outside
+        # is the cancel zone (see _pin_panel_rect).
+        pad_l = self._sc(20)
+        self._pin_live_rect = pygame.Rect(
+            cx - r - pad_l, cy - r - pad_l,
+            2 * (r + pad_l), (info_y + self._tt(44)) - (cy - r) + pad_l * 2
+        ).clip(pygame.Rect(0, 0, W, H))
 
         panel.set_alpha(int(255 * (self.dim_alpha / 220.0)))
         surface.blit(panel, (0, 0))
