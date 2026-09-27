@@ -273,6 +273,27 @@ def _img_fit(name, w, h):
     return result
 
 
+def _img_cover(name, w, h):
+    """A full-bleed background image scaled + center-cropped to exactly fill
+    w x h (preserves aspect ratio -- no stretching/distortion). Returns None
+    if the file is missing."""
+    key = ("cover", name, w, h)
+    if key in _img_fit_cache:
+        return _img_fit_cache[key]
+    try:
+        raw = pygame.image.load(os.path.join(_IMG_DIR, name)).convert()
+        rw, rh = raw.get_size()
+        scale = max(w / rw, h / rh)
+        sw, sh = max(1, int(rw * scale)), max(1, int(rh * scale))
+        scaled = pygame.transform.smoothscale(raw, (sw, sh))
+        x, y = (sw - w) // 2, (sh - h) // 2
+        result = scaled.subsurface((x, y, w, h)).copy()
+    except Exception:
+        result = None
+    _img_fit_cache[key] = result
+    return result
+
+
 # ─────────────────────────────────────────────────────────────────────
 #  MAIN CLASS
 # ─────────────────────────────────────────────────────────────────────
@@ -399,8 +420,10 @@ class TherapistDashboardScene:
         self._cr_down_rect  = pygame.Rect(0, 0, 1, 1)
         self._cr_drag_y     = None
 
-        # Create gradient background surface for visual depth
-        self.background_surface = self._gradient(width, height)
+        # pd_bg.png background image; falls back to the old procedural
+        # gradient if the asset is ever missing.
+        self.background_surface = _img_cover("pd_bg.png", width, height) \
+            or self._gradient(width, height)
         # Sidebar width: 20% desktop; narrower on the 7-inch panel (the nav list
         # was removed, so it only carries the profile + logout now).
         self.sidebar_w = int(width * (0.23 if self._touch_ui else 0.20))
@@ -3636,29 +3659,13 @@ class TherapistDashboardScene:
 
         touch   = self._touch_ui
         pad     = int(16*W/1920)
-        # panel-0 title (this panel is the dashboard home -- no breadcrumb shell)
-        title = self.fnt["panel_title"].render("Patient List", True, (30, 44, 66))
-        # Compact on touch -- the row-list viewport is tight on the 7-inch
-        # panel, so this subtitle must not eat into scrollable list height.
-        sub_font = (pygame.font.SysFont("segoeui,arial", int(16 * self._fs))
-                   if touch else self.fnt["small"])
-        subtitle = sub_font.render("Manage and view your patients.", True, (128, 145, 168))
-
-        # Aligned with the top-right clock/theme bar's own row (not just a
-        # tiny offset off the card's top edge) so the title doesn't hug the
-        # box and both rows read as one aligned header line.
-        head_y  = self._bar_top() if touch else (pa.y + int(10*H/1080))
-        head_h  = title.get_height() + subtitle.get_height()
-        ic_size = int(head_h * 0.92)
-        ic_img  = _img("patient.png", ic_size)
-        text_x  = pa.x + pad
-        if ic_img is not None:
-            surface.blit(ic_img, (pa.x + pad, head_y + (head_h - ic_size) // 2))
-            text_x = pa.x + pad + ic_size + self._sc(10)
-        surface.blit(title, (text_x, head_y))
-        sub_y = head_y + title.get_height() + (0 if touch else self._sc(2))
-        surface.blit(subtitle, (text_x, sub_y))
-        top_y = sub_y + subtitle.get_height() + (self._sc(1) if touch else int(10*H/1080))
+        # The "Patient List" title, its subtitle, and the patient icon are
+        # gone -- the calendar/date pill, Light/Dark toggle and close button
+        # are the only things left in that top row now. The search bar flows
+        # below that row (like every other panel's content does) instead of
+        # sharing it, since there's no title left to share it with.
+        head_y = self._bar_top() if touch else (pa.y + int(10*H/1080))
+        top_y  = (head_y + self._bar_height() + self._sc(10)) if touch else head_y
 
         sb_h    = self._tt(60)
         hint_w  = int((pa.width * 0.44) if not touch else (pa.width * 0.50))
@@ -3703,10 +3710,10 @@ class TherapistDashboardScene:
         # to Patient -> Info -> Record (everything else already lived on the
         # patient's own page); the full set (desktop only) still shows it.
         if touch:
-            cols   = ["Patient Name"]
+            cols   = ["Patient List"]
             col_xs = [pa.x+pad]
         else:
-            cols   = ["Patient Name", "Patient ID", "Therapist", ""]
+            cols   = ["Patient List", "Patient ID", "Therapist", ""]
             # Patient ID pushed further right of Patient Name -- more room
             # before a longer name could run into it.
             col_xs = [pa.x+int(16*W/1920),  pa.x+int(480*W/1920),
@@ -3804,13 +3811,10 @@ class TherapistDashboardScene:
             if name_r.collidepoint(mp):
                 n_col = tuple(min(255, c + 25) for c in n_col)
             if touch:
-                # a small colourful avatar circle ahead of the name on the
-                # 7-inch panel -- purely decorative (reuses the existing
-                # profile-icon palette), no new per-patient data or interaction
-                av_r = min(int(row_h * 0.30), self._sc(26))
-                draw_icon(surface, (pt.get("id", 0) % 12) + 1,
-                         pa.x + pad + av_r, ry + row_h // 2, av_r, shadow=False)
-                name_x = pa.x + pad + av_r * 2 + self._sc(10)
+                # No avatar icon here -- profile icons are a THERAPIST-only
+                # concept; patients were never assigned one and shouldn't
+                # display one.
+                name_x = pa.x + pad
                 # Ellipsize before the Share button -- the Therapist column
                 # is gone, so the name now has the full row width to itself.
                 max_name_w = right_x - self._sc(10) - name_x
