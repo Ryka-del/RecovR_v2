@@ -79,6 +79,24 @@ def _load_image_fit(name, w, h):
     return _img_cache[key]
 
 
+def _load_image_cover(name, w, h):
+    """A full-bleed background scaled + center-cropped to exactly fill w x h
+    (preserves aspect ratio -- no stretching). Returns None if missing."""
+    key = ("cover", name, w, h)
+    if key not in _img_cache:
+        try:
+            raw = pygame.image.load(os.path.join(_ROOT, "assets", "images", name)).convert()
+            rw, rh = raw.get_size()
+            scale = max(w / rw, h / rh)
+            sw, sh = max(1, int(rw * scale)), max(1, int(rh * scale))
+            scaled = pygame.transform.smoothscale(raw, (sw, sh))
+            x, y = (sw - w) // 2, (sh - h) // 2
+            _img_cache[key] = scaled.subsurface((x, y, w, h)).copy()
+        except Exception:
+            _img_cache[key] = None
+    return _img_cache[key]
+
+
 def _draw_basketball(surface, cx, cy, r):
     img = _load_image("basketball_ball.png", (r * 2, r * 2))
     if img is not None:
@@ -587,10 +605,13 @@ class BasketballGame(FatigueMixin, BaseScreen):
 
     def draw(self, surface):
         T = get_theme()
-        surface.fill(T["BG"])
-
-        for y in range(0, GAME_H, 60):
-            pygame.draw.line(surface, T["PANEL"], (0, y), (GAME_W, y), 1)
+        bg_img = _load_image_cover("basketball_bg.png", GAME_W, GAME_H)
+        if bg_img is not None:
+            surface.blit(bg_img, (0, 0))
+        else:
+            surface.fill(T["BG"])
+            for y in range(0, GAME_H, 60):
+                pygame.draw.line(surface, T["PANEL"], (0, y), (GAME_W, y), 1)
 
         if self._show_instructions:
             self._draw_instructions(surface)

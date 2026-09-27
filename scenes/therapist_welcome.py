@@ -40,9 +40,9 @@ class TherapistWelcomeScene:
         GAP_TS_FRAC  = 0.030   # title -> subtitle (kept tight: one branding block)
         SUB_H_FRAC   = 0.070   # subtitle box height
         SUB_W_FRAC   = 0.90
-        BTN_H_FRAC   = 0.215   # big finger target
-        BTN_W_FRAC   = 0.42
-        BOT_FRAC     = 0.085   # margin below the button (clear of the bezel)
+        BTN_H_FRAC   = 0.30    # big finger target (play-button artwork, made larger)
+        BTN_W_FRAC   = 0.50
+        BOT_FRAC     = 0.06    # margin below the button (clear of the bezel)
 
         _fd = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                            "assets", "font")

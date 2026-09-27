@@ -2017,7 +2017,7 @@ class TherapistDashboardScene:
         tel = st.get("telemetry") or {}
         cfg = st.get("config") or {}
 
-        _card_bg(surface, pa, alpha=235, radius=16)
+        _card_bg(surface, pa, alpha=140, radius=16)
         pad = int(44 * (W / 1920))
         x0  = pa.x + pad
         y   = pa.y + pad
@@ -3112,11 +3112,9 @@ class TherapistDashboardScene:
         else:
             pc_y = int(H*0.11); pc_h = int(H*0.13)
         pc_r = pygame.Rect(int(sw*0.05), pc_y, int(sw*0.90), pc_h)
-        # Solid white card with a soft shadow (was a translucent blue box).
-        pc_shadow = pc_r.move(0, max(2, int(3 * self._fs)))
-        pygame.draw.rect(surface, (200, 214, 234), pc_shadow, border_radius=14)
-        pygame.draw.rect(surface, (255, 255, 255), pc_r, border_radius=14)
-        pygame.draw.rect(surface, (222, 232, 246), pc_r, 1, border_radius=14)
+        # No card/box behind the avatar + name any more (reference: they sit
+        # directly on the sidebar's own flat background) -- pc_r is kept as
+        # a layout rect only, nothing is drawn for it.
         f_nm  = self.fnt["profile_nm"]
         f_sub = self.fnt["profile"]
 
@@ -3652,20 +3650,26 @@ class TherapistDashboardScene:
 
     def _draw_patient_list(self, surface, pa):
         W, H = self.WIDTH, self.HEIGHT
-        _card_bg(surface, pa, alpha=220)
+        _card_bg(surface, pa, alpha=130)
         self._patient_rows = []
         self._back_btn_rect = pygame.Rect(0, 0, 1, 1)   # panel 0 has no Back
         self._crumb_rects   = []                        # ... and no breadcrumb
 
         touch   = self._touch_ui
         pad     = int(16*W/1920)
+        # Extra left inset for the "Patient List" column header and each row's
+        # name text specifically (not the search bar/Register button, which
+        # keep the tighter `pad`) -- flush against the card's rounded left
+        # edge looked cramped.
+        list_pad = pad + self._sc(20)
         # The "Patient List" title, its subtitle, and the patient icon are
         # gone -- the calendar/date pill, Light/Dark toggle and close button
         # are the only things left in that top row now. The search bar flows
-        # below that row (like every other panel's content does) instead of
-        # sharing it, since there's no title left to share it with.
+        # below the card's own top edge with real clearance now (it used to
+        # sit only ~2px under it, visually overlapping the card's rounded
+        # top corner) instead of being positioned purely off the top bar.
         head_y = self._bar_top() if touch else (pa.y + int(10*H/1080))
-        top_y  = (head_y + self._bar_height() + self._sc(10)) if touch else head_y
+        top_y  = (pa.y + self._sc(20)) if touch else head_y
 
         sb_h    = self._tt(60)
         hint_w  = int((pa.width * 0.44) if not touch else (pa.width * 0.50))
@@ -3711,7 +3715,7 @@ class TherapistDashboardScene:
         # patient's own page); the full set (desktop only) still shows it.
         if touch:
             cols   = ["Patient List"]
-            col_xs = [pa.x+pad]
+            col_xs = [pa.x+list_pad]
         else:
             cols   = ["Patient List", "Patient ID", "Therapist", ""]
             # Patient ID pushed further right of Patient Name -- more room
@@ -3814,7 +3818,7 @@ class TherapistDashboardScene:
                 # No avatar icon here -- profile icons are a THERAPIST-only
                 # concept; patients were never assigned one and shouldn't
                 # display one.
-                name_x = pa.x + pad
+                name_x = pa.x + list_pad
                 # Ellipsize before the Share button -- the Therapist column
                 # is gone, so the name now has the full row width to itself.
                 max_name_w = right_x - self._sc(10) - name_x
@@ -4153,7 +4157,7 @@ class TherapistDashboardScene:
             self._draw_register_patient_touch(surface, pa)
             return
         W, H = self.WIDTH, self.HEIGHT
-        _card_bg(surface, pa, alpha=220)
+        _card_bg(surface, pa, alpha=130)
         rp = self.rp
         self._rp_drop_rects = {}
 
@@ -4267,7 +4271,7 @@ class TherapistDashboardScene:
         _rp_handle_click / _rp_submit logic works unchanged -- only the layout
         and the vertical scroll are new."""
         W, H = self.WIDTH, self.HEIGHT
-        _card_bg(surface, pa, alpha=224)
+        _card_bg(surface, pa, alpha=130)
         rp = self.rp
         self._rp_drop_rects = {}
 
@@ -4559,7 +4563,7 @@ class TherapistDashboardScene:
 
     def _pv_draw_info(self, surface, pa, pt):
         W, H = self.WIDTH, self.HEIGHT
-        _card_bg(surface, pa, alpha=220)
+        _card_bg(surface, pa, alpha=130)
         x0    = pa.x + int(30 * W / 1920)
         val_x = x0 + max(int(300 * W / 1920), self._tt(250))
         # Field rows are plain text, not tap targets -- _tt()'s 50px touch
@@ -4748,22 +4752,26 @@ class TherapistDashboardScene:
 
     def _draw_session_history(self, surface, pa):
         W, H = self.WIDTH, self.HEIGHT
-        _card_bg(surface, pa, alpha=220)
-        table_y = pa.y + int(28*H/1080)
+        _card_bg(surface, pa, alpha=130)
+        table_y = pa.y + self._sc(12)
         cols   = ["Date", "Game", "Score", "Duration", "Difficulty", "Therapist"]
         col_xs = [pa.x+int(16*W/1920),  pa.x+int(230*W/1920), pa.x+int(620*W/1920),
                   pa.x+int(780*W/1920), pa.x+int(950*W/1920),  pa.x+int(1140*W/1920)]
         for cx, c in zip(col_xs, cols):
             surface.blit(self.fnt["section"].render(c, True, (85,105,135)), (cx, table_y))
+        # Underline sits below the header's actual rendered height (not a
+        # raw H/1080 guess, which was less than the touch-scaled font's real
+        # height and let the first data row visually overlap the headers).
+        hdr_line_y = table_y + self.fnt["section"].get_height() + self._sc(6)
         pygame.draw.line(surface, (210,218,230),
-                         (pa.x+int(16*W/1920), table_y+int(36*H/1080)),
-                         (pa.right-int(16*W/1920), table_y+int(36*H/1080)), 1)
+                         (pa.x+int(16*W/1920), hdr_line_y),
+                         (pa.right-int(16*W/1920), hdr_line_y), 1)
 
         pt = self._view_patient()
         if not pt:
             _empty_state(surface,
-                         pygame.Rect(pa.x, table_y+int(48*H/1080), pa.width,
-                                     pa.bottom-table_y-int(48*H/1080)),
+                         pygame.Rect(pa.x, hdr_line_y+self._sc(12), pa.width,
+                                     pa.bottom-hdr_line_y-self._sc(12)),
                          "👤", "No patient selected",
                          "Select a patient from the Patient List to view their session history.",
                          self.fnt["empty_head"], self.fnt["small_i"])
@@ -4774,16 +4782,19 @@ class TherapistDashboardScene:
                     if hasattr(self.db, "get_sessions") else [])
         if not sessions:
             _empty_state(surface,
-                         pygame.Rect(pa.x, table_y+int(48*H/1080), pa.width,
-                                     pa.bottom-table_y-int(48*H/1080)),
+                         pygame.Rect(pa.x, hdr_line_y+self._sc(12), pa.width,
+                                     pa.bottom-hdr_line_y-self._sc(12)),
                          "📋", "No sessions recorded yet",
                          f"No sessions found for {pt.get('full_name', 'this patient')}.",
                          self.fnt["empty_head"], self.fnt["small_i"])
             self._sh_up_rect = self._sh_down_rect = pygame.Rect(0, 0, 1, 1)
             return
 
-        row_h       = int(52*H/1080)
-        view_top    = table_y + int(44*H/1080)
+        # Row height comes from the actual text height (was a raw H/1080
+        # guess shorter than the touch-scaled font, so a 2nd session's row
+        # started before the 1st one's text had finished rendering).
+        row_h       = self.fnt["small"].get_height() + self._sc(20)
+        view_top    = hdr_line_y + self._sc(8)
         view_bottom = pa.bottom - int(10*H/1080)
         view_h      = view_bottom - view_top
         content_h   = len(sessions) * row_h
@@ -4821,7 +4832,7 @@ class TherapistDashboardScene:
                     s.get("therapist_name","—")]
             for cx, v in zip(col_xs, vals):
                 surface.blit(self.fnt["small"].render(v, True, (40,55,75)),
-                             (cx, ry + int(14*H/1080)))
+                             (cx, ry + (row_h - self.fnt["small"].get_height())//2))
         surface.set_clip(prev_clip)
 
         # ── scroll arrows (only when the history overflows) ──────────
@@ -4846,7 +4857,7 @@ class TherapistDashboardScene:
 
     def _draw_analytics(self, surface, pa):
         W, H = self.WIDTH, self.HEIGHT
-        _card_bg(surface, pa, alpha=220)
+        _card_bg(surface, pa, alpha=130)
         lx = pa.x + int(16*W/1920)
         ly = pa.y + int(20*H/1080)
 
@@ -4982,14 +4993,14 @@ class TherapistDashboardScene:
 
     def _draw_calibration(self, surface, pa):
         W, H = self.WIDTH, self.HEIGHT
-        _card_bg(surface, pa, alpha=220)
-        table_y = pa.y + int(28*H/1080)
+        _card_bg(surface, pa, alpha=130)
+        table_y = pa.y + self._sc(12)
 
         pt = self._view_patient()
         if not pt:
             _empty_state(surface,
-                         pygame.Rect(pa.x, table_y+int(48*H/1080), pa.width,
-                                     pa.bottom-table_y-int(48*H/1080)),
+                         pygame.Rect(pa.x, table_y+self.fnt["section"].get_height()+self._sc(18), pa.width,
+                                     pa.bottom-table_y-self.fnt["section"].get_height()-self._sc(18)),
                          "👤", "No patient selected",
                          "Select a patient from the Patient List to view calibration records.",
                          self.fnt["empty_head"], self.fnt["small_i"])
@@ -5006,22 +5017,29 @@ class TherapistDashboardScene:
                   pa.x+int(1040*W/1920)]
         for cx, c in zip(col_xs, cols):
             surface.blit(self.fnt["section"].render(c, True, (85,105,135)), (cx, table_y))
+        # Underline sits below the header's actual rendered height, same fix
+        # as Session History (the old raw H/1080 gap was shorter than the
+        # touch-scaled font, so the first record row overlapped the headers).
+        hdr_line_y = table_y + self.fnt["section"].get_height() + self._sc(6)
         pygame.draw.line(surface, (210,218,230),
-                         (pa.x+int(16*W/1920), table_y+int(32*H/1080)),
-                         (pa.right-int(16*W/1920), table_y+int(32*H/1080)), 1)
+                         (pa.x+int(16*W/1920), hdr_line_y),
+                         (pa.right-int(16*W/1920), hdr_line_y), 1)
 
         if not records:
             _empty_state(surface,
-                         pygame.Rect(pa.x, table_y+int(48*H/1080), pa.width,
-                                     pa.bottom-table_y-int(48*H/1080)),
+                         pygame.Rect(pa.x, hdr_line_y+self._sc(12), pa.width,
+                                     pa.bottom-hdr_line_y-self._sc(12)),
                          "🎯", "No calibration records yet",
                          f"No calibration data found for {pt.get('full_name', 'this patient')}.",
                          self.fnt["empty_head"], self.fnt["small_i"])
             self._cr_up_rect = self._cr_down_rect = pygame.Rect(0, 0, 1, 1)
             return
 
-        row_h       = int(38*H/1080)
-        view_top    = table_y + int(44*H/1080)
+        # Row height comes from the actual text height -- same fix as
+        # Session History (the old raw H/1080 guess was shorter than the
+        # touch-scaled font, so consecutive records' rows overlapped).
+        row_h       = self.fnt["body"].get_height() + self._sc(14)
+        view_top    = hdr_line_y + self._sc(8)
         view_bottom = pa.bottom - int(10*H/1080)
         view_h      = view_bottom - view_top
         content_h   = len(records) * row_h
@@ -5056,7 +5074,8 @@ class TherapistDashboardScene:
                 rec.get("therapist_name", "—"),
             ]
             for cx, v in zip(col_xs, vals):
-                surface.blit(self.fnt["body"].render(v, True, (40,55,75)), (cx, ry+int(9*H/1080)))
+                surface.blit(self.fnt["body"].render(v, True, (40,55,75)),
+                             (cx, ry + (row_h - self.fnt["body"].get_height())//2))
         surface.set_clip(prev_clip)
 
         # ── scroll arrows (only when records overflow the viewport) ──
@@ -5083,7 +5102,7 @@ class TherapistDashboardScene:
         W, H = self.WIDTH, self.HEIGHT
         gc   = self.gc
         touch = self._touch_ui
-        _card_bg(surface, pa, alpha=220)
+        _card_bg(surface, pa, alpha=130)
         self._game_tiles = []
         pad = int(16*W/1920)
 
@@ -5197,7 +5216,7 @@ class TherapistDashboardScene:
 
     def _draw_start_session(self, surface, pa):
         W, H = self.WIDTH, self.HEIGHT
-        _card_bg(surface, pa, alpha=220)
+        _card_bg(surface, pa, alpha=130)
         gc = self.gc
         pt = self.selected_patient or {}
 
