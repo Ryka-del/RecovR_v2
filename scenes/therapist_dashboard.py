@@ -175,6 +175,24 @@ def _card_bg(surface, rect, alpha=200, radius=14,
     pygame.draw.rect(surface, border_col, rect, border_w, border_radius=radius)
 
 
+def _grad_box(surface, rect, col_a, col_b, radius=10, border_col=None, border_w=1):
+    """A rounded rect filled with a left-to-right linear gradient (col_a ->
+    col_b), used for the sidebar's Active Patient / controller-status boxes
+    per the reference mock (soft two-tone panels instead of a flat fill)."""
+    w, h = max(1, rect.width), max(1, rect.height)
+    grad = pygame.Surface((w, h), pygame.SRCALPHA)
+    for x in range(w):
+        t = x / max(1, w - 1)
+        col = tuple(int(col_a[i] + (col_b[i] - col_a[i]) * t) for i in range(3))
+        pygame.draw.line(grad, (*col, 255), (x, 0), (x, h))
+    mask = pygame.Surface((w, h), pygame.SRCALPHA)
+    pygame.draw.rect(mask, (255, 255, 255, 255), (0, 0, w, h), border_radius=radius)
+    grad.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+    surface.blit(grad, rect.topleft)
+    if border_col:
+        pygame.draw.rect(surface, border_col, rect, border_w, border_radius=radius)
+
+
 def _empty_state(surface, rect, icon_text, heading, subtext,
                  fnt_head, fnt_sub, action_label=None, fnt_btn=None):
     cx = rect.centerx
@@ -385,6 +403,7 @@ class TherapistDashboardScene:
             "empty_head":  pygame.font.Font(_F("Sora-SemiBold.ttf"),         int(33*_fs)),
             "section":     pygame.font.Font(_F("Lexend-SemiBold.ttf"),       int(24*_fs)),
             "tag":         pygame.font.Font(_F("Lexend-Medium.ttf"),         int(22*_fs)),
+            "eyebrow":     pygame.font.Font(_F("Lexend-Medium.ttf"),         int(19*_fs)),
             "time":        pygame.font.Font(_F("ZenDots-Regular.ttf"),       int(19*_fs)),
             "header_date": pygame.font.Font(_F("Lexend-Light.ttf"),          int(16*_fs)),
             "breadcrumb":  pygame.font.Font(_F("Lexend-Light.ttf"),          int(24*_fs)),
@@ -3112,9 +3131,9 @@ class TherapistDashboardScene:
         else:
             pc_y = int(H*0.11); pc_h = int(H*0.13)
         pc_r = pygame.Rect(int(sw*0.05), pc_y, int(sw*0.90), pc_h)
-        # No card/box behind the avatar + name any more (reference: they sit
-        # directly on the sidebar's own flat background) -- pc_r is kept as
-        # a layout rect only, nothing is drawn for it.
+        # White card behind the avatar + name, per the reference mock.
+        pygame.draw.rect(surface, (255, 255, 255), pc_r, border_radius=14)
+        pygame.draw.rect(surface, (222, 232, 246), pc_r, 1, border_radius=14)
         f_nm  = self.fnt["profile_nm"]
         f_sub = self.fnt["profile"]
 
@@ -3199,44 +3218,45 @@ class TherapistDashboardScene:
             surface.blit(sym, sym.get_rect(midleft=(px, r.centery)))
             surface.blit(lbl, lbl.get_rect(midleft=(px + sym.get_width() + int(10*W/1920), r.centery)))
 
-        # ── Controller status, then Active Patient directly below it --
-        #    the connection status is the more time-sensitive of the two, so
-        #    it reads first, with the patient identity underneath it. ──
+        # ── Active Patient (gradient box, centered text), THEN the
+        #    controller/connection status below it -- per the reference
+        #    mock, patient identity now reads before the live status. ──
         stack_y = pc_r.bottom + (self._sc(10) if self._touch_ui else int(20*H/1080))
-        stack_y = self._draw_controller_monitor(surface, sw, stack_y)
 
         if self.selected_patient:
             bpad = self._sc(8) if self._touch_ui else int(12*W/1920)
             label_max_w = int(sw * 0.90) - bpad * 2
-            f_bl = self.fnt["tag"] if self._touch_ui else self.fnt["small"]
-            # "PATIENT" (not "ACTIVE PATIENT") -- the longer label didn't fit
-            # this rail's width even at the smallest label font and always
-            # truncated to "ACTIVE PATI...", which reads as a mistake rather
-            # than an intentional shortening on a label that never changes.
-            # _fit() is kept as a safety net for narrower rails still.
-            f_bl_txt = _fit("PATIENT", f_bl, label_max_w)
+            f_bl = self.fnt["eyebrow"] if self._touch_ui else self.fnt["small"]
+            f_bl_txt = _fit("ACTIVE PATIENT", f_bl, label_max_w)
             pn = (self.fnt["body_b"] if self._touch_ui else self.fnt["label"])
             pname = self.selected_patient.get("full_name", "—")
             _wrapped = self._wrap(pname, pn, label_max_w)
             name_lines = _wrapped[:2]
             if len(_wrapped) > 2:                    # 3rd+ line -- ellipsize the 2nd
-                name_lines[1] = _fit(name_lines[1] + "…", pn, label_max_w)
+                name_lines[1] = name_lines[1] + "…"
+            # _wrap() only breaks BETWEEN words -- a single long word (e.g. a
+            # hyphenated surname like "Villanueva-Santos") can still come
+            # back wider than the box, so ellipsize every line as a backstop.
+            name_lines = [_fit(ln, pn, label_max_w) for ln in name_lines]
 
-            badge_y = stack_y + (self._sc(8) if self._touch_ui else int(12*H/1080))
+            badge_y = stack_y
             line_h = pn.get_height()
             name_block_h = line_h * len(name_lines)
-            bh = (self._sc(6) + f_bl.get_height() + self._sc(4) + name_block_h + self._sc(8))
+            bh = (self._sc(8) + f_bl.get_height() + self._sc(4) + name_block_h + self._sc(8))
             bh = max(bh, self._tt(60) if self._touch_ui else int(60*H/1080))
             badge_r = pygame.Rect(int(sw*0.05), badge_y, int(sw*0.90), bh)
-            pygame.draw.rect(surface, (232,245,255), badge_r, border_radius=10)
-            pygame.draw.rect(surface, (140,195,240), badge_r, 1, border_radius=10)
-            surface.blit(f_bl.render(f_bl_txt, True, (90,120,160)),
-                         (badge_r.x+bpad, badge_r.y+self._sc(6)))
+            _grad_box(surface, badge_r, (204, 224, 250), (224, 205, 246),
+                     radius=10, border_col=(178, 196, 232), border_w=1)
+            lbl_s = f_bl.render(f_bl_txt, True, (55, 105, 170))
+            surface.blit(lbl_s, lbl_s.get_rect(midtop=(badge_r.centerx, badge_r.y + self._sc(6))))
             ny = badge_r.bottom - self._sc(8) - name_block_h
             for ln in name_lines:
-                surface.blit(pn.render(ln, True, (40,80,140)), (badge_r.x+bpad, ny))
+                ls = pn.render(ln, True, (55, 60, 95))
+                surface.blit(ls, ls.get_rect(midtop=(badge_r.centerx, ny)))
                 ny += line_h
-            stack_y = badge_r.bottom
+            stack_y = badge_r.bottom + (self._sc(10) if self._touch_ui else int(20*H/1080))
+
+        stack_y = self._draw_controller_monitor(surface, sw, stack_y)
 
         lr = self._logout_rect()
         # The old sidebar-bottom theme button is gone -- the icon-based
@@ -3421,9 +3441,12 @@ class TherapistDashboardScene:
         r  = pygame.Rect(int(sw * 0.05), top_y, int(sw * 0.90), bh)
         self._ctrl_btn_rect = r
 
-        bg = (247, 250, 254) if not self._ctrl_hov else (236, 243, 252)
-        pygame.draw.rect(surface, bg, r, border_radius=10)
-        pygame.draw.rect(surface, (196, 212, 232), r, 1, border_radius=10)
+        # Gradient box (purple -> pink), matching the reference mock --
+        # slightly brighter on hover.
+        col_a, col_b = ((222, 205, 246), (250, 210, 232)) if not self._ctrl_hov \
+            else ((214, 195, 244), (248, 196, 224))
+        _grad_box(surface, r, col_a, col_b, radius=10,
+                 border_col=(196, 178, 228), border_w=1)
 
         # status dot -- pulses while it is actively trying to connect
         dr = max(4, int(6 * self._fs))
@@ -4752,11 +4775,22 @@ class TherapistDashboardScene:
 
     def _draw_session_history(self, surface, pa):
         W, H = self.WIDTH, self.HEIGHT
+        touch = self._touch_ui
         _card_bg(surface, pa, alpha=130)
         table_y = pa.y + self._sc(12)
-        cols   = ["Date", "Game", "Score", "Duration", "Difficulty", "Therapist"]
-        col_xs = [pa.x+int(16*W/1920),  pa.x+int(230*W/1920), pa.x+int(620*W/1920),
-                  pa.x+int(780*W/1920), pa.x+int(950*W/1920),  pa.x+int(1140*W/1920)]
+        if touch:
+            # The full 6-column desktop layout doesn't fit the 7-inch panel's
+            # width at a touch-safe font size -- Duration and Therapist are
+            # dropped here (still visible on desktop); column x's are spread
+            # evenly across the panel's real width instead of reused
+            # 1920-reference ratios that don't adapt to it.
+            cols = ["Date", "Game", "Score", "Difficulty"]
+            seg_w = (pa.width - int(32*W/1920)) // len(cols)
+            col_xs = [pa.x + int(16*W/1920) + i*seg_w for i in range(len(cols))]
+        else:
+            cols   = ["Date", "Game", "Score", "Duration", "Difficulty", "Therapist"]
+            col_xs = [pa.x+int(16*W/1920),  pa.x+int(230*W/1920), pa.x+int(620*W/1920),
+                      pa.x+int(780*W/1920), pa.x+int(950*W/1920),  pa.x+int(1140*W/1920)]
         for cx, c in zip(col_xs, cols):
             surface.blit(self.fnt["section"].render(c, True, (85,105,135)), (cx, table_y))
         # Underline sits below the header's actual rendered height (not a
@@ -4816,7 +4850,7 @@ class TherapistDashboardScene:
                 bg.fill((240,246,255,180)); surface.blit(bg, row_r.topleft)
             pygame.draw.rect(surface, (215,225,240), row_r, 1, border_radius=8)
 
-            date_str = str(s.get("played_at",""))[:16]
+            date_str = str(s.get("played_at",""))[:10 if touch else 16]
             mins, secs = divmod(int(s.get("duration_sec", 0)), 60)
             if mins and secs:
                 dur_str = f"{mins}min {secs}s"
@@ -4824,13 +4858,21 @@ class TherapistDashboardScene:
                 dur_str = f"{mins}min"
             else:
                 dur_str = f"{secs}s"
-            vals = [date_str,
-                    s.get("game","—"),
-                    str(s.get("score","—")),
-                    dur_str,
-                    s.get("difficulty","—"),
-                    s.get("therapist_name","—")]
-            for cx, v in zip(col_xs, vals):
+            if touch:
+                vals = [date_str, s.get("game","—"), str(s.get("score","—")),
+                        s.get("difficulty","—")]
+            else:
+                vals = [date_str, s.get("game","—"), str(s.get("score","—")),
+                        dur_str, s.get("difficulty","—"), s.get("therapist_name","—")]
+            for i, (cx, v) in enumerate(zip(col_xs, vals)):
+                if touch:
+                    # ellipsize so a long game name can never bleed into the
+                    # next column
+                    avail = (col_xs[i+1] if i+1 < len(col_xs) else content_right) - cx - self._sc(8)
+                    if self.fnt["small"].size(v)[0] > avail:
+                        while v and self.fnt["small"].size(v + "…")[0] > avail:
+                            v = v[:-1]
+                        v = (v + "…") if v else "…"
                 surface.blit(self.fnt["small"].render(v, True, (40,55,75)),
                              (cx, ry + (row_h - self.fnt["small"].get_height())//2))
         surface.set_clip(prev_clip)
@@ -4993,6 +5035,7 @@ class TherapistDashboardScene:
 
     def _draw_calibration(self, surface, pa):
         W, H = self.WIDTH, self.HEIGHT
+        touch = self._touch_ui
         _card_bg(surface, pa, alpha=130)
         table_y = pa.y + self._sc(12)
 
@@ -5011,10 +5054,20 @@ class TherapistDashboardScene:
                                              patient_id=pt["id"])
                    if hasattr(self.db, "get_calibrations") else [])
 
-        cols   = ["Game", "Sensor", "Avg", "Threshold", "Sensitivity", "Date", "Therapist"]
-        col_xs = [pa.x+int(16*W/1920),  pa.x+int(230*W/1920), pa.x+int(430*W/1920),
-                  pa.x+int(570*W/1920), pa.x+int(720*W/1920),  pa.x+int(880*W/1920),
-                  pa.x+int(1040*W/1920)]
+        if touch:
+            # The full 7-column desktop layout doesn't fit the 7-inch panel's
+            # width at a touch-safe font size -- Sensor, Sensitivity and
+            # Therapist are dropped here (still visible on desktop); the
+            # calibration numbers (Avg/Threshold) are kept since they're the
+            # actual technical record, not just metadata.
+            cols = ["Game", "Avg", "Threshold", "Date"]
+            seg_w = (pa.width - int(32*W/1920)) // len(cols)
+            col_xs = [pa.x + int(16*W/1920) + i*seg_w for i in range(len(cols))]
+        else:
+            cols   = ["Game", "Sensor", "Avg", "Threshold", "Sensitivity", "Date", "Therapist"]
+            col_xs = [pa.x+int(16*W/1920),  pa.x+int(230*W/1920), pa.x+int(430*W/1920),
+                      pa.x+int(570*W/1920), pa.x+int(720*W/1920),  pa.x+int(880*W/1920),
+                      pa.x+int(1040*W/1920)]
         for cx, c in zip(col_xs, cols):
             surface.blit(self.fnt["section"].render(c, True, (85,105,135)), (cx, table_y))
         # Underline sits below the header's actual rendered height, same fix
@@ -5064,16 +5117,29 @@ class TherapistDashboardScene:
 
             date_str = str(rec.get("calibrated_at", ""))[:10]
             game_disp = rec.get("game_name") or rec.get("game_type", "—")
-            vals = [
-                game_disp,
-                rec.get("sensor", "—"),
-                f"{rec.get('average', 0):.3f}",
-                f"{rec.get('threshold', 0):.3f}",
-                rec.get("sensitivity", "—"),
-                date_str,
-                rec.get("therapist_name", "—"),
-            ]
-            for cx, v in zip(col_xs, vals):
+            avg_str = f"{rec.get('average', 0):.3f}"
+            thr_str = f"{rec.get('threshold', 0):.3f}"
+            if touch:
+                vals = [game_disp, avg_str, thr_str, date_str]
+            else:
+                vals = [
+                    game_disp,
+                    rec.get("sensor", "—"),
+                    avg_str,
+                    thr_str,
+                    rec.get("sensitivity", "—"),
+                    date_str,
+                    rec.get("therapist_name", "—"),
+                ]
+            for i, (cx, v) in enumerate(zip(col_xs, vals)):
+                if touch:
+                    # ellipsize so a long game name can never bleed into the
+                    # next column
+                    avail = (col_xs[i+1] if i+1 < len(col_xs) else content_right) - cx - self._sc(8)
+                    if self.fnt["body"].size(v)[0] > avail:
+                        while v and self.fnt["body"].size(v + "…")[0] > avail:
+                            v = v[:-1]
+                        v = (v + "…") if v else "…"
                 surface.blit(self.fnt["body"].render(v, True, (40,55,75)),
                              (cx, ry + (row_h - self.fnt["body"].get_height())//2))
         surface.set_clip(prev_clip)
