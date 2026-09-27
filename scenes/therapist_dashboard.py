@@ -3712,7 +3712,7 @@ class TherapistDashboardScene:
                 # 7-inch panel -- purely decorative (reuses the existing
                 # profile-icon palette), no new per-patient data or interaction
                 av_r = min(int(row_h * 0.30), self._sc(26))
-                draw_icon(surface, (pt.get("id", 0) % 10) + 1,
+                draw_icon(surface, (pt.get("id", 0) % 12) + 1,
                          pa.x + pad + av_r, ry + row_h // 2, av_r, shadow=False)
                 name_x = pa.x + pad + av_r * 2 + self._sc(10)
                 # Ellipsize before the Share button -- the Therapist column
@@ -5592,7 +5592,7 @@ class TherapistDashboardScene:
         r = max(self._sc(24), min(self._sc(46), (avail_w - (cols - 1) * gap) // (2 * cols)))
         self._eip_r = r
         step = 2 * r + gap
-        rows_n = (10 + cols - 1) // cols
+        rows_n = (12 + cols - 1) // cols
         total_h = rows_n * step - gap
         self._eip_scroll_max = max(0, total_h - view_h)
         self._eip_scroll = max(0, min(self._eip_scroll, self._eip_scroll_max))
@@ -5604,7 +5604,7 @@ class TherapistDashboardScene:
         surface.set_clip(pygame.Rect(pr.x, top, pw, view_h))
         self._eip_circles = []
         y0 = top - self._eip_scroll
-        for i in range(10):
+        for i in range(12):
             idx = i + 1
             col, row = i % cols, i // cols
             cx = grid_cx + (col - (cols - 1) / 2) * step

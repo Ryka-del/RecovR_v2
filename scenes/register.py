@@ -183,7 +183,7 @@ class RegisterScene:
 
         self.sm_r       = sm_r
         self.sm_circles = []
-        for idx in range(1, 11):
+        for idx in range(1, 13):
             col = (idx - 1) % sm_cols
             row = (idx - 1) // sm_cols
             cx  = sm_start_x + col * sm_gap_x
@@ -293,7 +293,7 @@ class RegisterScene:
         self.big_cx = icon_cx
         self.big_cy = big_cy
 
-        # 3 columns x 4 rows fits all 10 icons in the narrow left column
+        # 3 columns x 4 rows fits all 12 icons in the narrow left column
         # without needing to scroll (unlike the smaller Edit Profile popup).
         cols = 3
         rows_n = 4
@@ -307,7 +307,7 @@ class RegisterScene:
         step = self.sm_r * 2 + gap
 
         self.sm_circles = []
-        for idx in range(1, 11):
+        for idx in range(1, 13):
             col = (idx - 1) % cols
             row = (idx - 1) // cols
             cx = icon_cx + (col - (cols - 1) / 2) * step
@@ -586,7 +586,7 @@ class RegisterScene:
         H = self.HEIGHT
 
         if self.selected_icon == 0:
-            bg_color, _, _ = ICONS[0]
+            bg_color = ICONS[0]
             shadow_col = tuple(max(0, c - 45) for c in bg_color)
             shadow_off = max(3, self.big_r // 18)
             pygame.draw.circle(surface, shadow_col, (self.big_cx, self.big_cy + shadow_off), self.big_r)
