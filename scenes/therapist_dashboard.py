@@ -136,6 +136,17 @@ INTEGRATED_GAMES = [
 ]
 ALL_GAMES = SINGLE_SKILL_GAMES + INTEGRATED_GAMES
 
+# Game Configuration tile artwork -- each is a wide pill-shaped button with
+# its label already baked into the image (assets/images/), replacing the
+# old plain-color tile + drawn text label.
+GAME_TILE_ASSETS = {
+    "Grip Strength":  "gripstrength.png",
+    "Finger Flexion": "fingerflexion.png",
+    "Wrist Rotation": "wristrotation.png",
+    "Dual Skill":     "dualskill.png",
+    "Multi-skill":    "multiskill.png",
+}
+
 SKILL_GAMES = {
     "Grip Strength":  ["Basketball"],
     "Finger Flexion": ["Piano Tiles"],
@@ -564,7 +575,6 @@ class TherapistDashboardScene:
         self._ble_want    = None               # last enable/disable pushed to the BLE receiver
         self._sm_hover    = None
         self._sm_volume   = None               # music volume (lazy-init from broker state)
-        self._sm_stop_rect = pygame.Rect(0, 0, 1, 1)   # emergency STOP (lower-right)
         self._sm_stopped_notice = False        # "Game Stopped" screen shown on panel 7
         self._sm_notice_continue_rect = pygame.Rect(0, 0, 1, 1)
         self._sm_notice_back_rect     = pygame.Rect(0, 0, 1, 1)
@@ -667,6 +677,8 @@ class TherapistDashboardScene:
         self._gc_skill_modal_type = None    # Skill type whose games are being shown
         self._gc_skill_modal_rects = []     # List of (rect, game_name) for click handling
         self._gc_skill_modal_close = pygame.Rect(0, 0, 1, 1)
+        self._gc_active_tab = "single"      # "single" | "integrated" -- which tile row shows
+        self._gc_tab_rects  = {}            # {"single"/"integrated": Rect} for click handling
 
     # ──────────────────────────────────────────────────────────────────
     #  LAYOUT
@@ -1749,6 +1761,14 @@ class TherapistDashboardScene:
     # ══════════════════════════════════════════════════════════════════
 
     _SM_VOL_STEPS = [0.0, 0.25, 0.5, 0.75, 1.0]
+    # Session-in-Progress control button artwork -- icon-only now (captions
+    # removed); "start" also covers RESUME (same play-triangle asset).
+    _SM_BTN_ASSETS = {
+        "start":   "game_start.png",
+        "pause":   "game_pause.png",
+        "restart": "game_restart.png",
+        "stop":    "game_stop.png",
+    }
 
     def _sm_update(self, mouse_pos):
         st = therapist_link.get_state() or {}
@@ -1767,8 +1787,6 @@ class TherapistDashboardScene:
         for key, (r, enabled) in self._sm_btn_rects.items():
             if enabled and r.collidepoint(mouse_pos):
                 self._sm_hover = key
-        if self._sm_stop_rect.collidepoint(mouse_pos):
-            self._sm_hover = "stop"
         if self._sm_notice_continue_rect.collidepoint(mouse_pos):
             self._sm_hover = "notice_continue"
         if self._sm_notice_back_rect.collidepoint(mouse_pos):
@@ -1841,11 +1859,6 @@ class TherapistDashboardScene:
             play_click()
             self._go_back()
             return
-        # emergency STOP: separate red button
-        if self._sm_stop_rect.collidepoint(pos):
-            play_click()
-            self._sm_emergency_stop()
-            return
         for key, (r, enabled) in list(self._sm_btn_rects.items()):
             if not r.collidepoint(pos) or not enabled:
                 continue
@@ -1855,6 +1868,8 @@ class TherapistDashboardScene:
                 therapist_link.command(command)
                 if command == _rc_cmd.RESTART_GAME:
                     self._sm_result = None
+            elif key == "stop":
+                self._sm_emergency_stop()
             elif key == "volume":
                 cur = self._sm_volume if self._sm_volume is not None else 0.4
                 idx = min(range(len(self._SM_VOL_STEPS)),
@@ -1962,11 +1977,14 @@ class TherapistDashboardScene:
             surface.blit(F["body_b"].render(str(v), True, (38, 52, 78)), (x0 + val_dx, y))
             y += row_dy
 
-        # ── control row: [ primary(START/PAUSE/RESUME/RESTART) ] [ VOLUME ] ──
+        # ── control row: [ primary(START/PAUSE/RESUME/RESTART) ] [ STOP ] [ VOLUME ] ──
+        # Icon-only now (word captions removed); STOP used to be a separate
+        # wide red button anchored to the lower-right corner of the whole
+        # interface -- it now lives in this same row, right after primary.
         # (EXIT removed -- use the standard dashboard Back button in the header)
         bs  = max(int(108 * (H / 1080)), self._tt(104))
         gap = int(34 * (W / 1920))
-        p_icon, p_label, _p_cmd = self._sm_primary(status)
+        p_icon, _p_label, _p_cmd = self._sm_primary(status)
         # The initial START is held for a few seconds after "Start Session" so the
         # BLE controller can move from this process to the patient process before
         # the game runs. RESUME / RESTART / PAUSE are never locked.
@@ -1976,53 +1994,49 @@ class TherapistDashboardScene:
             and status in (_rc_cmd.READY, _rc_cmd.IDLE, "connecting")
             and lock_ms_left > 0
         )
-        if primary_locked:
-            p_label = f"START  {lock_ms_left // 1000 + 1}"
         specs = [
-            ("primary", p_icon,  p_label,  not primary_locked),
-            ("volume",  "volume", "VOLUME", True),
+            ("primary", p_icon,   not primary_locked),
+            ("stop",    "stop",   True),
+            ("volume",  "volume", True),
         ]
         total = bs * len(specs) + gap * (len(specs) - 1)
         bx = pa.x + (pa.width - total) // 2
         brow_y = pa.y + pa.height - bs - int(64 * (H / 1080))
-        cap_font = F.get("small") or F["body"]
         self._sm_btn_rects = {}
-        for key, icon, label, enabled in specs:
+        for key, icon, enabled in specs:
             r = pygame.Rect(bx, brow_y, bs, bs)
             self._sm_btn_rects[key] = (r, bool(enabled))
             hovered = self._sm_hover == key and enabled
-            if key == "primary":
+            asset = self._SM_BTN_ASSETS.get(icon)
+            img = _img(asset, bs) if asset else None
+            if img is not None:
                 if not enabled:
-                    fill = (176, 190, 205)          # locked during the BLE handoff window
-                else:
-                    fill = (86, 162, 232) if hovered else (70, 150, 225)
-                pygame.draw.rect(surface, fill, r, border_radius=18)
-                ic = cap = (255, 255, 255)
-            else:
+                    img = img.copy()
+                    img.set_alpha(120)
+                surface.blit(img, r.topleft)
                 if hovered:
-                    fill, brd, ic, cap = (223, 235, 249), (90, 140, 210), (30, 48, 78), (55, 72, 100)
+                    pygame.draw.circle(surface, (255, 255, 255), r.center,
+                                       bs // 2, max(1, self._sc(3)))
+            else:
+                # volume has no asset -- a circular badge + the vector glyph,
+                # kept round to match the two image buttons beside it
+                if hovered:
+                    fill, ic = (223, 235, 249), (30, 48, 78)
                 else:
-                    fill, brd, ic, cap = (236, 242, 250), (95, 145, 212), (36, 54, 86), (60, 76, 104)
-                pygame.draw.rect(surface, fill, r, border_radius=18)
-                pygame.draw.rect(surface, brd, r, 2, border_radius=18)
-            self._sm_icon(surface, icon, r.centerx, r.centery - int(bs * 0.13), int(bs * 0.22), ic)
-            cs = cap_font.render(label, True, cap)
-            surface.blit(cs, cs.get_rect(center=(r.centerx, r.bottom - int(bs * 0.20))))
+                    fill, ic = (236, 242, 250), (36, 54, 86)
+                pygame.draw.circle(surface, fill, r.center, bs // 2)
+                pygame.draw.circle(surface, (95, 145, 212), r.center, bs // 2, 2)
+                self._sm_icon(surface, icon, r.centerx, r.centery, int(bs * 0.28), ic)
+            if key == "primary" and primary_locked:
+                # BLE handoff countdown -- a numeric overlay, not a word
+                # caption, so it stays even with the labels removed.
+                lock_s = str(lock_ms_left // 1000 + 1)
+                dim = pygame.Surface((bs, bs), pygame.SRCALPHA)
+                pygame.draw.circle(dim, (20, 26, 38, 150), (bs // 2, bs // 2), bs // 2)
+                surface.blit(dim, r.topleft)
+                ls = F["panel_title"].render(lock_s, True, (255, 255, 255))
+                surface.blit(ls, ls.get_rect(center=r.center))
             bx += bs + gap
-
-        # ── emergency STOP: red, separate, lower-right of the interface ──
-        sw, sh = max(int(210 * W / 1920), self._tt(210)), max(int(78 * H / 1080), self._tt(70))
-        self._sm_stop_rect = pygame.Rect(W - sw - int(30 * W / 1920),
-                                         H - sh - int(30 * H / 1080), sw, sh)
-        shov = self._sm_hover == "stop"
-        pygame.draw.rect(surface, (232, 66, 60) if shov else (214, 48, 44),
-                         self._sm_stop_rect, border_radius=14)
-        pygame.draw.rect(surface, (150, 22, 20), self._sm_stop_rect, 2, border_radius=14)
-        gy = self._sm_stop_rect.centery
-        self._sm_icon(surface, "stop", self._sm_stop_rect.left + sh // 2, gy,
-                      int(sh * 0.22), (255, 255, 255))
-        ss = F["btn"].render("STOP", True, (255, 255, 255))
-        surface.blit(ss, ss.get_rect(midleft=(self._sm_stop_rect.left + sh, gy)))
 
         # ── "Game Stopped" screen (both monitors show this) ──
         if self._sm_stopped_notice:
@@ -2714,6 +2728,13 @@ class TherapistDashboardScene:
     def _gc_handle_click(self, pos):
         gc = self.gc
 
+        # ── Single Skill / Integrated Games tab switch ─────────────────
+        for key, r in self._gc_tab_rects.items():
+            if r.collidepoint(pos):
+                play_click()
+                self._gc_active_tab = key
+                return
+
         # ── Skill game picker modal ───────────────────────────────────
         if self._gc_skill_modal_open:
             if self._gc_skill_modal_close.collidepoint(pos):
@@ -3004,11 +3025,19 @@ class TherapistDashboardScene:
         stack_y = ly + s1.get_height() // 2
 
         if self._touch_ui:
+            # Big centered avatar + a small edit badge overlapping its
+            # bottom-right corner, name centered below it -- sized here so
+            # the card height (pc_h) actually fits that vertical stack,
+            # rather than the old fixed-height row.
+            pc_pad_c    = self._sc(10)
+            pc_ir       = self._sc(30)
+            pc_badge_r  = max(self._sc(11), int(pc_ir * 0.42))
+            pc_name_gap = self._sc(6)
+            pc_h = pc_pad_c + pc_ir * 2 + pc_name_gap + self.fnt["profile_nm"].get_height() + pc_pad_c
             # Flow from the measured bottom of the clock/date block. The old
             # fixed 0.205*H put the card at y=98 while the date ran to y=105,
             # so the two overlapped on the 480px-tall panel.
             pc_y = stack_y + self._sc(10)
-            pc_h = self._tt(76)
         else:
             pc_y = int(H*0.11); pc_h = int(H*0.13)
         pc_r = pygame.Rect(int(sw*0.05), pc_y, int(sw*0.90), pc_h)
@@ -3028,26 +3057,37 @@ class TherapistDashboardScene:
             return txt + "…"
 
         if self._touch_ui:
-            # 184px-wide rail: two rows -- [icon] name, then the Edit Profile
-            # link on its own full-width line. The Role is dropped here; it is
-            # still editable (and visible) in the Edit Profile modal.
-            pad_c = self._sc(8)
-            ir = self._sc(15)
-            ix = pc_r.x + pad_c + ir
-            iy = pc_r.y + pad_c + ir
-            draw_icon(surface, self.account.get("icon_index", 1), ix, iy, ir, shadow=True)
-            tx = ix + ir + self._sc(8)
-            surface.blit(
-                f_nm.render(_fit(self.account["full_name"], f_nm,
-                                 pc_r.right - tx - pad_c), True, (40, 55, 75)),
-                (tx, iy - f_nm.get_height() // 2))
-            ec = (50, 120, 200) if self.edit_link_hovered else (75, 140, 210)
-            es = f_sub.render("Edit Profile", True, ec)
-            ep = (pc_r.x + pad_c, pc_r.bottom - pad_c - es.get_height())
-            surface.blit(es, ep)
-            self._edit_link_rect = pygame.Rect(
-                pc_r.x, ep[1] - self._sc(6),
-                pc_r.width, es.get_height() + self._sc(12))
+            # Avatar-first layout (matches the reference mock): big centered
+            # icon, a small round edit badge overlapping its bottom-right
+            # edge (tapping the badge opens Edit Profile -- the separate
+            # "Edit Profile" text link is gone; the Role line stays dropped
+            # here, same as before -- it's still editable in the modal).
+            icon_cx = pc_r.centerx
+            icon_cy = pc_r.y + pc_pad_c + pc_ir
+            draw_icon(surface, self.account.get("icon_index", 1), icon_cx, icon_cy, pc_ir, shadow=True)
+
+            badge_cx = icon_cx + int(pc_ir * 0.72)
+            badge_cy = icon_cy + int(pc_ir * 0.72)
+            ring_r = pc_badge_r + self._sc(3)
+            pygame.draw.circle(surface, (255, 255, 255), (badge_cx, badge_cy), ring_r)
+            badge_img = _img("edit_profile.png", pc_badge_r * 2)
+            if badge_img is not None:
+                surface.blit(badge_img, badge_img.get_rect(center=(badge_cx, badge_cy)))
+            else:
+                ec = (25, 130, 185) if self.edit_link_hovered else (40, 160, 220)
+                pygame.draw.circle(surface, ec, (badge_cx, badge_cy), pc_badge_r)
+            if self.edit_link_hovered:
+                pygame.draw.circle(surface, (255, 255, 255), (badge_cx, badge_cy),
+                                   ring_r, max(1, self._sc(2)))
+
+            name_y = icon_cy + pc_ir + pc_name_gap
+            ns = f_nm.render(_fit(self.account["full_name"], f_nm, pc_r.width - 2 * pc_pad_c),
+                             True, (40, 55, 75))
+            surface.blit(ns, ns.get_rect(midtop=(pc_r.centerx, name_y)))
+
+            tap_d = self._tt(pc_badge_r * 2 + 14)
+            self._edit_link_rect = pygame.Rect(0, 0, tap_d, tap_d)
+            self._edit_link_rect.center = (badge_cx, badge_cy)
         else:
             ir = int(44*(H/1080))
             ix = pc_r.x + int(sw*0.11) + ir
@@ -4976,97 +5016,80 @@ class TherapistDashboardScene:
         self._game_tiles = []
         pad = int(16*W/1920)
 
-        # ── Banner: who we're configuring for + controller status ─────
-        pt    = self.selected_patient or {}
-        pt_nm = pt.get("full_name","—")
-        # Same source of truth as the sidebar monitor, so the two never disagree.
-        _stage, _lab, _det, dot_col, txt_col = self._controller_status()
-        if touch:
-            ble_text = {"connected": "Controller ready",
-                        "scanning":  "Searching…",
-                        "connecting": "Connecting…"}.get(_stage, _lab)
-        else:
-            ble_text = _lab if _stage != "connected" else "Controller Connected"
+        # ── Single Skill Games / Integrated Games tab switch ───────────
+        # Replaces the old "Configuring for: <patient> / Patient ID: ..."
+        # banner (redundant with the sidebar's own Active Patient badge and
+        # controller-status block, both always visible) and the old
+        # always-both-visible stacked rows -- only one group's tiles show
+        # at a time now, Single Skill Games shown by default.
+        tab_h  = self._tt(44) if touch else int(40*H/1080)
+        tab_gap = self._sc(10)
+        f_tab  = self.fnt["body_b"] if touch else self.fnt["body"]
+        tab_y  = pa.y + int(14*H/1080)
+        tab_x  = pa.x + pad
+        self._gc_tab_rects = {}
+        for key, label in (("single", "Single Skill Games"), ("integrated", "Integrated Games")):
+            tab_w = f_tab.size(label)[0] + self._sc(28)
+            tr_tab = pygame.Rect(tab_x, tab_y, tab_w, tab_h)
+            active = (self._gc_active_tab == key)
+            pygame.draw.rect(surface, (35, 45, 65) if active else (255, 255, 255),
+                             tr_tab, border_radius=10)
+            if not active:
+                pygame.draw.rect(surface, (205, 218, 236), tr_tab, 1, border_radius=10)
+            lbl = f_tab.render(label, True, (255, 255, 255) if active else (70, 88, 112))
+            surface.blit(lbl, lbl.get_rect(center=tr_tab.center))
+            self._gc_tab_rects[key] = tr_tab
+            tab_x = tr_tab.right + tab_gap
 
-        ban_h = self._tt(72) if touch else int(50*H/1080)
-        ban_r = pygame.Rect(pa.x+pad, pa.y+int(12*H/1080), pa.width-2*pad, ban_h)
-        pygame.draw.rect(surface,(232,244,255),ban_r,border_radius=10)
-        pygame.draw.rect(surface,(160,205,245),ban_r,1,border_radius=10)
-        f_ban = self.fnt["body"] if touch else self.fnt["small"]
-        if touch:
-            surface.blit(f_ban.render(f"Configuring for:  {pt_nm}", True,(50,100,160)),
-                         (ban_r.x+int(14*W/1920), ban_r.y+int(8*H/1080)))
-            l2 = self.fnt["small"].render(f"Patient ID: {pt.get('patient_id_str','—')}",
-                                         True,(80,110,150))
-            surface.blit(l2, (ban_r.x+int(14*W/1920), ban_r.bottom - l2.get_height() - int(8*H/1080)))
-            bs = self.fnt["small"].render(ble_text, True, txt_col)
-            dr = int(7*H/1080)
-            bx = ban_r.right - bs.get_width() - int(20*W/1920)
-            pygame.draw.circle(surface, dot_col, (bx-dr-int(6*W/1920), ban_r.bottom-l2.get_height()//2-int(8*H/1080)), dr)
-            surface.blit(bs, (bx, ban_r.bottom - bs.get_height() - int(8*H/1080)))
-        else:
-            surface.blit(f_ban.render(f"Configuring session for:  {pt_nm}",
-                         True,(50,100,160)),(ban_r.x+int(12*W/1920),ban_r.y+int(15*H/1080)))
-            bs = self.fnt["small"].render(ble_text, True, txt_col)
-            dr = int(7*H/1080)
-            dx = ban_r.right - bs.get_width() - dr*2 - int(24*W/1920)
-            pygame.draw.circle(surface, dot_col, (dx, ban_r.centery), dr)
-            surface.blit(bs, (dx + dr + int(8*W/1920), ban_r.centery - bs.get_height()//2))
-
-        # ── Game tiles ───────────────────────────────────────────────
+        # ── Game tiles (whichever group is active) ─────────────────────
         tg = int(14*W/1920)
         if touch:
             tw = (pa.width - 2*pad - 2*tg) // 3
-            th = self._tt(74)
+            th = self._tt(96)
         else:
             tw = int(460*W/1920); th = int(120*H/1080)
 
-        game_y = ban_r.bottom + int((22 if touch else 24)*H/1080)
-        surface.blit((self.fnt["body_b"] if touch else self.fnt["small"]).render(
-            "Single Skill Games", True, (75,95,125)), (pa.x + pad, game_y))
-        ty = game_y + (self.fnt["body_b"] if touch else self.fnt["small"]).get_height() + int(10*H/1080)
+        ty = tab_y + tab_h + int((20 if touch else 24)*H/1080)
+        active_games = SINGLE_SKILL_GAMES if self._gc_active_tab == "single" else INTEGRATED_GAMES
+        idx_offset = 0 if self._gc_active_tab == "single" else len(SINGLE_SKILL_GAMES)
 
-        ss_total_w = len(SINGLE_SKILL_GAMES) * tw + (len(SINGLE_SKILL_GAMES) - 1) * tg
-        ss_start_x = pa.x + (pa.width - ss_total_w) // 2
-        for i, (gname, gtype) in enumerate(SINGLE_SKILL_GAMES):
-            tx  = ss_start_x + i * (tw + tg)
+        total_w = len(active_games) * tw + (len(active_games) - 1) * tg
+        start_x = pa.x + (pa.width - total_w) // 2
+        img_pad = self._sc(10)
+        for i, (gname, gtype) in enumerate(active_games):
+            tx  = start_x + i * (tw + tg)
             tr  = pygame.Rect(tx, ty, tw, th)
             sel = gc["selected_game"] and gc["selected_game"][1] == gtype
-            bc  = PANEL_COLORS.get(i, (180,200,220)) if sel else (210,220,235)
-            _card_bg(surface, tr, alpha=245 if sel else 200, border_col=bc, border_w=2 if sel else 1)
-            _fg = self.fnt["label"] if touch else self.fnt["body_b"]
-            if sel and gc["selected_game"]:
-                lbl_s = _fg.render(gtype, True, bc)
-                surface.blit(lbl_s, lbl_s.get_rect(midleft=(tr.x + int(14*W/1920), tr.centery - _fg.get_height()//2)))
-                sub = self.fnt["small"].render(gc["selected_game"][0], True, bc)
-                surface.blit(sub, sub.get_rect(midleft=(tr.x + int(14*W/1920), tr.centery + _fg.get_height()//2)))
+            bc  = PANEL_COLORS.get(idx_offset + i, (180,200,220)) if sel else (210,220,235)
+            _card_bg(surface, tr, alpha=245 if sel else 200, border_col=bc, border_w=3 if sel else 1)
+
+            # When selected, the image shrinks a little to leave dedicated
+            # room for the "which specific game" caption below it (Wrist
+            # Rotation maps to several games) -- the caption used to overlay
+            # the image directly and collide with its own baked-in label.
+            cap_h = (self.fnt["small"].get_height() + self._sc(6)) if (sel and gc["selected_game"]) else 0
+            img = _img_fit(GAME_TILE_ASSETS.get(gtype), tw - 2*img_pad, th - 2*img_pad - cap_h)
+            if img is not None:
+                img_r = img.get_rect()
+                img_r.centerx = tr.centerx
+                img_r.top = tr.y + img_pad
+                surface.blit(img, img_r)
             else:
+                # fallback if an asset is ever missing -- the original text tile
+                _fg = self.fnt["label"] if touch else self.fnt["body_b"]
                 lbl_s = _fg.render(gtype, True, (55,72,95))
-                surface.blit(lbl_s, lbl_s.get_rect(midleft=(tr.x + int(14*W/1920), tr.centery)))
-            self._game_tiles.append((tr, (gname, gtype)))
+                img_r = lbl_s.get_rect(center=tr.center)
+                surface.blit(lbl_s, img_r)
 
-        ig_label_y = ty + th + int((24 if touch else 50)*H/1080)
-        surface.blit((self.fnt["body_b"] if touch else self.fnt["small"]).render(
-            "Integrated Games", True, (75,95,125)), (pa.x + pad, ig_label_y))
-        gy2 = ig_label_y + (self.fnt["body_b"] if touch else self.fnt["small"]).get_height() + int(10*H/1080)
-
-        ig_total_w = len(INTEGRATED_GAMES) * tw + (len(INTEGRATED_GAMES) - 1) * tg
-        ig_start_x = pa.x + (pa.width - ig_total_w) // 2
-        for i, (gname, gtype) in enumerate(INTEGRATED_GAMES):
-            tx  = ig_start_x + i * (tw + tg)
-            tr  = pygame.Rect(tx, gy2, tw, th)
-            sel = gc["selected_game"] and gc["selected_game"][1] == gtype
-            bc  = PANEL_COLORS.get(i + 3, (180,200,220)) if sel else (210,220,235)
-            _card_bg(surface, tr, alpha=245 if sel else 200, border_col=bc, border_w=2 if sel else 1)
-            _fg = self.fnt["label"] if touch else self.fnt["body_b"]
             if sel and gc["selected_game"]:
-                lbl_s = _fg.render(gtype, True, bc)
-                surface.blit(lbl_s, lbl_s.get_rect(midleft=(tr.x + int(14*W/1920), tr.centery - _fg.get_height()//2)))
-                sub = self.fnt["small"].render(gc["selected_game"][0], True, bc)
-                surface.blit(sub, sub.get_rect(midleft=(tr.x + int(14*W/1920), tr.centery + _fg.get_height()//2)))
-            else:
-                lbl_s = _fg.render(gname, True, (55,72,95))
-                surface.blit(lbl_s, lbl_s.get_rect(center=tr.center))
+                cap_txt = self.fnt["small"].render(gc["selected_game"][0], True, (255, 255, 255))
+                cap_r = pygame.Rect(0, 0, cap_txt.get_width() + self._sc(14), cap_txt.get_height() + self._sc(6))
+                cap_r.midtop = (tr.centerx, img_r.bottom + self._sc(4))
+                cap_bg = pygame.Surface(cap_r.size, pygame.SRCALPHA)
+                pygame.draw.rect(cap_bg, (*bc, 235), (0, 0, *cap_r.size), border_radius=cap_r.height // 2)
+                surface.blit(cap_bg, cap_r.topleft)
+                surface.blit(cap_txt, cap_txt.get_rect(center=cap_r.center))
+
             self._game_tiles.append((tr, (gname, gtype)))
 
         # ── Proceed to Start Calibration button ───────────────────────
