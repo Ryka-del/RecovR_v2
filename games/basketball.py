@@ -42,8 +42,48 @@ _BALL_COL  = (210,  95,  20)
 _BALL_SEAM = ( 20,  10,   5)
 _BALL_HI   = (240, 135,  55)
 
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_img_cache = {}
+
+
+def _load_image(name, size):
+    """A square asset scaled uniformly to `size` (a (w, h) tuple) and cached.
+    Returns None if the file is missing so callers can fall back to the
+    original vector drawing instead of crashing."""
+    key = (name, size)
+    if key not in _img_cache:
+        try:
+            raw = pygame.image.load(os.path.join(_ROOT, "assets", "images", name)).convert_alpha()
+            _img_cache[key] = pygame.transform.smoothscale(raw, size)
+        except Exception:
+            _img_cache[key] = None
+    return _img_cache[key]
+
+
+def _load_image_fit(name, w, h):
+    """Like _load_image(), but for an asset with extra transparent padding
+    baked into its square canvas (e.g. a wide backboard graphic) -- crops to
+    the actual opaque content, then scales to fit within w x h preserving
+    its own aspect ratio instead of squashing it to a w x h square."""
+    key = ("fit", name, w, h)
+    if key not in _img_cache:
+        try:
+            raw = pygame.image.load(os.path.join(_ROOT, "assets", "images", name)).convert_alpha()
+            cropped = raw.subsurface(raw.get_bounding_rect(min_alpha=10)).copy()
+            cw, ch = cropped.get_size()
+            scale = min(w / cw, h / ch)
+            _img_cache[key] = pygame.transform.smoothscale(
+                cropped, (max(1, int(cw * scale)), max(1, int(ch * scale))))
+        except Exception:
+            _img_cache[key] = None
+    return _img_cache[key]
+
 
 def _draw_basketball(surface, cx, cy, r):
+    img = _load_image("basketball_ball.png", (r * 2, r * 2))
+    if img is not None:
+        surface.blit(img, img.get_rect(center=(cx, cy)))
+        return
     pygame.draw.circle(surface, _BALL_COL, (cx, cy), r)
     pygame.draw.line(surface, _BALL_SEAM, (cx - r + 4, cy), (cx + r - 4, cy), 2)
     pts = []
@@ -70,12 +110,16 @@ def _draw_hoop_back(surface, hx, hy):
     bw, bh = 150, 75
     bx = hcx - bw // 2
     by = hcy - bh - HOOP_RY - 8   # 8 px gap above top of rim arc
-    pygame.draw.rect(surface, _BOARD_COL, (bx, by, bw, bh), border_radius=4)
-    pygame.draw.rect(surface, _BOARD_EDG, (bx, by, bw, bh), 3, border_radius=4)
-    sq_m = 14
-    sq_by = by + bh // 2
-    sq_bh = bh // 2 - sq_m
-    pygame.draw.rect(surface, _BOARD_EDG, (bx + sq_m, sq_by, bw - sq_m * 2, sq_bh), 2)
+    board_img = _load_image_fit("basketball_board.png", bw, bh)
+    if board_img is not None:
+        surface.blit(board_img, board_img.get_rect(center=(hcx, by + bh // 2)))
+    else:
+        pygame.draw.rect(surface, _BOARD_COL, (bx, by, bw, bh), border_radius=4)
+        pygame.draw.rect(surface, _BOARD_EDG, (bx, by, bw, bh), 3, border_radius=4)
+        sq_m = 14
+        sq_by = by + bh // 2
+        sq_bh = bh // 2 - sq_m
+        pygame.draw.rect(surface, _BOARD_EDG, (bx + sq_m, sq_by, bw - sq_m * 2, sq_bh), 2)
 
     # Vertical bracket connecting backboard bottom to rim top
     brkt_top = by + bh

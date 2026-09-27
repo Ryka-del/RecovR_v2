@@ -201,6 +201,26 @@ def _btn(surface, rect, label, font, col_normal, col_hover, hovered, radius=10):
     surface.blit(s, s.get_rect(center=rect.center))
 
 
+def _img_btn(surface, rect, asset, enabled, hovered, fallback_label, font,
+             col_normal=(40, 160, 80), col_disabled=(175, 188, 202), radius=10):
+    """A button drawn from a pill-shaped asset (assets/images/), replacing
+    the old colored-rect + text _btn() for these specific buttons. Falls
+    back to the original _btn() look if the asset is ever missing."""
+    img = _img_fit(asset, rect.width, rect.height)
+    if img is not None:
+        if not enabled:
+            img = img.copy()
+            img.set_alpha(120)
+        surface.blit(img, img.get_rect(center=rect.center))
+        if hovered and enabled:
+            pygame.draw.rect(surface, (255, 255, 255), rect,
+                             max(1, int(rect.height * 0.05)), border_radius=radius)
+    else:
+        col = col_normal if enabled else col_disabled
+        colh = tuple(max(0, c - 15) for c in col_normal) if enabled else col_disabled
+        _btn(surface, rect, fallback_label, font, col, colh, hovered and enabled, radius=radius)
+
+
 _IMG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "assets", "images")
 _img_cache: dict = {}
@@ -469,6 +489,11 @@ class TherapistDashboardScene:
         self._ss_param_rects       = {}     # {"duration": Rect, "speed": Rect}
         self._ss_custom_dur_active = False
         self._ss_custom_dur_rect   = pygame.Rect(0, 0, 1, 1)
+        self._ss_scroll     = 0
+        self._ss_scroll_max = 0
+        self._ss_up_rect    = pygame.Rect(0, 0, 1, 1)
+        self._ss_down_rect  = pygame.Rect(0, 0, 1, 1)
+        self._ss_drag_y     = None
 
         # ── Interactive UI element rects ──
         # These store clickable areas for various buttons/interactive elements
@@ -976,6 +1001,23 @@ class TherapistDashboardScene:
             elif event.type == pygame.FINGERUP:
                 self._cr_drag_y = None
 
+        # ── Start Session scrolling (wheel + touch drag) ──────────────
+        if self.active_panel == 5:
+            if event.type == pygame.MOUSEWHEEL:
+                self._ss_scroll = max(0, min(self._ss_scroll - event.y * int(60 * self._fs),
+                                             self._ss_scroll_max))
+                return None
+            if event.type == pygame.FINGERDOWN:
+                self._ss_drag_y = event.y * self.HEIGHT
+            elif event.type == pygame.FINGERMOTION and self._ss_drag_y is not None:
+                cy = event.y * self.HEIGHT
+                self._ss_scroll = max(0, min(self._ss_scroll + (self._ss_drag_y - cy),
+                                             self._ss_scroll_max))
+                self._ss_drag_y = cy
+                return None
+            elif event.type == pygame.FINGERUP:
+                self._ss_drag_y = None
+
         # ── Patient page Info tab: scroll the field list ────────────
         if self.active_panel == 8 and self._pv_tab == "info":
             if event.type == pygame.MOUSEWHEEL:
@@ -1432,6 +1474,12 @@ class TherapistDashboardScene:
 
         # ── Panel 5: Start Session ────────────────────────────────────
         if self.active_panel == 5:
+            if self._ss_up_rect.collidepoint(pos):
+                play_click(); self._ss_scroll = max(0, self._ss_scroll - int(160*self._fs)); return None
+            if self._ss_down_rect.collidepoint(pos):
+                play_click()
+                self._ss_scroll = min(self._ss_scroll_max, self._ss_scroll + int(160*self._fs))
+                return None
             # ── Session Details dropdown intercept (highest priority) ──
             if self._ss_open_param:
                 open_key, open_opts = self._ss_open_param
@@ -3484,11 +3532,18 @@ class TherapistDashboardScene:
         if idx in (4, 5, 6, 7, 8):
             back_w = max(int(140*(W/1920)), self._tt(128))
             back_r = pygame.Rect(hdr.x, hdr.y, back_w, hdr.height)
-            glass_back = pygame.Surface((back_r.width, back_r.height), pygame.SRCALPHA)
-            glass_back.fill((225, 238, 255, 180)); surface.blit(glass_back, back_r.topleft)
-            pygame.draw.rect(surface, (150,180,215), back_r, 2, border_radius=8)
-            bs = self.fnt["btn"].render("Back", True, (60,100,165))
-            surface.blit(bs, bs.get_rect(center=back_r.center))
+            back_hov = back_r.collidepoint(pygame.mouse.get_pos())
+            back_img = _img_fit("back_button_therapist.png", back_r.width, back_r.height)
+            if back_img is not None:
+                surface.blit(back_img, back_img.get_rect(center=back_r.center))
+                if back_hov:
+                    pygame.draw.rect(surface, (255, 255, 255), back_r, 2, border_radius=8)
+            else:
+                glass_back = pygame.Surface((back_r.width, back_r.height), pygame.SRCALPHA)
+                glass_back.fill((225, 238, 255, 180)); surface.blit(glass_back, back_r.topleft)
+                pygame.draw.rect(surface, (150,180,215), back_r, 2, border_radius=8)
+                bs = self.fnt["btn"].render("Back", True, (60,100,165))
+                surface.blit(bs, bs.get_rect(center=back_r.center))
             self._back_btn_rect = back_r
             crumb_x = back_r.right + int(20*(W/1920))
         else:
@@ -3638,8 +3693,9 @@ class TherapistDashboardScene:
 
         reg_w = self.fnt["btn"].size("+ Register Patient")[0] + int(36*W/1920)
         reg_r = pygame.Rect(pa.right-pad-reg_w, hint_r.y, reg_w, sb_h)
-        _btn(surface, reg_r, "+ Register Patient", self.fnt["btn"],
-             (20,150,165), (15,125,140), self.register_link_hov, radius=int(sb_h*0.4))
+        _img_btn(surface, reg_r, "reg_pat_therapist.png", True, self.register_link_hov,
+                "+ Register Patient", self.fnt["btn"],
+                col_normal=(20,150,165), radius=int(sb_h*0.4))
         self._register_link_rect = reg_r
 
         hdr_y  = hint_r.bottom + int(20*H/1080)
@@ -4510,7 +4566,10 @@ class TherapistDashboardScene:
         # Only the OWNER may edit. A shared patient is read-only here, so the
         # per-section Edit buttons are simply not drawn for a non-owner.
         can_edit = self._is_owner(pt)
-        edit_w   = edit_h = self._tt(34)
+        # _tt() floors interactive controls at 50px on touch -- too big here
+        # and it was overlapping neighbouring text; this icon is small and
+        # decorative, with a separate touch-safe tap target drawn below.
+        edit_w   = edit_h = self._sc(20)
 
         # measure -> total content height
         groups = self._pv_info_fields(pt)
@@ -4549,7 +4608,12 @@ class TherapistDashboardScene:
                     if sec and can_edit:
                         # Immediately beside the subtitle, not pushed to the
                         # far right of the card -- clearly "this button
-                        # belongs to this section", per row.
+                        # belongs to this section", per row. Drawn small (no
+                        # touch floor) so it doesn't overlap the subtitle
+                        # text or crowd neighbouring rows; the actual tap
+                        # target stays touch-safe by being bigger than what's
+                        # drawn, centered on the same spot (same pattern as
+                        # the sidebar profile's edit badge).
                         er = pygame.Rect(x0 + hdr_s.get_width() + self._sc(14),
                                          y + (hdr_s.get_height() - edit_h) // 2,
                                          edit_w, edit_h)
@@ -4565,7 +4629,10 @@ class TherapistDashboardScene:
                             surface.blit(es, es.get_rect(center=er.center))
                         # only clickable while actually on screen
                         if er.top >= top and er.bottom <= bottom:
-                            self._pv_sec_edit_rects[sec] = er
+                            tap_d = self._tt(38)
+                            tap_r = pygame.Rect(0, 0, tap_d, tap_d)
+                            tap_r.center = er.center
+                            self._pv_sec_edit_rects[sec] = tap_r
                     hl_y = y + max(lh, edit_h) - int(4 * H / 1080)
                     pygame.draw.line(surface, (200, 214, 232),
                                      (x0, hl_y), (pa.right - int(30 * W / 1920), hl_y), 1)
@@ -5041,13 +5108,17 @@ class TherapistDashboardScene:
             self._gc_tab_rects[key] = tr_tab
             tab_x = tr_tab.right + tab_gap
 
-        # ── Game tiles (whichever group is active) ─────────────────────
+        # ── Game tiles (whichever group is active) ──────────────────────
+        # No card/box behind the sprite any more -- it IS the button now.
+        # Selection is shown with a soft glow behind the sprite (never a
+        # hard-edged container) plus the same "which specific game" caption
+        # as before.
         tg = int(14*W/1920)
         if touch:
             tw = (pa.width - 2*pad - 2*tg) // 3
-            th = self._tt(96)
+            th = self._tt(150)
         else:
-            tw = int(460*W/1920); th = int(120*H/1080)
+            tw = int(460*W/1920); th = int(170*H/1080)
 
         ty = tab_y + tab_h + int((20 if touch else 24)*H/1080)
         active_games = SINGLE_SKILL_GAMES if self._gc_active_tab == "single" else INTEGRATED_GAMES
@@ -5055,13 +5126,12 @@ class TherapistDashboardScene:
 
         total_w = len(active_games) * tw + (len(active_games) - 1) * tg
         start_x = pa.x + (pa.width - total_w) // 2
-        img_pad = self._sc(10)
+        img_pad = self._sc(4)
         for i, (gname, gtype) in enumerate(active_games):
             tx  = start_x + i * (tw + tg)
             tr  = pygame.Rect(tx, ty, tw, th)
             sel = gc["selected_game"] and gc["selected_game"][1] == gtype
-            bc  = PANEL_COLORS.get(idx_offset + i, (180,200,220)) if sel else (210,220,235)
-            _card_bg(surface, tr, alpha=245 if sel else 200, border_col=bc, border_w=3 if sel else 1)
+            bc  = PANEL_COLORS.get(idx_offset + i, (180,200,220))
 
             # When selected, the image shrinks a little to leave dedicated
             # room for the "which specific game" caption below it (Wrist
@@ -5073,6 +5143,16 @@ class TherapistDashboardScene:
                 img_r = img.get_rect()
                 img_r.centerx = tr.centerx
                 img_r.top = tr.y + img_pad
+                if sel:
+                    # soft glow, not a box -- several progressively larger,
+                    # more transparent rounded rects behind the sprite
+                    for k in range(4, 0, -1):
+                        infl = k * self._sc(5)
+                        glow_r = img_r.inflate(infl * 2, infl * 2)
+                        glow_s = pygame.Surface(glow_r.size, pygame.SRCALPHA)
+                        pygame.draw.rect(glow_s, (*bc, max(12, 55 // k)),
+                                         (0, 0, *glow_r.size), border_radius=glow_r.height // 2)
+                        surface.blit(glow_s, glow_r.topleft)
                 surface.blit(img, img_r)
             else:
                 # fallback if an asset is ever missing -- the original text tile
@@ -5334,10 +5414,8 @@ class TherapistDashboardScene:
         ready = self._session_ready()
         btn_r = pygame.Rect(pa.centerx-int(140*W/1920), pa.bottom-int(56*H/1080),
                             int(280*W/1920), int(48*H/1080))
-        bc = (40,160,80)  if ready else (175,188,202)
-        bh = (28,130,62)  if ready else (155,168,182)
-        _btn(surface, btn_r, "Start Session", self.fnt["btn"],
-             bc, bh, self.start_hov and ready, radius=14)
+        _img_btn(surface, btn_r, "next_button.png", ready, self.start_hov,
+                "Start Session", self.fnt["btn"], radius=14)
         self._start_btn_rect = btn_r if ready else pygame.Rect(0, 0, 1, 1)
 
         # ── Custom duration text input (drawn AFTER other content) ────
@@ -5380,12 +5458,30 @@ class TherapistDashboardScene:
         W, H = self.WIDTH, self.HEIGHT
         pad = int(16*W/1920)
         x0  = pa.x + pad
-        y   = pa.y + int(10*H/1080)
 
         gname = gc["selected_game"][0] if gc["selected_game"] else "—"
         gtype = (gc.get("selected_game") or (None, ""))[1] or ""
 
-        # ── readiness checklist (compact) ──
+        # ── bottom action row geometry, computed first: the scrollable
+        # content above must stop clear of it. (This pair used to be
+        # anchored purely to pa.bottom while the content above was anchored
+        # purely to its own flow -- on a short panel the two could land on
+        # the same row and visibly overlap.) ──
+        bb_lbl = "Disable Bypass" if cal_done else "Bypass Calibration"
+        bb_w = self.fnt["small"].size(bb_lbl)[0] + self._tt(28)
+        byp_r = pygame.Rect(x0, pa.bottom - self._tt(50) - int(6*H/1080), bb_w, self._tt(46))
+
+        ready = self._session_ready()
+        sw2 = self.fnt["btn"].size("Start Session")[0] + self._tt(52)
+        st_r = pygame.Rect(pa.right - pad - sw2, pa.bottom - self._tt(60) - int(4*H/1080),
+                           sw2, self._tt(58))
+
+        view_top    = pa.y + int(10*H/1080)
+        view_bottom = min(byp_r.top, st_r.top) - self._sc(10)
+        view_h      = view_bottom - view_top
+
+        # ── measure content height (checklist + session-details card +
+        # calibration status row) so it can scroll if it doesn't fit ──
         steps = [
             ("Patient selected",   True),
             ("Game configured",    gc["selected_game"] is not None),
@@ -5395,6 +5491,30 @@ class TherapistDashboardScene:
         ]
         rh  = self._sc(42)
         dot = self._sc(7)
+        checklist_h = len(steps) * rh + int(10*H/1080)
+
+        sd_pad = int(10*H/1080)
+        sd_h = (sd_pad
+                + self.fnt["body_b"].get_height() + int(6*H/1080)
+                + 2 * (self.fnt["body"].get_height() + int(6*H/1080))
+                + self.fnt["small"].get_height() + int(2*H/1080)
+                + self._tt(52)
+                + sd_pad)
+
+        cal_row_h = self.fnt["body_b"].get_height() + int(14*H/1080)
+
+        content_h = checklist_h + sd_h + int(14*H/1080) + cal_row_h
+        self._ss_scroll_max = max(0, content_h - view_h)
+        self._ss_scroll     = max(0, min(self._ss_scroll, self._ss_scroll_max))
+        scrollable  = self._ss_scroll_max > 0
+        arrow_w     = self._tt(40) if scrollable else 0
+        content_right = pa.right - (arrow_w + self._sc(8) if scrollable else 0)
+
+        prev_clip = surface.get_clip()
+        surface.set_clip(pygame.Rect(pa.x + 1, view_top, content_right - pa.x - 1, view_h))
+        y = view_top - self._ss_scroll
+
+        # ── readiness checklist (compact) ──
         for lbl, ok in steps:
             col = (55,175,75) if ok else ((220,140,30) if ("mismatch" in lbl) else (196,206,220))
             pygame.draw.circle(surface, col, (x0 + dot, y + rh//2), dot)
@@ -5405,7 +5525,7 @@ class TherapistDashboardScene:
         y += int(10*H/1080)
 
         # ── session details card ──
-        sd = pygame.Rect(x0, y, pa.width - 2*pad, self._tt(210))
+        sd = pygame.Rect(x0, y, content_right - pad - x0, sd_h)
         _card_bg(surface, sd, alpha=235, border_col=(185,210,240), border_w=1)
         sy = sd.y + int(10*H/1080)
         surface.blit(self.fnt["body_b"].render("Session Details", True, (75,95,125)),
@@ -5438,7 +5558,9 @@ class TherapistDashboardScene:
             surface.blit(self.fnt["sym26"].render("▼", True, (90,110,140)),
                          self.fnt["sym26"].render("▼", True, (90,110,140)).get_rect(
                              midright=(pr.right - int(10*W/1920), pr.centery)))
-            self._ss_param_rects[pk] = pr
+            # only clickable while actually within the visible viewport
+            if pr.top >= view_top and pr.bottom <= view_bottom:
+                self._ss_param_rects[pk] = pr
             fx += fw + int(12*W/1920)
         y = sd.bottom + int(14*H/1080)
 
@@ -5454,29 +5576,40 @@ class TherapistDashboardScene:
         surface.blit(self.fnt["body_b"].render(cs_txt, True, cs_col), (x0, y + int(6*H/1080)))
         if cal_lbl:
             cw = self.fnt["btn"].size(cal_lbl)[0] + self._tt(36)
-            cal_r = pygame.Rect(pa.right - pad - cw, y, cw, self._tt(52))
+            cal_r = pygame.Rect(content_right - cw, y, cw, self._tt(52))
             _btn(surface, cal_r, cal_lbl, self.fnt["btn"], (225,165,30), (195,135,15),
                  self._calibrate_hov, radius=10)
-            self._calibrate_btn_rect = cal_r
+            self._calibrate_btn_rect = cal_r if (cal_r.top >= view_top and cal_r.bottom <= view_bottom) \
+                else pygame.Rect(0, 0, 1, 1)
         else:
             self._calibrate_btn_rect = pygame.Rect(0,0,1,1)
 
-        # ── bottom action row: Bypass (small) + Start Session (big) ──
-        bb_lbl = "Disable Bypass" if cal_done else "Bypass Calibration"
-        bb_w = self.fnt["small"].size(bb_lbl)[0] + self._tt(28)
-        byp_r = pygame.Rect(x0, pa.bottom - self._tt(50) - int(6*H/1080), bb_w, self._tt(46))
+        surface.set_clip(prev_clip)
+
+        # ── scroll arrows (only when the content overflows) ───────────
+        if scrollable:
+            ah = view_h // 2 - self._sc(4)
+            ax = pa.right - arrow_w
+            self._ss_up_rect   = pygame.Rect(ax, view_top, arrow_w, ah)
+            self._ss_down_rect = pygame.Rect(ax, view_top + ah + self._sc(8), arrow_w, ah)
+            for r, tri, on in ((self._ss_up_rect, "▲", self._ss_scroll > 0),
+                               (self._ss_down_rect, "▼", self._ss_scroll < self._ss_scroll_max)):
+                pygame.draw.rect(surface, (226,238,250) if on else (238,240,244), r, border_radius=8)
+                pygame.draw.rect(surface, (150,175,210), r, 1, border_radius=8)
+                g = self.fnt["nav_sym"].render(tri, True, (45,90,150) if on else (185,193,203))
+                surface.blit(g, g.get_rect(center=r.center))
+        else:
+            self._ss_up_rect = self._ss_down_rect = pygame.Rect(0, 0, 1, 1)
+
+        # ── bottom action row: Bypass (small) + Start Session (big) --
+        # fixed, unclipped, always reachable regardless of scroll position ──
         _btn(surface, byp_r, bb_lbl, self.fnt["small"],
              (160,60,60) if cal_done else (110,110,128),
              (130,35,35) if cal_done else (85,85,105), self._bypass_hov, radius=8)
         self._bypass_btn_rect = byp_r
 
-        ready = self._session_ready()
-        sw2 = self.fnt["btn"].size("Start Session")[0] + self._tt(52)
-        st_r = pygame.Rect(pa.right - pad - sw2, pa.bottom - self._tt(60) - int(4*H/1080),
-                           sw2, self._tt(58))
-        _btn(surface, st_r, "Start Session", self.fnt["btn"],
-             (40,160,80) if ready else (175,188,202),
-             (28,130,62) if ready else (155,168,182), self.start_hov and ready, radius=14)
+        _img_btn(surface, st_r, "next_button.png", ready, self.start_hov,
+                "Start Session", self.fnt["btn"], radius=14)
         self._start_btn_rect = st_r if ready else pygame.Rect(0,0,1,1)
         self._ss_custom_dur_rect = pygame.Rect(0,0,1,1)
 

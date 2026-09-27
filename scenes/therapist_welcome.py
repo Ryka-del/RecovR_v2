@@ -7,6 +7,7 @@ import os
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from audio import play_welcome, play_click
+from scenes.therapist_dashboard import _img as _dash_img
 
 # Dual-monitor mode only: clicking START here must also flip the shared session
 # so the patient window leaves its Welcome splash for the Waiting Screen. Inert
@@ -245,30 +246,43 @@ class TherapistWelcomeScene:
             self.color_hover_shadow  = (15,  90,  135)
             self.color_text          = (255, 255, 255)
 
-            self.text_surf  = font_button.render("Start", True, self.color_text)
+            # Round play-button artwork replaces the old pill + "Start" text.
+            # rect/hit_rect (tap area) are unchanged -- only the visual is new.
+            self.icon_d     = int(self.height * 0.92)
+            self.icon_img   = _dash_img("welcome_start.png", self.icon_d)
+            self.text_surf  = font_button.render("Start", True, self.color_text)  # fallback only
             self.is_hovered = False
 
         def update(self, mouse_pos):
             self.is_hovered = self.hit_rect.collidepoint(mouse_pos)
 
         def draw(self, surface):
-            main_col   = self.color_hover        if self.is_hovered else self.color_normal
-            shadow_col = self.color_hover_shadow if self.is_hovered else self.color_normal_shadow
-            offset     = self.shadow_depth // 2  if self.is_hovered else 0
-
-            shadow_rect = pygame.Rect(
-                self.rect.x, self.rect.y + self.shadow_depth,
-                self.width, self.height
-            )
-            pygame.draw.rect(surface, shadow_col, shadow_rect, border_radius=14)
-
+            offset = self.shadow_depth // 2 if self.is_hovered else 0
             body_rect = pygame.Rect(
                 self.rect.x, self.rect.y + offset,
                 self.width, self.height
             )
-            pygame.draw.rect(surface, main_col, body_rect, border_radius=14)
-
-            surface.blit(self.text_surf, self.text_surf.get_rect(center=body_rect.center))
+            if self.icon_img is not None:
+                icon_rect = self.icon_img.get_rect(center=body_rect.center)
+                shadow = pygame.Surface(self.icon_img.get_size(), pygame.SRCALPHA)
+                pygame.draw.circle(shadow, (10, 30, 50, 90),
+                                   (self.icon_d // 2, self.icon_d // 2), self.icon_d // 2)
+                surface.blit(shadow, (icon_rect.x, icon_rect.y + self.shadow_depth))
+                surface.blit(self.icon_img, icon_rect)
+                if self.is_hovered:
+                    pygame.draw.circle(surface, (255, 255, 255), icon_rect.center,
+                                       self.icon_d // 2 + 2, 3)
+            else:
+                # fallback if the asset is ever missing -- the original pill button
+                main_col   = self.color_hover        if self.is_hovered else self.color_normal
+                shadow_col = self.color_hover_shadow if self.is_hovered else self.color_normal_shadow
+                shadow_rect = pygame.Rect(
+                    self.rect.x, self.rect.y + self.shadow_depth,
+                    self.width, self.height
+                )
+                pygame.draw.rect(surface, shadow_col, shadow_rect, border_radius=14)
+                pygame.draw.rect(surface, main_col, body_rect, border_radius=14)
+                surface.blit(self.text_surf, self.text_surf.get_rect(center=body_rect.center))
 
         def handle_click(self, event):
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
