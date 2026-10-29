@@ -269,9 +269,6 @@ class TherapistWelcomeScene:
                                    (self.icon_d // 2, self.icon_d // 2), self.icon_d // 2)
                 surface.blit(shadow, (icon_rect.x, icon_rect.y + self.shadow_depth))
                 surface.blit(self.icon_img, icon_rect)
-                if self.is_hovered:
-                    pygame.draw.circle(surface, (255, 255, 255), icon_rect.center,
-                                       self.icon_d // 2 + 2, 3)
             else:
                 # fallback if the asset is ever missing -- the original pill button
                 main_col   = self.color_hover        if self.is_hovered else self.color_normal

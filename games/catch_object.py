@@ -16,6 +16,7 @@ from games.fatigue import FatigueMixin
 from sensors.input_handler import input_handler
 from audio import play_success, start_music, stop_music, play_completion, play_click
 from constants import get_theme, GAME_W, GAME_H
+from games.game_header import draw_game_header, HEADER_BOTTOM
 
 THRESHOLDS   = {"Easy": 0.30, "Medium": 0.45, "Hard": 0.60}
 FALL_SPEEDS  = {"Easy": 100, "Medium": 180, "Hard": 280}
@@ -90,7 +91,7 @@ class CatchObjectGame(FatigueMixin, BaseScreen):
         except Exception:
             self.pause_vol = 0.4
 
-        self._pause_btn_rect     = pygame.Rect(GAME_W - 90, 13, 70, 46)
+        self._pause_btn_rect     = pygame.Rect(GAME_W - 90, HEADER_BOTTOM + 14, 70, 46)
         self._results_again_rect = pygame.Rect(0, 0, 1, 1)
         self._results_exit_rect  = pygame.Rect(0, 0, 1, 1)
 
@@ -351,7 +352,6 @@ class CatchObjectGame(FatigueMixin, BaseScreen):
             self._draw_instructions(surface)
             return
 
-        font_hud = self._font_hud
         font_sm  = self._font_sm
 
         for obj in self.objects:
@@ -398,17 +398,8 @@ class CatchObjectGame(FatigueMixin, BaseScreen):
         pygame.draw.circle(surface, T["ACCENT"], (ind_x, iby + 6), 10)
 
         # Top HUD
-        pygame.draw.rect(surface, T["PANEL"], (0, 0, GAME_W, 72))
-        pygame.draw.line(surface, T["ACCENT"], (0, 72), (GAME_W, 72), 1)
-        diff_col = {"Easy": T["GREEN"], "Medium": T["YELLOW"], "Hard": T["RED"]}[self.difficulty]
-        surface.blit(font_hud.render(
-            f"CATCH OBJECT  ·  {self.difficulty.upper()}", True, diff_col), (80, 18))
-        surface.blit(font_hud.render(
-            f"Score: {self.score:02d}", True, T["ACCENT"]),
-            (GAME_W//2 - 80, 18))
-        time_col = T["RED"] if self.time_left < 10 else T["TEXT"]
-        time_s = font_hud.render(f"{max(0, int(self.time_left)):02d}s", True, time_col)
-        surface.blit(time_s, time_s.get_rect(right=self._pause_btn_rect.left - 24, y=18))
+        draw_game_header(surface, "Catch the Falling Object", self.difficulty,
+                          self.time_left, self.score, GAME_W, GAME_H)
 
         surface.blit(font_sm.render(
             f"Missed {self.misses}", True, T["RED"]),

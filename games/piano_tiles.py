@@ -14,6 +14,7 @@ from games.fatigue import FatigueMixin
 from sensors.input_handler import input_handler
 from audio import play_success, play_error, play_completion, start_music, stop_music, game_music_path, play_click
 from constants import get_theme, GAME_W, GAME_H
+from games.game_header import draw_game_header, HEADER_BOTTOM
 
 BASE_SPEED  = {"Easy": 280, "Medium": 420, "Hard": 580}
 BASE_SPAWN  = {"Easy": 1.0, "Medium": 0.7, "Hard": 0.45}
@@ -87,7 +88,7 @@ class PianoTilesGame(FatigueMixin, BaseScreen):
         self.pause_sel  = 0
         self.vol_active = False
         self.pause_vol  = 0.4
-        self._pause_btn_rect = pygame.Rect(GAME_W - 90, 13, 70, 46)
+        self._pause_btn_rect = pygame.Rect(GAME_W - 90, HEADER_BOTTOM + 14, 70, 46)
 
         self._font_hud = pygame.font.SysFont("monospace", 36, bold=True)
         self._font_sm  = pygame.font.SysFont("monospace", 26)
@@ -226,6 +227,7 @@ class PianoTilesGame(FatigueMixin, BaseScreen):
             return
 
         state = input_handler.get_state()
+        self._state = state   # exposed for therapist-side raw/calibrated sensor monitoring
 
         for i, pressed in enumerate(state["fingers"]):
             if pressed:
@@ -342,19 +344,9 @@ class PianoTilesGame(FatigueMixin, BaseScreen):
         for tile in self.tiles:
             tile.draw(surface)
 
-        # HUD bar — same style as Basketball / Steady Aim
-        pygame.draw.rect(surface, T["PANEL"], (0, 0, GAME_W, 72))
-        pygame.draw.line(surface, T["ACCENT"], (0, 72), (GAME_W, 72), 1)
-        diff_col = {"Easy": T["GREEN"], "Medium": T["YELLOW"], "Hard": T["RED"]}.get(
-            self.difficulty, T["ACCENT"])
-        surface.blit(self._font_hud.render(
-            f"PIANO TILES  ·  {self.difficulty.upper()}", True, diff_col), (80, 18))
-        surface.blit(self._font_hud.render(
-            f"Score: {self.score:02d}", True, T["ACCENT"]),
-            (GAME_W // 2 - 60, 18))
-        time_col = T["RED"] if self.time_left < 10 else T["TEXT"]
-        time_s = self._font_hud.render(f"{max(0, int(self.time_left)):02d}s", True, time_col)
-        surface.blit(time_s, time_s.get_rect(right=self._pause_btn_rect.left - 24, y=18))
+        # Shared header — same component used by every RecovR game
+        draw_game_header(surface, "Piano Tiles", self.difficulty,
+                          self.time_left, self.score, GAME_W, GAME_H)
 
         # Pause button — two solid bars (identical to Basketball / Steady Aim)
         pb     = self._pause_btn_rect

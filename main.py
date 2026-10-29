@@ -234,6 +234,7 @@ from games.catchingapple  import AppleCatchingGame
 from games.catch_object   import CatchObjectGame
 from games.gravity_catch  import GravityCatchGame
 from games.key_lock       import KeyLockGame
+from games.lemonade       import LemonadeGame
 
 SCENES = {
     "therapist_welcome"  : TherapistWelcomeScene,
@@ -249,6 +250,7 @@ SCENES = {
     "catch_object"       : make_game_scene(CatchObjectGame),
     "gravity_catch"      : make_game_scene(GravityCatchGame),
     "key_lock"           : make_game_scene(KeyLockGame),
+    "lemonade"           : make_game_scene(LemonadeGame),
 }
 
 # --- CROSSFADE ---

@@ -27,6 +27,49 @@ import pygame
 _MADE: dict = {}          # cache: game_cls -> adapter subclass
 
 
+def _call_normalize(fn, raw, axis_letter):
+    """Call a game's own _normalize*/_normalize_tilt method on its own raw
+    reading. Some take (raw, axis) (e.g. SteadyAimGame), most take just
+    (raw) -- try the 2-arg form first, fall back to 1-arg, never raise."""
+    if fn is None:
+        return None
+    try:
+        return fn(raw, axis_letter)
+    except TypeError:
+        try:
+            return fn(raw)
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+
+def _sensor_telemetry(game):
+    """Best-effort raw + calibrated sensor readings for whatever this game's
+    OWN update() already computed this frame (games/*.py persists it as
+    self._state = input_handler.get_state()). The calibrated value calls the
+    game's OWN existing _normalize/_normalize_grip/_normalize_tilt method --
+    never a second/duplicate calibration formula -- so it is guaranteed to be
+    exactly what gameplay itself is using. A game with no such method (e.g. a
+    purely edge-detected finger-press game) simply reports calibrated=None;
+    the dashboard decides what, if anything, to show for that.
+
+    Returns {state_key: {"raw": float, "calibrated": float|None}} for every
+    key actually present in self._state (grip / tilt_x / tilt_y)."""
+    state = getattr(game, "_state", None) or {}
+    out = {}
+    if "grip" in state:
+        raw = state["grip"]
+        fn = getattr(game, "_normalize_grip", None) or getattr(game, "_normalize", None)
+        out["grip"] = {"raw": raw, "calibrated": _call_normalize(fn, raw, None) if fn else None}
+    for key, axis in (("tilt_x", "x"), ("tilt_y", "y")):
+        if key in state:
+            raw = state[key]
+            fn = getattr(game, "_normalize_tilt", None)
+            out[key] = {"raw": raw, "calibrated": _call_normalize(fn, raw, axis) if fn else None}
+    return out
+
+
 def _mask_begin_prompt(game, surface):
     """Cover the game's own "Press any key or click to begin" line while its
     How-to-Play screen is up -- the patient never starts the game, the therapist's
@@ -169,7 +212,15 @@ def make_real_adapter(game_cls):
 
         # -- telemetry / result -------------------------
         def _elapsed_remaining(self):
-            dur = float(getattr(self, "duration", 0) or 0)
+            # Every wrapped game stores the countdown in self.duration /
+            # self.time_left EXCEPT BasketballGame, which names the total
+            # "self.time_start" instead -- without this fallback dur reads 0
+            # for Basketball and elapsed_sec is stuck at 0 for its entire
+            # session even though time_left is counting down correctly.
+            dur = getattr(self, "duration", None)
+            if dur is None:
+                dur = getattr(self, "time_start", None)
+            dur = float(dur or 0)
             tl  = float(getattr(self, "time_left", dur) or 0)
             return max(0.0, dur - tl), max(0.0, tl), dur
 
@@ -184,6 +235,7 @@ def make_real_adapter(game_cls):
                 "remaining_sec": round(remaining, 2),
                 "duration_sec": int(dur),
                 "difficulty": getattr(self, "difficulty", ""),
+                "sensors": _sensor_telemetry(self),
             }
 
         def get_result(self):

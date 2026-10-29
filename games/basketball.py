@@ -13,6 +13,7 @@ from games.fatigue import FatigueMixin
 from sensors.input_handler import input_handler
 from audio import play_success, play_error, play_completion, start_music, stop_music, game_music_path, play_click
 from constants import get_theme, GAME_W, GAME_H
+from games.game_header import draw_game_header
 
 GOALS      = {"Easy": 10, "Medium": 15, "Hard": 20}
 ZONE_WIDTH = {"Easy": 0.25, "Medium": 0.16, "Hard": 0.09}
@@ -25,12 +26,27 @@ BAR_W, BAR_H = 60, 500
 BAR_X = GAME_W - 140
 BAR_Y = (GAME_H - BAR_H) // 2
 
-HOOP_W  = 140
-HOOP_RX = HOOP_W // 2   # 70 — x-radius of rim ellipse
+HOOP_W  = 190
+HOOP_RX = HOOP_W // 2   # 95 — x-radius of rim ellipse
 HOOP_RY = 10             # y-radius (perspective flattening)
 
-BALL_R  = 30
-GRAVITY = 900.0
+# The court's visual ground level in bg_basketball.png (where the painted
+# court surface begins, just past the fence) -- the stand's base is grounded
+# here instead of an arbitrary screen-bottom offset.
+STAND_GROUND_Y = 820
+
+# The ball is largest while held (close to the patient) and shrinks smoothly
+# while in flight toward the distant hoop, reaching BALL_R_HOOP once it
+# arrives -- a simple perspective cue, not a new physics system.
+BALL_R_HELD = 160
+BALL_R_HOOP = 34
+
+# Higher than real-world gravity so the shot arc covers its fixed rise/fall
+# distance noticeably faster, without changing the arc's shape. Raised again
+# so the natural slow-down near the apex (where vertical speed briefly
+# approaches zero, same as any real projectile) passes quickly instead of
+# reading as the animation stalling.
+GRAVITY = 8000.0
 
 _RIM_COL   = (220,  85,  20)
 _RIM_DARK  = (140,  50,  10)
@@ -81,23 +97,91 @@ def _load_image_fit(name, w, h):
 
 def _load_image_cover(name, w, h):
     """A full-bleed background scaled + center-cropped to exactly fill w x h
-    (preserves aspect ratio -- no stretching). Returns None if missing."""
+    (preserves aspect ratio -- no stretching). Crops to the asset's own
+    opaque content first, in case it sits on a larger, mostly-transparent
+    export canvas, so that padding doesn't get covered in as if it were
+    real content. Returns None if missing."""
     key = ("cover", name, w, h)
     if key not in _img_cache:
         try:
-            raw = pygame.image.load(os.path.join(_ROOT, "assets", "images", name)).convert()
-            rw, rh = raw.get_size()
+            raw = pygame.image.load(os.path.join(_ROOT, "assets", "images", name)).convert_alpha()
+            cropped = raw.subsurface(raw.get_bounding_rect(min_alpha=10)).copy()
+            rw, rh = cropped.get_size()
             scale = max(w / rw, h / rh)
             sw, sh = max(1, int(rw * scale)), max(1, int(rh * scale))
-            scaled = pygame.transform.smoothscale(raw, (sw, sh))
+            scaled = pygame.transform.smoothscale(cropped, (sw, sh))
             x, y = (sw - w) // 2, (sh - h) // 2
-            _img_cache[key] = scaled.subsurface((x, y, w, h)).copy()
+            _img_cache[key] = scaled.subsurface((x, y, w, h)).copy().convert()
         except Exception:
             _img_cache[key] = None
     return _img_cache[key]
 
 
+# ring_back_basketball.png / ring_front_basketball.png are two independent
+# renders of the same hoop (far side vs near side), each with its own
+# transparent padding -- they are NOT cropped to a shared rectangle (that
+# forced misalignment since their padding differs). Each is cropped to its
+# own opaque content, then scaled so its rim comes out at the same width
+# (tied to HOOP_W, the physics rim width used for scoring) as the other.
+def _ring_img(name):
+    return _load_image_fit(name, HOOP_W, HOOP_W * 2)
+
+
+# The front ring's own rim band sits lower within its cropped content than
+# the back ring's does, so it needs an extra downward nudge (beyond the
+# shared base anchor below) for the two rim curves to read as one circle.
+_RING_FRONT_EXTRA_Y = 10
+
+
+def _ring_pos(hcx, hcy, img, extra_y=0):
+    """Both ring halves start from this exact same base placement, anchored
+    on the hoop's own (hcx, hcy) physics reference point, so they can only
+    diverge by the explicit extra_y nudge below -- never by independent
+    guesswork."""
+    return img.get_rect(midtop=(hcx, hcy + int(img.get_height() * 0.03) + extra_y))
+
+
+def _draw_hand(surface, bx, by):
+    """The hand cradling the ball at its resting position -- shown only
+    while the ball is not in flight. Anchored to the ball's own live
+    position (which is randomized each round), not a fixed spot."""
+    img = _load_image_fit("hand_basketball.png", 460, 640)
+    if img is None:
+        return
+    # The palm/fingers sit near the upper-right of this asset's own crop,
+    # roughly where the ball should nestle -- anchor that point to the
+    # ball's center rather than the image's own top-left corner. A larger
+    # anchor_x pulls the hand further left relative to the (fixed) ball
+    # position, so the ball reads as sitting further right under the
+    # fingers instead of centered in the palm.
+    anchor_x = int(img.get_width() * 1.05)
+    anchor_y = int(img.get_height() * 0.24)
+    surface.blit(img, (bx - anchor_x, by - anchor_y))
+
+
+def _ball_r_bucket(r):
+    """Snap a ball radius to the same coarse step _draw_basketball uses, so
+    the image cache only ever holds a small, reusable set of sizes."""
+    return max(1, int(round(r / 8.0)) * 8)
+
+
+def _prewarm_ball_cache():
+    """Load and scale every ball-image bucket the shot animation can land
+    on, once, up front -- so the first shot of a session doesn't stutter
+    while _draw_basketball's cache would otherwise fill in frame by frame."""
+    buckets = {_ball_r_bucket(r) for r in range(int(BALL_R_HOOP), int(BALL_R_HELD) + 1)}
+    for r in buckets:
+        _load_image("basketball_ball.png", (r * 2, r * 2))
+
+
 def _draw_basketball(surface, cx, cy, r):
+    # r is a continuously-interpolated float while the ball is in flight
+    # (see BALL_R_HELD/BALL_R_HOOP) -- snapping it to coarse steps keeps the
+    # image cache (and the underlying disk load + rescale it guards) to a
+    # small, reusable set of sizes instead of reloading the asset from disk
+    # on almost every single frame of the shot animation, which was the
+    # real source of the stutter/lag during shots.
+    r = _ball_r_bucket(r)
     img = _load_image("basketball_ball.png", (r * 2, r * 2))
     if img is not None:
         surface.blit(img, img.get_rect(center=(cx, cy)))
@@ -120,14 +204,32 @@ def _draw_basketball(surface, cx, cy, r):
 
 
 def _draw_hoop_back(surface, hx, hy):
-    """Backboard, bracket, net, and the BACK (far) arc of the rim."""
+    """Stand, backboard, bracket, and the BACK (far) half of the ring/net."""
     hcx = hx + HOOP_RX
     hcy = hy
 
+    # Backboard size is tied to HOOP_W (the rim's own physics width) so the
+    # two stay proportionate to each other however either is resized.
+    bw, bh = int(HOOP_W * 1.9), int(HOOP_W * 1.9) // 2
+    by = hcy - bh - HOOP_RY + 45   # lowered further, closer to/overlapping the rim
+
+    # Stand — a pole running from behind the LOWER part of the backboard
+    # down to the court's visual ground level, drawn first (furthest back).
+    # Starting it partway down the board shortens the span it needs to
+    # cover, and it's then squeezed noticeably narrower than its own native
+    # width so it reads as a slim, unobtrusive support -- while its height
+    # is left alone so its bottom still lands exactly on the ground and its
+    # top stays hidden behind the board.
+    stand_top = by + int(bh * 0.3)
+    stand_bot = STAND_GROUND_Y
+    stand_img = _load_image_fit("ring_stand_basketball.png", bw * 2, stand_bot - stand_top)
+    if stand_img is not None:
+        narrow_w = max(1, int(stand_img.get_width() * 0.45))
+        stand_img = pygame.transform.smoothscale(stand_img, (narrow_w, stand_img.get_height()))
+        surface.blit(stand_img, stand_img.get_rect(midtop=(hcx, stand_top)))
+
     # Backboard — centered ABOVE the rim
-    bw, bh = 150, 75
     bx = hcx - bw // 2
-    by = hcy - bh - HOOP_RY - 8   # 8 px gap above top of rim arc
     board_img = _load_image_fit("basketball_board.png", bw, bh)
     if board_img is not None:
         surface.blit(board_img, board_img.get_rect(center=(hcx, by + bh // 2)))
@@ -146,34 +248,43 @@ def _draw_hoop_back(surface, hx, hy):
                      (hcx - 5, brkt_top, 10, max(2, brkt_bot - brkt_top + 2)),
                      border_radius=2)
 
-    # Net
-    net_h   = 55
-    base_rx = HOOP_RX // 2
-    top_y   = hcy + HOOP_RY
-    bot_y   = hcy + net_h
-    for i in range(9):
-        t     = i / 8
-        top_x = int(hcx - HOOP_RX + t * HOOP_RX * 2)
-        bot_x = int(hcx - base_rx  + t * base_rx  * 2)
-        pygame.draw.line(surface, _NET_COL, (top_x, top_y), (bot_x, bot_y), 1)
-    for j in range(1, 5):
-        p     = j / 4
-        y_l   = int(top_y + p * (bot_y - top_y))
-        left  = int(hcx - HOOP_RX + p * (HOOP_RX - base_rx))
-        right = int(hcx + HOOP_RX - p * (HOOP_RX - base_rx))
-        pygame.draw.line(surface, _NET_COL, (left, y_l), (right, y_l), 1)
-
-    # Back (top) arc of rim — darker, the far side
-    rim_rect = pygame.Rect(hcx - HOOP_RX, hcy - HOOP_RY, HOOP_RX * 2, HOOP_RY * 2)
-    pygame.draw.arc(surface, _RIM_DARK, rim_rect, 0, math.pi, 6)
+    # Ring — back half (far side of rim + net). Paired with the identically
+    # placed front half drawn after the ball, so the ball appears to pass
+    # through the hoop opening.
+    ring_back = _ring_img("ring_back_basketball.png")
+    if ring_back is not None:
+        surface.blit(ring_back, _ring_pos(hcx, hcy, ring_back))
+    else:
+        # Fallback vector net + far rim arc if the asset is ever missing.
+        net_h   = 55
+        base_rx = HOOP_RX // 2
+        top_y   = hcy + HOOP_RY
+        bot_y   = hcy + net_h
+        for i in range(9):
+            t     = i / 8
+            top_x = int(hcx - HOOP_RX + t * HOOP_RX * 2)
+            bot_x = int(hcx - base_rx  + t * base_rx  * 2)
+            pygame.draw.line(surface, _NET_COL, (top_x, top_y), (bot_x, bot_y), 1)
+        for j in range(1, 5):
+            p     = j / 4
+            y_l   = int(top_y + p * (bot_y - top_y))
+            left  = int(hcx - HOOP_RX + p * (HOOP_RX - base_rx))
+            right = int(hcx + HOOP_RX - p * (HOOP_RX - base_rx))
+            pygame.draw.line(surface, _NET_COL, (left, y_l), (right, y_l), 1)
+        rim_rect = pygame.Rect(hcx - HOOP_RX, hcy - HOOP_RY, HOOP_RX * 2, HOOP_RY * 2)
+        pygame.draw.arc(surface, _RIM_DARK, rim_rect, 0, math.pi, 6)
 
 
 def _draw_hoop_front(surface, hx, hy):
-    """Front (near) arc of rim — drawn over the ball for depth."""
+    """Ring — front half (near side of rim + net), drawn over the ball for depth."""
     hcx = hx + HOOP_RX
     hcy = hy
-    rim_rect = pygame.Rect(hcx - HOOP_RX, hcy - HOOP_RY, HOOP_RX * 2, HOOP_RY * 2)
-    pygame.draw.arc(surface, _RIM_COL, rim_rect, math.pi, 2 * math.pi, 6)
+    ring_front = _ring_img("ring_front_basketball.png")
+    if ring_front is not None:
+        surface.blit(ring_front, _ring_pos(hcx, hcy, ring_front, _RING_FRONT_EXTRA_Y))
+    else:
+        rim_rect = pygame.Rect(hcx - HOOP_RX, hcy - HOOP_RY, HOOP_RX * 2, HOOP_RY * 2)
+        pygame.draw.arc(surface, _RIM_COL, rim_rect, math.pi, 2 * math.pi, 6)
 
 
 class BasketballGame(FatigueMixin, BaseScreen):
@@ -208,19 +319,18 @@ class BasketballGame(FatigueMixin, BaseScreen):
             self.pause_vol = get_volume()
         except Exception:
             self.pause_vol = 0.4
-        self._pause_btn_rect = pygame.Rect(GAME_W - 90, 13, 70, 46)
 
         self._font_hud = pygame.font.SysFont("monospace", 36, bold=True)
         self._font_sm  = pygame.font.SysFont("monospace", 26)
         self._font_fb  = pygame.font.SysFont("monospace", 52, bold=True)
 
+        _prewarm_ball_cache()
         self._init_fatigue()
         self._reset()
         self._show_instructions = True
 
     def _reset(self):
         self.game_over           = False
-        self._pending_score      = False
         self._grip_ignore_timer  = 0.0
         self.score          = 0
         self.reps           = 0
@@ -236,16 +346,23 @@ class BasketballGame(FatigueMixin, BaseScreen):
         self._squeezing = False
         self._cooldown  = 0.0
 
-        # Hoop is fixed at screen center
+        # Hoop is fixed at screen center -- the backboard's own position is
+        # derived from this same hoop_y (see _draw_hoop_back), so moving it
+        # moves the ring and board down together as one unit.
         self.hoop_x = GAME_W // 2 - HOOP_RX
-        self.hoop_y = 300
+        self.hoop_y = 340
 
         # Ball rest position changes each round
         self.ball_x      = float(self._rand_ball_x())
         self.ball_y      = float(GAME_H - 160)
         self.ball_vx     = 0.0
         self.ball_vy     = 0.0
+        self.ball_r      = BALL_R_HELD
         self.ball_active = False
+        self._above_ring = False
+        self._hoop_center_x  = self.hoop_x + HOOP_RX
+        self._shot_elapsed = 0.0
+        self._shot_duration = 1.0
         self._next_ball_x = None
 
         self.feedback    = None
@@ -292,10 +409,6 @@ class BasketballGame(FatigueMixin, BaseScreen):
             return
         if self.paused:
             self._pause_handle(event)
-            return
-        if (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
-                and self._pause_btn_rect.collidepoint(event.pos)):
-            self.paused = True
             return
         if input_handler.was_pressed(event, "back"):
             self.paused = True
@@ -375,10 +488,18 @@ class BasketballGame(FatigueMixin, BaseScreen):
         was_squeezing   = self._squeezing
         self._squeezing = raw > 0.1
 
-        # Release detection
+        # Release detection -- scoring is decided HERE, by the grip-release
+        # condition alone. A correct release always scores; the shot that
+        # follows is just the visual result of that point, not a separate
+        # check the ball has to pass.
         if not self.ball_active and self._cooldown <= 0:
             if was_squeezing and not self._squeezing:
                 if in_zone:
+                    self.score       += 1
+                    self.reps        += 1
+                    self.score_flash  = 0.6
+                    self.feedback     = ("PERFECT!", (0, 255, 160), 1.5)
+                    play_success()
                     self._shoot()
                 else:
                     self.feedback = ("MISSED — release in the GREEN zone!", (255, 60, 80), 1.5)
@@ -404,26 +525,44 @@ class BasketballGame(FatigueMixin, BaseScreen):
         # Ball physics
         if self.ball_active:
             self.ball_vy += GRAVITY * dt
-            self.ball_x  += self.ball_vx * dt
-            self.ball_y  += self.ball_vy * dt
+            if not self._above_ring:
+                self.ball_x += self.ball_vx * dt
+            self.ball_y += self.ball_vy * dt
 
-            hcx = self.hoop_x + HOOP_RX
-            hcy = self.hoop_y
-            if (abs(self.ball_x - hcx) < HOOP_RX and
-                    abs(self.ball_y - hcy) < BALL_R + HOOP_RY):
-                if self._pending_score:
-                    self.score       += 1
-                    self.reps        += 1
-                    self.score_flash  = 0.6
-                    self.feedback     = ("PERFECT!", (0, 255, 160), 1.5)
-                    play_success()
-                    self._pending_score = False
+            # Once the ball's vertical velocity turns from rising to falling
+            # it has passed its apex and is directly above the hoop (all
+            # sideways travel happened during the rise, above) -- from here
+            # it drops straight down the hoop's own center line, so it
+            # visibly passes through the middle of both the front and back
+            # rings instead of continuing to drift sideways while falling.
+            # (Checked via velocity sign rather than the analytic apex_y
+            # position, since discrete timestep integration may not land
+            # exactly on that position.)
+            if not self._above_ring and self.ball_vy >= 0:
+                self._above_ring = True
+                self.ball_x  = self._hoop_center_x
+                self.ball_vx = 0.0
+
+            # Perspective cue: the ball shrinks smoothly from its held size
+            # down to its hoop-opening size as the shot progresses, in sync
+            # with the flight rather than snapping instantly.
+            self._shot_elapsed += dt
+            progress = min(1.0, self._shot_elapsed / self._shot_duration)
+            self.ball_r = BALL_R_HELD + (BALL_R_HOOP - BALL_R_HELD) * progress
+
+            # Scoring already happened at release, above -- this is purely
+            # the visual shot animation now. It ends once the ball has had
+            # time to reach the rim (per the trajectory computed in
+            # _shoot()) AND has fallen all the way down to the court, so it's
+            # seen passing through the net and landing on the ground rather
+            # than disappearing shortly after entering the hoop, or if it
+            # ever goes out of bounds as a safety fallback.
+            reached_hoop = self._shot_elapsed >= self._shot_duration
+            landed = reached_hoop and self.ball_y >= STAND_GROUND_Y
+            out_of_bounds = (self.ball_y > GAME_H + 80 or
+                              self.ball_x < -80 or self.ball_x > GAME_W + 80)
+            if landed or out_of_bounds:
                 self.ball_active = False
-                self._advance_hoop()
-            elif (self.ball_y > GAME_H + 80 or
-                  self.ball_x < -80 or self.ball_x > GAME_W + 80):
-                self._pending_score = False
-                self.ball_active    = False
                 self._advance_hoop()
 
 
@@ -441,26 +580,41 @@ class BasketballGame(FatigueMixin, BaseScreen):
         return float(random.randint(GAME_W // 2 + 220, GAME_W - 150))  # right side
 
     def _advance_hoop(self):
+        self.ball_r = BALL_R_HELD
         if self._next_ball_x is not None:
             self.ball_x      = self._next_ball_x
             self.ball_y      = float(GAME_H - 160)
             self._next_ball_x = None
 
     def _shoot(self):
-        self._pending_score = True
         bx0 = self.ball_x
         by0 = float(GAME_H - 160)
         hcx = float(self.hoop_x + HOOP_RX)
         hcy = float(self.hoop_y)
 
-        dist = math.hypot(hcx - bx0, hcy - by0)
-        t    = max(0.5, min(1.0, dist / 1200.0))
+        # Apex is set well above the rim opening so the ball visibly clears
+        # it by a clear margin before descending. All of the sideways travel
+        # happens during the rise (below) -- by the apex the ball is already
+        # centered over the hoop, so the whole descent afterward is a
+        # straight vertical drop through the middle of the front and back
+        # rings, instead of still drifting sideways while falling through.
+        apex_y = hcy - 300.0
+        rise   = by0 - apex_y
+        fall   = hcy - apex_y
+        t_rise = math.sqrt(2 * rise / GRAVITY)
+        t_fall = math.sqrt(2 * fall / GRAVITY)
+        t_total = t_rise + t_fall
 
         self.ball_x      = bx0
         self.ball_y      = by0
-        self.ball_vx     = (hcx - bx0) / t
-        self.ball_vy     = (hcy - by0 - 0.5 * GRAVITY * t * t) / t
+        self.ball_vx     = (hcx - bx0) / t_rise
+        self.ball_vy     = -GRAVITY * t_rise
+        self.ball_r      = BALL_R_HELD
         self.ball_active = True
+        self._above_ring     = False
+        self._hoop_center_x  = hcx
+        self._shot_elapsed  = 0.0
+        self._shot_duration = t_total
 
         self._next_ball_x = self._rand_ball_x()
         self.zone_pos     = random.uniform(0.15, 0.50)
@@ -605,7 +759,7 @@ class BasketballGame(FatigueMixin, BaseScreen):
 
     def draw(self, surface):
         T = get_theme()
-        bg_img = _load_image_cover("basketball_bg.png", GAME_W, GAME_H)
+        bg_img = _load_image_cover("bg_basketball.png", GAME_W, GAME_H)
         if bg_img is not None:
             surface.blit(bg_img, (0, 0))
         else:
@@ -617,12 +771,14 @@ class BasketballGame(FatigueMixin, BaseScreen):
             self._draw_instructions(surface)
             return
 
-        font_hud = self._font_hud
         font_sm  = self._font_sm
 
-        # Z-ordered drawing: back of hoop → ball → front of hoop
+        # Z-ordered drawing: back of hoop → ball → hand (while resting, so the
+        # fingers appear to hold the ball) → front of hoop
         _draw_hoop_back(surface, self.hoop_x, self.hoop_y)
-        _draw_basketball(surface, int(self.ball_x), int(self.ball_y), BALL_R)
+        _draw_basketball(surface, int(self.ball_x), int(self.ball_y), self.ball_r)
+        if not self.ball_active:
+            _draw_hand(surface, self.ball_x, self.ball_y)
         _draw_hoop_front(surface, self.hoop_x, self.hoop_y)
 
         # Grip bar
@@ -652,29 +808,8 @@ class BasketballGame(FatigueMixin, BaseScreen):
             surface.blit(fl, (0, 0))
 
         # HUD
-        pygame.draw.rect(surface, T["PANEL"], (0, 0, GAME_W, 72))
-        pygame.draw.line(surface, T["ACCENT"], (0, 72), (GAME_W, 72), 1)
-        diff_col = {"Easy": T["GREEN"], "Medium": T["YELLOW"], "Hard": T["RED"]}[self.difficulty]
-        surface.blit(font_hud.render(
-            f"BASKETBALL  ·  {self.difficulty.upper()}", True, diff_col), (80, 18))
-        surface.blit(font_hud.render(
-            f"Score: {self.score:02d}", True, T["ACCENT"]),
-            (GAME_W // 2 - 60, 18))
-        time_col = T["RED"] if self.time_left < 10 else T["TEXT"]
-        time_s = font_hud.render(f"{max(0, int(self.time_left)):02d}s", True, time_col)
-        surface.blit(time_s, time_s.get_rect(right=self._pause_btn_rect.left - 24, y=18))
-
-        # Pause button — two solid bars
-        pb     = self._pause_btn_rect
-        pb_col = T["ACCENT"]
-        pygame.draw.rect(surface, (15, 20, 36), pb, border_radius=8)
-        pygame.draw.rect(surface, pb_col, pb, 2, border_radius=8)
-        bw2, bh2 = 8, 22
-        by2  = pb.top + (pb.height - bh2) // 2
-        bx1  = pb.left + pb.width // 2 - bw2 - 4
-        bx2  = pb.left + pb.width // 2 + 4
-        pygame.draw.rect(surface, pb_col, (bx1, by2, bw2, bh2), border_radius=2)
-        pygame.draw.rect(surface, pb_col, (bx2, by2, bw2, bh2), border_radius=2)
+        draw_game_header(surface, "Basketball", self.difficulty,
+                          self.time_left, self.score, GAME_W, GAME_H)
 
         # Feedback
         if self.feedback:

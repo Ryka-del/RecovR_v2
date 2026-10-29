@@ -20,6 +20,7 @@ from games.fatigue import FatigueMixin
 from sensors.input_handler import input_handler
 from audio import play_success, play_error, start_music, stop_music
 from constants import get_theme, GAME_W, GAME_H
+from games.game_header import draw_game_header, HEADER_BOTTOM
 
 GOALS        = {"Easy": 15, "Medium": 15, "Hard": 15}
 DURATION     = {"Easy": 45, "Medium": 40, "Hard": 35}
@@ -31,7 +32,7 @@ FINGER_KEYS   = [pygame.K_a, pygame.K_s, pygame.K_d, pygame.K_f, pygame.K_g]
 
 COL_W = GAME_W // 5   # 384px per column
 # Hole centers: horizontally centered in each column, vertically centered in the play area
-PLAY_TOP = 80    # below HUD bar
+PLAY_TOP = HEADER_BOTTOM + 20    # below the shared header bar
 PLAY_BOT = GAME_H - 120  # above key labels
 HOLE_Y   = (PLAY_TOP + PLAY_BOT) // 2
 HOLE_POSITIONS = [
@@ -196,6 +197,7 @@ class WhackMoleGame(FatigueMixin, BaseScreen):
 
     def update(self, dt):
         state = input_handler.get_state()
+        self._state = state   # exposed for therapist-side raw/calibrated sensor monitoring
 
         # ESP32 hardware button polling — only fire on rising edge (press, not hold)
         if input_handler.connected:
@@ -261,7 +263,6 @@ class WhackMoleGame(FatigueMixin, BaseScreen):
         for x in range(0, GAME_W, 80):
             pygame.draw.line(surface, T["PANEL"], (x, 0), (x, GAME_H), 1)
 
-        font_hud = self._font_hud
         font_sm  = self._font_sm
         font_obj = self._font_obj
 
@@ -298,22 +299,9 @@ class WhackMoleGame(FatigueMixin, BaseScreen):
             finger_lbl = font_sm.render(FINGER_LABELS[i], True, T["GRAY"])
             surface.blit(finger_lbl, (hx - finger_lbl.get_width()//2, GAME_H - 68))
 
-        # Top HUD bar
-        pygame.draw.rect(surface, T["PANEL"], (0, 0, GAME_W, 72))
-        pygame.draw.line(surface, T["ACCENT"], (0, 72), (GAME_W, 72), 1)
-
-        diff_colors = {"Easy": T["GREEN"], "Medium": T["YELLOW"], "Hard": T["RED"]}
-        themes = {"Easy": "FINGER FLEXION  ·  BASIC REACTION",
-                  "Medium": "FINGER FLEXION  ·  GO / NO-GO",
-                  "Hard": "FINGER FLEXION  ·  INHIBITORY CONTROL"}
-        surface.blit(font_hud.render(themes[self.difficulty],
-                     True, diff_colors[self.difficulty]), (80, 18))
-        surface.blit(font_hud.render(
-            f"{self.score:02d} / {self.goal:02d}", True, T["ACCENT"]),
-            (GAME_W//2 - 60, 18))
-        surface.blit(font_hud.render(
-            f"{max(0, int(self.time_left)):02d}s", True, T["TEXT"]),
-            (GAME_W - 160, 18))
+        # Shared header — same component used by every RecovR game
+        draw_game_header(surface, "Whack-a-Mole Twist", self.difficulty,
+                          self.time_left, self.score, GAME_W, GAME_H)
 
         # Accuracy bar
         total = self.score + self.errors

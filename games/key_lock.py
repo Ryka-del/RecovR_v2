@@ -24,6 +24,7 @@ from games.fatigue import FatigueMixin
 from sensors.input_handler import input_handler
 from audio import play_success, start_music, stop_music, play_completion, play_click
 from constants import get_theme, GAME_W, GAME_H
+from games.game_header import draw_game_header, HEADER_BOTTOM
 
 TOLERANCE  = {"Easy": 15, "Medium": 8, "Hard": 3}   # degrees
 DURATION   = {"Easy": 60, "Medium": 50, "Hard": 40}
@@ -77,7 +78,7 @@ class KeyLockGame(FatigueMixin, BaseScreen):
         except Exception:
             self.pause_vol = 0.4
 
-        self._pause_btn_rect     = pygame.Rect(GAME_W - 90, 13, 70, 46)
+        self._pause_btn_rect     = pygame.Rect(GAME_W - 90, HEADER_BOTTOM + 14, 70, 46)
         self._results_again_rect = pygame.Rect(0, 0, 1, 1)
         self._results_exit_rect  = pygame.Rect(0, 0, 1, 1)
 
@@ -354,7 +355,6 @@ class KeyLockGame(FatigueMixin, BaseScreen):
             self._draw_instructions(surface)
             return
 
-        font_hud = self._font_hud
         font_sm  = self._font_sm
 
         lock = self._current_lock()
@@ -410,17 +410,8 @@ class KeyLockGame(FatigueMixin, BaseScreen):
         pygame.draw.rect(surface, T["PANEL"], (120, GAME_H - 50, GAME_W - 240, 12), border_radius=6)
         pygame.draw.circle(surface, T["ACCENT"], (ind_x, GAME_H - 44), 10)
 
-        pygame.draw.rect(surface, T["PANEL"], (0, 0, GAME_W, 72))
-        pygame.draw.line(surface, T["ACCENT"], (0, 72), (GAME_W, 72), 1)
-        diff_colors = {"Easy": T["GREEN"], "Medium": T["YELLOW"], "Hard": T["RED"]}
-        themes = {"Easy": "WRIST ROTATION  ·  STATIC TARGET  ±15°",
-                  "Medium": "WRIST ROTATION  ·  SEQUENCE  ±8°",
-                  "Hard": "WRIST ROTATION  ·  PRECISION  ±3°"}
-        surface.blit(font_hud.render(themes[self.difficulty],
-                     True, diff_colors[self.difficulty]), (80, 18))
-        time_col = T["RED"] if self.time_left < 10 else T["TEXT"]
-        time_s = font_hud.render(f"{max(0, int(self.time_left)):02d}s", True, time_col)
-        surface.blit(time_s, time_s.get_rect(right=self._pause_btn_rect.left - 24, y=18))
+        draw_game_header(surface, "Key and Lock", self.difficulty,
+                          self.time_left, self.reps, GAME_W, GAME_H)
 
         # Pause button — two solid bars
         pb     = self._pause_btn_rect

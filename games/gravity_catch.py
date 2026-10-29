@@ -5,6 +5,7 @@ from games.fatigue import FatigueMixin
 from sensors.input_handler import input_handler
 from audio import start_music, stop_music, play_completion, play_click
 from constants import get_theme, GAME_W, GAME_H
+from games.game_header import draw_game_header, HEADER_BOTTOM
 
 CATCHER_SPEED = {"Easy": 500, "Medium": 700, "Hard": 900}
 FALL_SPEED    = {"Easy": 200, "Medium": 340, "Hard": 500}
@@ -54,7 +55,7 @@ class GravityCatchGame(FatigueMixin, BaseScreen):
         except Exception:
             self.pause_vol = 0.4
 
-        self._pause_btn_rect     = pygame.Rect(GAME_W - 90, 13, 70, 46)
+        self._pause_btn_rect     = pygame.Rect(GAME_W - 90, HEADER_BOTTOM + 14, 70, 46)
         self._results_again_rect = pygame.Rect(0, 0, 1, 1)
         self._results_exit_rect  = pygame.Rect(0, 0, 1, 1)
 
@@ -274,7 +275,6 @@ class GravityCatchGame(FatigueMixin, BaseScreen):
 
     def draw(self, surface):
         T        = get_theme()
-        font_hud = self._font_hud
         font_sm  = self._font_sm
 
         surface.fill(T["BG"])
@@ -299,10 +299,8 @@ class GravityCatchGame(FatigueMixin, BaseScreen):
         pygame.draw.rect(surface, T["PANEL"], (100, GAME_H - 60, GAME_W - 200, 16), border_radius=6)
         pygame.draw.circle(surface, T["ACCENT"], (ind_x, GAME_H - 52), 12)
 
-        surface.blit(font_hud.render(f"Caught: {self.score}", True, T["ACCENT"]), (40, 30))
-        time_col = T["RED"] if self.time_left < 10 else T["TEXT"]
-        time_s = font_hud.render(f"Time: {max(0, int(self.time_left))}s", True, time_col)
-        surface.blit(time_s, time_s.get_rect(right=self._pause_btn_rect.left - 24, y=30))
+        draw_game_header(surface, "Gravity Catch", self.difficulty,
+                          self.time_left, self.score, GAME_W, GAME_H)
         surface.blit(font_sm.render("Tilt wrist LEFT/RIGHT to move basket",
                                     True, T["GRAY"]), (40, GAME_H - 90))
 

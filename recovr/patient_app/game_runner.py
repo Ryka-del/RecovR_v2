@@ -50,6 +50,7 @@ _REAL_GAMES = {
     "Key and Lock":             ("games.key_lock",      "KeyLockGame"),
     "Steady Aim":               ("games.steady_aim",    "SteadyAimGame"),
     "Catch the Falling Object": ("games.catch_object",  "CatchObjectGame"),
+    "Lemonade":                 ("games.lemonade",      "LemonadeGame"),
 }
 
 

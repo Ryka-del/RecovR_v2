@@ -29,7 +29,7 @@ from games.gravity_catch import GravityCatchGame
 from sensors.input_handler import input_handler
 from audio import stop_music, play_completion, start_music
 from recovr.patient_app.games.generic_adapter import (
-    _mask_begin_prompt, _mask_results_buttons, _mask_pause_button)
+    _mask_begin_prompt, _mask_results_buttons, _mask_pause_button, _sensor_telemetry)
 
 
 class GravityCatchAdapter(GravityCatchGame):
@@ -162,6 +162,7 @@ class GravityCatchAdapter(GravityCatchGame):
             "tilt_x": round(float(state.get("tilt_x", 0.0)), 3),
             "sensor_connected": bool(input_handler.connected),
             "falling_objects": len(self.objects),
+            "sensors": _sensor_telemetry(self),
             # NOT AVAILABLE from the unmodified game: misses, accuracy, reaction_time_ms
         }
 
