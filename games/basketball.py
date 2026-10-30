@@ -287,6 +287,30 @@ def _draw_hoop_front(surface, hx, hy):
         pygame.draw.arc(surface, _RIM_COL, rim_rect, math.pi, 2 * math.pi, 6)
 
 
+# Grip bar track: vivid red at the top fading to a light pink at the bottom,
+# a bright green target-zone band, and a black capsule-shaped needle.
+_BAR_RED_TOP    = (235, 40, 35)
+_BAR_RED_BOTTOM = (247, 175, 180)
+
+
+def _draw_vertical_gradient_rect(surface, rect, top_col, bot_col, radius):
+    """A top-to-bottom gradient filling a rounded rect (pygame has no
+    built-in gradient fill, so this blends a per-row gradient onto a
+    rounded-rect alpha mask)."""
+    w, h = rect.width, rect.height
+    grad = pygame.Surface((w, h), pygame.SRCALPHA)
+    for yy in range(h):
+        t = yy / max(1, h - 1)
+        col = (int(top_col[0] + (bot_col[0] - top_col[0]) * t),
+               int(top_col[1] + (bot_col[1] - top_col[1]) * t),
+               int(top_col[2] + (bot_col[2] - top_col[2]) * t), 255)
+        pygame.draw.line(grad, col, (0, yy), (w, yy))
+    mask = pygame.Surface((w, h), pygame.SRCALPHA)
+    pygame.draw.rect(mask, (255, 255, 255, 255), mask.get_rect(), border_radius=radius)
+    grad.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+    surface.blit(grad, rect.topleft)
+
+
 class BasketballGame(FatigueMixin, BaseScreen):
 
     def on_enter(self, data):
@@ -297,8 +321,12 @@ class BasketballGame(FatigueMixin, BaseScreen):
         self.difficulty = data.get("difficulty", "Easy")
         self.cal        = data.get("calibration", {})
 
-        self.goal   = GOALS[self.difficulty]
-        self.zone_w = ZONE_WIDTH[self.difficulty]
+        # Advanced Settings overrides (set by the therapist on the
+        # calibration Advanced Settings screen) take priority; absent an
+        # override, fall back to the normal per-difficulty preset.
+        cal_params  = self.cal.get("params", {})
+        self.goal   = cal_params.get("bb_goal", GOALS[self.difficulty])
+        self.zone_w = cal_params.get("bb_zone_width", ZONE_WIDTH[self.difficulty])
         _spd_map    = {"Slow": 0.07, "Normal": 0.18, "Fast": 0.32}
         self.zone_speed = _spd_map.get(data.get("speed", "Normal"), 0.18)
 
@@ -784,17 +812,16 @@ class BasketballGame(FatigueMixin, BaseScreen):
         # Grip bar
         needle  = 1.0 - self._grip
         half    = self.zone_w / 2
-        in_zone = (self.zone_pos - half) <= needle <= (self.zone_pos + half)
 
-        pygame.draw.rect(surface, T["RED"], (BAR_X, BAR_Y, BAR_W, BAR_H), border_radius=8)
+        _draw_vertical_gradient_rect(surface, pygame.Rect(BAR_X, BAR_Y, BAR_W, BAR_H),
+                                     _BAR_RED_TOP, _BAR_RED_BOTTOM, 8)
         gz_y = BAR_Y + int((self.zone_pos - half) * BAR_H)
         gz_h = max(6, int(self.zone_w * BAR_H))
         pygame.draw.rect(surface, T["GREEN"], (BAR_X, gz_y, BAR_W, gz_h), border_radius=4)
-        needle_y   = BAR_Y + int(needle * BAR_H)
-        needle_col = T["GREEN"] if in_zone else T["WHITE"]
-        pygame.draw.rect(surface, needle_col,
-                         (BAR_X - 16, needle_y - 6, BAR_W + 32, 12), border_radius=6)
-        pygame.draw.rect(surface, T["WHITE"], (BAR_X, BAR_Y, BAR_W, BAR_H), 2, border_radius=8)
+        needle_y = BAR_Y + int(needle * BAR_H)
+        pygame.draw.rect(surface, T["BLACK"],
+                         (BAR_X - 20, needle_y - 8, BAR_W + 40, 16), border_radius=8)
+        pygame.draw.rect(surface, T["BLACK"], (BAR_X, BAR_Y, BAR_W, BAR_H), 2, border_radius=8)
         surface.blit(font_sm.render("GRIP", True, T["GRAY"]),
                      (BAR_X - 8, BAR_Y - 34))
         surface.blit(font_sm.render(f"{int(self._grip * 100)}%", True, T["ACCENT"]),

@@ -72,11 +72,13 @@ class PianoTilesGame(FatigueMixin, BaseScreen):
         _spd_map   = {"Slow": 280, "Normal": 420, "Fast": 580}
         self.speed = _spd_map.get(data.get("speed", "Normal"), 420)
 
-        # Spawn rate from calibration difficulty
-        cal_diff        = ((data.get("calibration") or {})
-                           .get("params", {}).get("difficulty", self.difficulty))
+        # Spawn rate from calibration difficulty, or the Advanced Settings
+        # override (set by the therapist on the calibration Advanced
+        # Settings screen) if one was made.
+        cal_params      = (data.get("calibration") or {}).get("params", {})
+        cal_diff        = cal_params.get("difficulty", self.difficulty)
         _spawn_map      = {"Easy": 1.0, "Medium": 0.7, "Hard": 0.45}
-        self.spawn_rate = _spawn_map.get(cal_diff, 0.7)
+        self.spawn_rate = cal_params.get("pt_spawn_rate", _spawn_map.get(cal_diff, 0.7))
 
         self.game_over           = False
         self.game_over_score     = 0

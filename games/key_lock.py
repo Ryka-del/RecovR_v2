@@ -66,7 +66,13 @@ class KeyLockGame(FatigueMixin, BaseScreen):
         self.difficulty = data.get("difficulty", "Easy")
         self.cal        = data.get("calibration", {})
 
-        self.tolerance = TOLERANCE[self.difficulty]
+        # Advanced Settings overrides (set by the therapist on the
+        # calibration Advanced Settings screen) take priority; absent an
+        # override, fall back to the normal per-difficulty preset / fixed
+        # constant.
+        cal_params     = self.cal.get("params", {})
+        self.tolerance = cal_params.get("kl_tolerance", TOLERANCE[self.difficulty])
+        self.hold_time = cal_params.get("kl_hold_time", HOLD_TIME)
 
         dur = data.get("duration_sec")
         self.duration = int(dur) if dur else DURATION[self.difficulty]
@@ -238,7 +244,7 @@ class KeyLockGame(FatigueMixin, BaseScreen):
 
             if can_unlock:
                 self.hold_timer += dt
-                if self.hold_timer >= HOLD_TIME:
+                if self.hold_timer >= self.hold_time:
                     self._unlock(lock)
             else:
                 self.hold_timer = max(0.0, self.hold_timer - dt * 2)
@@ -394,7 +400,7 @@ class KeyLockGame(FatigueMixin, BaseScreen):
                 True, T["ACCENT"]), (CENTER_X - 200, CENTER_Y + 260))
 
             if in_zone:
-                prog = min(1.0, self.hold_timer / HOLD_TIME)
+                prog = min(1.0, self.hold_timer / self.hold_time)
                 hold_rect = pygame.Rect(CENTER_X - 40, CENTER_Y - 40, 80, 80)
                 pygame.draw.arc(surface, T["GREEN"], hold_rect,
                                 -math.pi/2, -math.pi/2 + 2*math.pi*prog, 8)

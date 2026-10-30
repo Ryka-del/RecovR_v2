@@ -235,6 +235,7 @@ from games.catch_object   import CatchObjectGame
 from games.gravity_catch  import GravityCatchGame
 from games.key_lock       import KeyLockGame
 from games.lemonade       import LemonadeGame
+from games.feed_the_cat   import FeedTheCatGame
 
 SCENES = {
     "therapist_welcome"  : TherapistWelcomeScene,
@@ -251,6 +252,7 @@ SCENES = {
     "gravity_catch"      : make_game_scene(GravityCatchGame),
     "key_lock"           : make_game_scene(KeyLockGame),
     "lemonade"           : make_game_scene(LemonadeGame),
+    "feed_the_cat"       : make_game_scene(FeedTheCatGame),
 }
 
 # --- CROSSFADE ---
@@ -305,7 +307,8 @@ def _draw_confirm_dialog():
 # --- STARTING SCENE ---
 _current_scene_name = "therapist_welcome"
 _game_scene_names   = {"basketball", "steady_aim", "piano_tiles",
-                        "catchingapple", "catch_object", "gravity_catch", "key_lock"}
+                        "catchingapple", "catch_object", "gravity_catch", "key_lock",
+                        "feed_the_cat"}
 current_scene = TherapistWelcomeScene(screen, WIDTH, HEIGHT)
 
 # --- MAIN LOOP ---

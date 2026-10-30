@@ -50,17 +50,20 @@ class SteadyAimGame(FatigueMixin, BaseScreen):
         self.difficulty = data.get("difficulty", "Easy")
         self.cal        = data.get("calibration", {})
 
-        self.goal       = GOALS[self.difficulty]
+        # Advanced Settings overrides (set by the therapist on the
+        # calibration Advanced Settings screen) take priority; absent an
+        # override, fall back to the normal per-difficulty preset.
+        cal_params      = self.cal.get("params", {})
+        self.goal       = cal_params.get("sa_goal", GOALS[self.difficulty])
         dur_override    = data.get("duration_sec")
         self.duration   = dur_override if dur_override else DURATION[self.difficulty]
-        self.circle_r   = CIRCLE_R[self.difficulty]
-        self.cursor_spd = CURSOR_SPD[self.difficulty]
+        self.circle_r   = cal_params.get("sa_circle_r", CIRCLE_R[self.difficulty])
+        self.cursor_spd = cal_params.get("sa_cursor_spd", CURSOR_SPD[self.difficulty])
 
         # Hold time driven by calibration difficulty (ignores session Speed)
-        cal_diff        = ((data.get("calibration") or {})
-                           .get("params", {}).get("difficulty", self.difficulty))
+        cal_diff        = cal_params.get("difficulty", self.difficulty)
         _hold_map       = {"Easy": 1.5, "Medium": 2.0, "Hard": 2.5}
-        self.hold_time  = _hold_map.get(cal_diff, 2.0)
+        self.hold_time  = cal_params.get("sa_hold_time", _hold_map.get(cal_diff, 2.0))
 
         self.game_over           = False
         self.game_over_score     = 0

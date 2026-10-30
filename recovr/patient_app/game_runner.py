@@ -51,6 +51,7 @@ _REAL_GAMES = {
     "Steady Aim":               ("games.steady_aim",    "SteadyAimGame"),
     "Catch the Falling Object": ("games.catch_object",  "CatchObjectGame"),
     "Lemonade":                 ("games.lemonade",      "LemonadeGame"),
+    "Feed the Cat":             ("games.feed_the_cat",  "FeedTheCatGame"),
 }
 
 

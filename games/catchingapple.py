@@ -55,8 +55,12 @@ class AppleCatchingGame(FatigueMixin, BaseScreen):
         self.difficulty = data.get("difficulty", "Easy")
         self.cal        = data.get("calibration", {})
 
-        self.apple_speed = APPLE_SPEED[self.difficulty]
-        self.move_speed  = MOVE_SPEED[self.difficulty]
+        # Advanced Settings overrides (set by the therapist on the
+        # calibration Advanced Settings screen) take priority; absent an
+        # override, fall back to the normal per-difficulty preset.
+        cal_params       = self.cal.get("params", {})
+        self.apple_speed = cal_params.get("ac_apple_speed", APPLE_SPEED[self.difficulty])
+        self.move_speed  = cal_params.get("ac_move_speed", MOVE_SPEED[self.difficulty])
 
         dur = data.get("duration_sec")
         self.duration = int(dur) if dur else DURATION[self.difficulty]

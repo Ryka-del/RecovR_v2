@@ -26,12 +26,13 @@ duplicate sensor-processing or session logic.
 """
 
 import os
+import math
 import pygame
 from screens.base import BaseScreen
 from games.fatigue import FatigueMixin
 from sensors.input_handler import input_handler
-from audio import (play_success, play_error, play_completion,
-                    start_music, stop_music, game_music_path, play_click)
+from audio import (play_error, play_completion,
+                    start_music, stop_music, play_click)
 from constants import get_theme, GAME_W, GAME_H
 from games.game_header import draw_game_header, HEADER_BOTTOM
 
@@ -53,10 +54,58 @@ TIME_LIMIT     = {"Easy": 90,   "Medium": 120,  "Hard": 150}    # default sessio
 # than a second sensor-processing path.
 RELEASE_FACTOR = 0.78
 
-JUICE_PER_LEMON = {k: 100.0 / v for k, v in LEMON_TARGET.items()}
+# A pitcher ALWAYS takes exactly 10 successfully completed lemons to fill,
+# regardless of difficulty -- difficulty only changes the grip threshold,
+# hold duration, and total repetition target (how many pitchers that target
+# works out to, e.g. Medium's 30 lemons = 3 pitchers, is never hardcoded;
+# it falls out naturally from counting lemons-per-pitcher as they happen).
+PITCHER_LEMONS       = 10
+JUICE_PER_LEMON_PCT  = 100.0 / PITCHER_LEMONS
+
+# Pitcher-replacement animation timings (visual recommendations; gameplay
+# timing -- the session clock, grip thresholds, hold duration -- is
+# untouched by any of these).
+POUR_ANIM_DUR    = 1.0   # synced with the ~1s pour_juice sound
+FULL_DISPLAY_DUR = 0.5
+SLIDE_OUT_DUR    = 0.7
+SLIDE_IN_DUR     = 0.7
+# Centered on screen, a pitcher's own width never exceeds GAME_W, so sliding
+# by a full GAME_W always clears both edges with margin to spare.
+PITCHER_SLIDE_DISTANCE = GAME_W
+
+# Lemon segment fill progress indicator -- a brief flash/bounce once all 8
+# segments are filled (purely cosmetic, independent of the pitcher's own
+# pour/replacement timing above).
+INDICATOR_FLASH_DUR = 0.45
+INDICATOR_SEGMENTS  = 8
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _img_cache = {}
+
+# games/game_header.py's audio.game_music_path() looks for a per-difficulty
+# "<Game> <Difficulty>.mp3" file and falls back to the generic sci-fi track
+# when none exists -- there's only one flat lemonade.mp3 (no per-difficulty
+# variants), so that lookup would never actually find it. Point straight at
+# the existing asset instead, via the SAME start_music()/stop_music() the
+# rest of RecovR uses, rather than a separate audio system.
+_LEMONADE_MUSIC     = os.path.join(_ROOT, "assets", "audio", "lemonade.mp3")
+_LEMON_SQUEEZE_SFX  = os.path.join(_ROOT, "assets", "audio", "lemon_squeeze.mp3")
+_POUR_JUICE_SFX     = os.path.join(_ROOT, "assets", "audio", "pour_juice.mp3")
+
+_sfx_cache = {}
+
+
+def _get_sfx(path):
+    """Same cached-Sound pattern audio.py's _get_sound() uses for every
+    other one-shot effect in RecovR -- Sound.play() runs on the mixer's
+    channel pool, entirely separate from pygame.mixer.music (lemonade.mp3),
+    so these effects can never interrupt or replace the background music."""
+    if path not in _sfx_cache:
+        try:
+            _sfx_cache[path] = pygame.mixer.Sound(path)
+        except Exception:
+            _sfx_cache[path] = None
+    return _sfx_cache[path]
 
 
 def _load_fit(name, w, h):
@@ -69,6 +118,27 @@ def _load_fit(name, w, h):
             cropped = raw.subsurface(raw.get_bounding_rect(min_alpha=10)).copy()
             cw, ch = cropped.get_size()
             scale = min(w / cw, h / ch)
+            _img_cache[key] = pygame.transform.smoothscale(
+                cropped, (max(1, int(cw * scale)), max(1, int(ch * scale))))
+        except Exception:
+            _img_cache[key] = None
+    return _img_cache[key]
+
+
+def _load_scale_to_height(name, target_h):
+    """Crop to the asset's own opaque content (excluding transparent
+    padding), then scale it UNIFORMLY -- the same factor for width and
+    height, derived purely from its visible height vs target_h -- so its
+    width is whatever that proportional scale produces, even if that
+    overflows the target area (the caller may let it clip). Unlike
+    _load_fit, width is never separately constrained to fit a box."""
+    key = ("scaleh", name, target_h)
+    if key not in _img_cache:
+        try:
+            raw = pygame.image.load(os.path.join(_ROOT, "assets", "images", name)).convert_alpha()
+            cropped = raw.subsurface(raw.get_bounding_rect(min_alpha=10)).copy()
+            cw, ch = cropped.get_size()
+            scale = target_h / ch
             _img_cache[key] = pygame.transform.smoothscale(
                 cropped, (max(1, int(cw * scale)), max(1, int(ch * scale))))
         except Exception:
@@ -156,16 +226,26 @@ def _profile_x_at(yf):
 
 
 def _draw_pitcher(surface, cx, bottom_y, pitcher_h, fill_frac, color_dark, color_light):
-    """Draw the juice -- clipped to the glass's own interior silhouette,
-    rising from the base -- UNDER the glass sprite, so the glass's own
-    highlights/outline render on top of the liquid. Returns the glass's
-    on-screen rect (used to aim the juice-drip animation)."""
+    """Draw the glass, then the juice -- clipped to the glass's own interior
+    silhouette, rising from the base -- fully opaque ON TOP of it.
+    pitcher_lemonade.png's body is a near-opaque (~91% alpha) pale overlay
+    baked in for its own glossy-glass look; drawing the liquid underneath it
+    (as an earlier version of this did) left any fill colour almost
+    completely washed out to a pale cream regardless of how saturated it
+    was -- math some colour simply cannot survive a 91%-opacity near-white
+    layer on top. Painting the liquid afterward keeps it clearly, brightly
+    visible while the glass's handle and outer rim contour (both outside
+    the interior silhouette the liquid is clipped to) still read normally.
+    Returns the glass's on-screen rect (used to aim the juice-drip
+    animation)."""
     img = _load_raw_scaled("pitcher_lemonade.png", pitcher_h)
     if img is None:
         return pygame.Rect(cx, bottom_y - pitcher_h, 1, pitcher_h)
     pw, ph = img.get_size()
     px = cx - pw // 2
     py = bottom_y - ph
+
+    surface.blit(img, (px, py))
 
     fill_frac = max(0.0, min(1.0, fill_frac))
     if fill_frac > 0.001:
@@ -188,7 +268,6 @@ def _draw_pitcher(surface, cx, bottom_y, pitcher_h, fill_frac, color_dark, color
                                     [(x * pw, y * ph) for x, y in surf_pts])
             surface.blit(liquid, (px, py))
 
-    surface.blit(img, (px, py))
     return pygame.Rect(px, py, pw, ph)
 
 
@@ -202,11 +281,15 @@ class LemonadeGame(FatigueMixin, BaseScreen):
         self.difficulty = data.get("difficulty", "Easy")
         self.cal        = data.get("calibration", {})
 
-        self.target          = LEMON_TARGET[self.difficulty]
-        self.grip_threshold  = GRIP_THRESHOLD[self.difficulty]
+        # Advanced Settings overrides (set by the therapist on the
+        # calibration Advanced Settings screen) take priority; absent an
+        # override, fall back to the normal per-difficulty preset.
+        cal_params           = self.cal.get("params", {})
+        self.target          = cal_params.get("lem_target", LEMON_TARGET[self.difficulty])
+        self.grip_threshold  = cal_params.get("lem_grip_threshold", GRIP_THRESHOLD[self.difficulty])
         self.release_threshold = self.grip_threshold * RELEASE_FACTOR
-        self.hold_required   = HOLD_DURATION[self.difficulty]
-        self.juice_per_lemon = JUICE_PER_LEMON[self.difficulty]
+        self.hold_required   = cal_params.get("lem_hold_duration", HOLD_DURATION[self.difficulty])
+        self.juice_per_lemon = JUICE_PER_LEMON_PCT   # always 10% -- see PITCHER_LEMONS
 
         dur = data.get("duration_sec")
         self.duration = int(dur) if dur else TIME_LIMIT[self.difficulty]
@@ -247,13 +330,34 @@ class LemonadeGame(FatigueMixin, BaseScreen):
 
         self.completed      = 0
         self.lemons_left    = self.target
-        self.pitcher_fill    = 0.0       # committed juice, 0..100
+        self.pitcher_fill    = 0.0       # current pitcher's committed juice, 0..100
         self.grip_active     = False
         self.calibrated_grip = 0.0
 
         self.feedback    = None
         self._state      = {"grip": 0.0}
         self._drip_t      = 0.0
+
+        # -- lemon segment fill progress indicator -----------------------
+        # Purely a visualisation of the SAME _phase/_hold_elapsed state the
+        # squeeze mechanic already tracks -- no separate progress source.
+        self._indicator_flash_t = 0.0   # brief flash/bounce right after a completed lemon
+
+        # -- pitcher pour / replacement animation ---------------------
+        self.pitcher_lemon_count = 0          # lemons completed in the CURRENT pitcher (0-10)
+        self.pitcher_index       = 0          # which pitcher we're on (0-based), informational
+        self._pitcher_state        = "idle"   # idle|pouring|full_display|sliding_out|sliding_in
+        self._pitcher_anim_t       = 0.0
+        self._pitcher_will_replace = False
+        self._pitcher_pending_end  = False
+        self._pitcher_x_offset     = 0.0
+        # True right after a pitcher-replacement animation starts -- a grip
+        # already held through it must NOT auto-count as a new squeeze once
+        # gameplay resumes; the patient must release first.
+        self._require_fresh_release = False
+
+        self._squeeze_channel = None
+        self._pour_channel    = None
 
     def _normalize_grip(self, raw):
         """SAME calibration formula every grip game uses -- no duplicate
@@ -264,6 +368,85 @@ class LemonadeGame(FatigueMixin, BaseScreen):
             return raw
         return max(0.0, min(1.0, (raw - rest) / (mx - rest)))
 
+    @staticmethod
+    def _pause_music():
+        """Pause lemonade.mp3 in place (not stop_music()'s full stop) so
+        RESUME can continue from the same position -- scoped to this game's
+        own pause flow only, not a change to the shared audio module."""
+        try:
+            pygame.mixer.music.pause()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _resume_music():
+        try:
+            pygame.mixer.music.unpause()
+        except Exception:
+            pass
+
+    def _start_squeeze_sound(self):
+        """Triggered once on the resting-to-squeezing transition only (see
+        _update_squeeze_state) -- never retriggered while the same squeeze
+        continues, so a squeeze/hold longer than the clip just lets it play
+        through once rather than restarting it every frame."""
+        snd = _get_sfx(_LEMON_SQUEEZE_SFX)
+        if snd is None:
+            return
+        try:
+            if self._squeeze_channel is not None:
+                self._squeeze_channel.stop()
+            self._squeeze_channel = snd.play()
+        except Exception:
+            self._squeeze_channel = None
+
+    def _stop_squeeze_sound(self):
+        """The sound corresponds to the actual squeezing action, so it ends
+        when squeezing ends (release, whether that completes a rep or
+        discards an incomplete one) rather than always playing out in full."""
+        try:
+            if self._squeeze_channel is not None:
+                self._squeeze_channel.stop()
+        except Exception:
+            pass
+        self._squeeze_channel = None
+
+    def _play_pour_sound(self):
+        """~1 second of pour_juice.mp3 via Sound.play(maxtime=...) -- the
+        built-in pygame mechanism for this, so the original file is never
+        trimmed/modified. Stopping any previous instance first guarantees no
+        overlap even if this were ever called in quick succession."""
+        snd = _get_sfx(_POUR_JUICE_SFX)
+        if snd is None:
+            return
+        try:
+            if self._pour_channel is not None:
+                self._pour_channel.stop()
+            self._pour_channel = snd.play(maxtime=int(POUR_ANIM_DUR * 1000))
+        except Exception:
+            self._pour_channel = None
+
+    def _pause_sfx(self):
+        for ch in (self._squeeze_channel, self._pour_channel):
+            try:
+                if ch is not None:
+                    ch.pause()
+            except Exception:
+                pass
+
+    def _resume_sfx(self):
+        for ch in (self._squeeze_channel, self._pour_channel):
+            try:
+                if ch is not None:
+                    ch.unpause()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _ease(t):
+        t = max(0.0, min(1.0, t))
+        return t * t * (3 - 2 * t)   # smoothstep -- natural ease in/out
+
     # ------------------------------------------------------------------ #
 
     def handle_event(self, event):
@@ -273,7 +456,7 @@ class LemonadeGame(FatigueMixin, BaseScreen):
                     input_handler.was_pressed(event, "action")):
                 self._show_instructions = False
                 self.start_time         = pygame.time.get_ticks()
-                start_music(game_music_path("Lemonade", self.difficulty))
+                start_music(_LEMONADE_MUSIC)
             return
 
         if self.game_over:
@@ -282,7 +465,7 @@ class LemonadeGame(FatigueMixin, BaseScreen):
                     play_click()
                     self._reset()
                     self._show_instructions = False
-                    start_music(game_music_path("Lemonade", self.difficulty))
+                    start_music(_LEMONADE_MUSIC)
                 elif self._results_exit_rect.collidepoint(event.pos):
                     play_click()
                     self._exit_to_game_config()
@@ -297,6 +480,8 @@ class LemonadeGame(FatigueMixin, BaseScreen):
             return
         if input_handler.was_pressed(event, "back"):
             self.paused = True
+            self._pause_music()
+            self._pause_sfx()
 
     def _pause_handle(self, event):
         pos = None
@@ -318,10 +503,10 @@ class LemonadeGame(FatigueMixin, BaseScreen):
             self.vol_active = False
             return
         opts_actions = [
-            lambda: setattr(self, "paused", False),
+            lambda: (setattr(self, "paused", False), self._resume_music(), self._resume_sfx()),
             lambda: (self._reset(), setattr(self, "_show_instructions", False),
                      setattr(self, "paused", False),
-                     start_music(game_music_path("Lemonade", self.difficulty))),
+                     start_music(_LEMONADE_MUSIC)),
             lambda: setattr(self, "vol_active", True),
             self._exit_to_game_config,
         ]
@@ -351,15 +536,45 @@ class LemonadeGame(FatigueMixin, BaseScreen):
             self._end_game()
             return
 
+        # Sensor readings keep updating every frame regardless of what
+        # follows, so the therapist monitoring interface always reflects
+        # the real, live grip state -- including during a pour/replacement
+        # animation.
         raw = self._state.get("grip", 0.0)
         self.calibrated_grip = self._normalize_grip(raw)
         self.grip_active = self.calibrated_grip >= self.grip_threshold
 
+        # While a pitcher pour/replacement animation is in progress, the
+        # squeeze state machine is frozen entirely (no new reps, no score,
+        # no Lemons Left change) -- it resumes once the animation reaches
+        # "idle" again.
+        if self._pitcher_state != "idle":
+            self._update_pitcher_animation(dt)
+        else:
+            self._update_squeeze_state(dt)
+
+        if self.feedback:
+            self.feedback = (self.feedback[0], self.feedback[1], self.feedback[2] - dt)
+            if self.feedback[2] <= 0:
+                self.feedback = None
+
+        if self._indicator_flash_t > 0:
+            self._indicator_flash_t = max(0.0, self._indicator_flash_t - dt)
+
+    def _update_squeeze_state(self, dt):
         if self._phase == "waiting":
+            if self._require_fresh_release:
+                # A grip held through a pitcher-replacement animation must
+                # not auto-count as a new squeeze -- require it to actually
+                # drop below threshold at least once first.
+                if not self.grip_active:
+                    self._require_fresh_release = False
+                return
             if self.grip_active:
                 self._phase        = "squeezing"
                 self._hold_elapsed = 0.0
                 self._temp_fill    = 0.0
+                self._start_squeeze_sound()
 
         elif self._phase == "squeezing":
             if self.calibrated_grip < self.release_threshold:
@@ -369,6 +584,7 @@ class LemonadeGame(FatigueMixin, BaseScreen):
                 self._phase        = "waiting"
                 self._hold_elapsed = 0.0
                 self._temp_fill    = 0.0
+                self._stop_squeeze_sound()
             else:
                 self._hold_elapsed += dt
                 progress = min(1.0, self._hold_elapsed / self.hold_required)
@@ -380,24 +596,84 @@ class LemonadeGame(FatigueMixin, BaseScreen):
             # Hold requirement already met -- a continued squeeze adds
             # nothing further; only an actual release commits the lemon.
             if self.calibrated_grip < self.release_threshold:
-                self.completed      += 1
-                self.lemons_left     = max(0, self.target - self.completed)
-                self.pitcher_fill    = min(100.0, self.pitcher_fill + self.juice_per_lemon)
-                self.score           += 1
-                self.reps             = self.completed
-                self.feedback         = ("LEMON COMPLETE!", (0, 220, 120), 1.0)
-                play_success()
-                self._phase        = "waiting"
-                self._hold_elapsed = 0.0
-                self._temp_fill    = 0.0
-                if self.completed >= self.target:
+                self._stop_squeeze_sound()
+                self._commit_lemon()
+
+    def _commit_lemon(self):
+        """One successful squeeze-and-release: update score/counters, and
+        commit the juice INSTANTLY. The rising fill the patient already saw
+        during the squeeze/hold (the live _temp_fill preview) IS the fill
+        animation -- release just locks that same value in, so there is no
+        second visual "pour" of the same 10%. The ~1s "pouring" pitcher-state
+        that follows is now a pure timer kept in sync with the pour_juice
+        sound (and, for a pitcher's 10th lemon, the lead-in to the
+        replacement sequence) -- it no longer changes the fill level."""
+        self.completed  += 1
+        self.lemons_left = max(0, self.target - self.completed)
+        self.score       += 1
+        self.reps          = self.completed
+        self.feedback      = ("LEMON COMPLETE!", (0, 220, 120), 1.0)
+        self._indicator_flash_t = INDICATOR_FLASH_DUR
+
+        self.pitcher_lemon_count += 1
+        self.pitcher_fill = min(100.0, self.pitcher_fill + self.juice_per_lemon)
+        self._temp_fill   = 0.0
+
+        # The session's own final lemon never triggers a replacement, even
+        # if it also happens to be this pitcher's 10th (no "next" pitcher is
+        # needed -- the completed/partial pitcher is simply left on screen).
+        self._pitcher_pending_end  = self.completed >= self.target
+        self._pitcher_will_replace = (self.pitcher_lemon_count >= PITCHER_LEMONS
+                                       and not self._pitcher_pending_end)
+        if self._pitcher_will_replace:
+            self._require_fresh_release = True
+
+        self._play_pour_sound()
+
+        self._phase          = "waiting"
+        self._hold_elapsed   = 0.0
+        self._pitcher_state  = "pouring"
+        self._pitcher_anim_t = 0.0
+
+    def _update_pitcher_animation(self, dt):
+        self._pitcher_anim_t += dt
+
+        if self._pitcher_state == "pouring":
+            # Fill level was already committed instantly in _commit_lemon();
+            # this is just a ~1s timer synced to the pour_juice sound.
+            if self._pitcher_anim_t >= POUR_ANIM_DUR:
+                if self._pitcher_pending_end:
+                    self._pitcher_state = "idle"
                     self._end_game()
                     return
+                if self._pitcher_will_replace:
+                    self._pitcher_state  = "full_display"
+                    self._pitcher_anim_t = 0.0
+                else:
+                    self._pitcher_state = "idle"
 
-        if self.feedback:
-            self.feedback = (self.feedback[0], self.feedback[1], self.feedback[2] - dt)
-            if self.feedback[2] <= 0:
-                self.feedback = None
+        elif self._pitcher_state == "full_display":
+            if self._pitcher_anim_t >= FULL_DISPLAY_DUR:
+                self._pitcher_state  = "sliding_out"
+                self._pitcher_anim_t = 0.0
+
+        elif self._pitcher_state == "sliding_out":
+            t = min(1.0, self._pitcher_anim_t / SLIDE_OUT_DUR)
+            self._pitcher_x_offset = PITCHER_SLIDE_DISTANCE * self._ease(t)
+            if self._pitcher_anim_t >= SLIDE_OUT_DUR:
+                # the full pitcher has exited -- the new one starts empty
+                self.pitcher_fill        = 0.0
+                self.pitcher_lemon_count = 0
+                self.pitcher_index      += 1
+                self._pitcher_state      = "sliding_in"
+                self._pitcher_anim_t     = 0.0
+
+        elif self._pitcher_state == "sliding_in":
+            t = min(1.0, self._pitcher_anim_t / SLIDE_IN_DUR)
+            self._pitcher_x_offset = PITCHER_SLIDE_DISTANCE * (1.0 - self._ease(t))
+            if self._pitcher_anim_t >= SLIDE_IN_DUR:
+                self._pitcher_x_offset = 0.0
+                self._pitcher_state    = "idle"
 
     # ------------------------------------------------------------------ #
 
@@ -556,9 +832,24 @@ class LemonadeGame(FatigueMixin, BaseScreen):
         lbl1 = f_lbl.render("Lemons", True, (255, 255, 255))
         lbl2 = f_lbl.render("left", True, (255, 255, 255))
         val  = f_val.render(f"{self.lemons_left:02d}", True, (255, 255, 255))
-        surface.blit(lbl1, lbl1.get_rect(centerx=r.centerx, top=r.y + 28))
-        surface.blit(lbl2, lbl2.get_rect(centerx=r.centerx, top=r.y + 28 + lbl1.get_height()))
-        surface.blit(val, val.get_rect(centerx=r.centerx, bottom=r.bottom - 24))
+
+        # Center the WHOLE label+number group as one block within the box's
+        # actual content rect, rather than anchoring the label from the top
+        # and the number from the bottom independently (which left uneven,
+        # resolution/font-size-dependent padding instead of true centering).
+        # Each line is still individually horizontally centered -- correct
+        # for stacked text of differing widths -- and recentres automatically
+        # as the digit count changes (e.g. "00" vs a two-digit value).
+        line_gap  = 4
+        group_gap = 10
+        group_h = (lbl1.get_height() + line_gap + lbl2.get_height()
+                   + group_gap + val.get_height())
+        gy = r.centery - group_h // 2
+        surface.blit(lbl1, lbl1.get_rect(centerx=r.centerx, top=gy))
+        gy += lbl1.get_height() + line_gap
+        surface.blit(lbl2, lbl2.get_rect(centerx=r.centerx, top=gy))
+        gy += lbl2.get_height() + group_gap
+        surface.blit(val, val.get_rect(centerx=r.centerx, top=gy))
 
     def _draw_juice_drip(self, surface, hand_pos, pitcher_rect):
         """A few small animated drops arcing from the squeezed lemon toward
@@ -580,6 +871,79 @@ class LemonadeGame(FatigueMixin, BaseScreen):
             pygame.draw.circle(drop, (255, 221, 51, alpha), (r, r), r)
             surface.blit(drop, (x - r, y - r))
 
+    def _draw_progress_indicator(self, surface, cx, cy, radius):
+        """Lemon-slice progress ring: 8 wedge segments that fill clockwise
+        purely as a visualisation of the SAME _phase/_hold_elapsed the
+        squeeze mechanic already tracks -- how long the grip has been
+        continuously held, never how hard. No separate progress source,
+        no gameplay effect of its own."""
+        phase = self._phase
+        active = phase in ("squeezing", "ready")
+        if phase == "squeezing":
+            progress = min(1.0, self._hold_elapsed / max(1e-6, self.hold_required))
+        elif phase == "ready":
+            progress = 1.0
+        else:
+            progress = 0.0
+
+        flash = self._indicator_flash_t
+        flash_frac = (flash / INDICATOR_FLASH_DUR) if INDICATOR_FLASH_DUR > 0 else 0.0
+        bounce = 1.0 + 0.14 * math.sin(flash_frac * math.pi) if flash > 0 else 1.0
+        r = max(10, int(radius * bounce))
+
+        # a gentle glow while actively squeezing (or during the completion
+        # flash) -- a few soft, low-alpha rings, nothing distracting
+        if active or flash > 0:
+            for i, a in enumerate((36, 22, 10)):
+                gr = r + 8 + i * 9
+                glow = pygame.Surface((gr * 2, gr * 2), pygame.SRCALPHA)
+                pygame.draw.circle(glow, (255, 221, 60, a), (gr, gr), gr)
+                surface.blit(glow, (cx - gr, cy - gr))
+
+        DARK_SEG   = (118, 106, 56)     # desaturated/idle wedge colour
+        BRIGHT_SEG = (255, 221, 51)     # juicy lemon-yellow, fully filled
+        FLASH_SEG  = (255, 250, 214)    # brief bright-white flash on completion
+
+        n = INDICATOR_SEGMENTS
+        seg_span = 360.0 / n
+        for i in range(n):
+            seg_prog = max(0.0, min(1.0, progress * n - i))
+            col = tuple(int(DARK_SEG[k] + (BRIGHT_SEG[k] - DARK_SEG[k]) * seg_prog) for k in range(3))
+            if flash > 0:
+                col = tuple(int(col[k] + (FLASH_SEG[k] - col[k]) * flash_frac) for k in range(3))
+            a0 = math.radians(-90 + i * seg_span)
+            a1 = math.radians(-90 + (i + 1) * seg_span)
+            pts = [(cx, cy)]
+            steps = 6
+            for s in range(steps + 1):
+                a = a0 + (a1 - a0) * (s / steps)
+                pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
+            pygame.draw.polygon(surface, col, pts)
+
+        # thin cream separators between wedges, like a real sliced lemon
+        for i in range(n):
+            a = math.radians(-90 + i * seg_span)
+            x2, y2 = cx + r * math.cos(a), cy + r * math.sin(a)
+            pygame.draw.line(surface, (255, 252, 235), (cx, cy), (x2, y2), 2)
+
+        pygame.draw.circle(surface, (190, 196, 90), (cx, cy), r, 4)       # rind ring
+        pygame.draw.circle(surface, (250, 250, 240), (cx, cy), max(3, int(r * 0.08)))  # core
+
+        if flash > 0 or phase == "ready":
+            label, col = "COMPLETE!", (120, 255, 160)
+        elif phase == "squeezing":
+            label, col = "KEEP SQUEEZING!", (255, 221, 60)
+        else:
+            label, col = "SQUEEZE", (235, 240, 248)
+        lbl_s = self._font_sm.render(label, True, col)
+        lbl_r = lbl_s.get_rect(centerx=cx, bottom=cy - r - 14)
+        # a dark backing pill, same legibility trick the bottom hint bar
+        # uses, so the label reads clearly against the bright sky behind it
+        bar = pygame.Surface((lbl_r.width + 24, lbl_r.height + 10), pygame.SRCALPHA)
+        pygame.draw.rect(bar, (10, 20, 15, 150), bar.get_rect(), border_radius=8)
+        surface.blit(bar, (lbl_r.x - 12, lbl_r.y - 5))
+        surface.blit(lbl_s, lbl_r)
+
     def draw(self, surface):
         T = get_theme()
         bg_img = _load_cover("bg_lemonade.png", GAME_W, GAME_H)
@@ -592,59 +956,96 @@ class LemonadeGame(FatigueMixin, BaseScreen):
             self._draw_instructions(surface)
             return
 
-        # -- table / stand -- centered, its VISIBLE bottom (the asset is
-        # pre-cropped to its own opaque content by _load_fit, so this rect's
-        # bottom already excludes any transparent padding) touches the
-        # screen's bottom edge exactly, no gap. The flat tabletop surface
-        # itself sits ~60% of the way down the sprite's own visible height
-        # (measured directly off the art: coverage jumps from ~8% -- just
-        # the two support posts -- to ~80%+ right at that fraction), so
-        # everything resting "on the table" is positioned relative to the
-        # stand itself rather than a hardcoded screen coordinate.
-        stand_img = _load_fit("stand_lemonade.png", int(GAME_W * 0.96), int(GAME_H * 0.62))
+        # -- table / stand -- centered, scaled UNIFORMLY (one factor for
+        # both axes, never stretched) so its own VISIBLE height exactly
+        # fills the screen: top = 0, bottom = GAME_H. Left/right may extend
+        # past the screen edges and clip -- that's expected at this scale.
+        #
+        # The tabletop is drawn in perspective as a slab: pixel-coverage
+        # first goes from ~8% (just the two support posts) to ~80%+ at
+        # y_frac=~0.595 -- but that's the slab's BACK edge (farthest from
+        # the camera), not where an object actually rests. The lit top face
+        # continues at a flat, uniform colour all the way to y_frac=~0.757,
+        # where it darkens into the slab's front bevel -- THAT edge (the
+        # near side, closest to the camera) is the real resting surface;
+        # anchoring to the back edge instead was leaving every item resting
+        # on the table visibly "floating" above its actual visible bulk,
+        # even though it technically touched the top-most tan pixel. Both
+        # fractions were measured directly off the art and are scale-
+        # independent, so this keeps working at any render size.
+        stand_img = _load_scale_to_height("stand_lemonade.png", GAME_H)
         table_surface_y = GAME_H - 260
         if stand_img is not None:
             sr = stand_img.get_rect(midbottom=(GAME_W // 2, GAME_H))
             surface.blit(stand_img, sr)
-            table_surface_y = sr.y + int(sr.height * 0.60)
+            table_surface_y = sr.y + int(sr.height * 0.757)
 
-        # -- basket (difficulty-specific) -- left of the pitcher, its own
-        # visible bottom resting exactly on the tabletop surface. Each
-        # difficulty's art has different internal padding (a different pile
-        # of lemons), but _load_fit crops every one of them to its own
-        # opaque content first, so anchoring all three the same way here
-        # still lines each one's real visible bottom up with the table.
+        # -- basket (difficulty-specific) -- left of the pitcher, nudged a
+        # little above the tabletop line (rather than sitting at the exact
+        # same height as the pitcher's own bottom) so the two don't read as
+        # mechanically level, while its own visible bottom still lands on
+        # the tabletop with no gap. Each difficulty's art has different
+        # internal padding (a different pile of lemons), but _load_fit crops
+        # every one of them to its own opaque content first, so anchoring
+        # all three the same way here still lines each one's real visible
+        # bottom up with the table.
+        basket_lift = int(GAME_H * 0.013)
         basket_name = {"Easy": "easy_lemonade.png", "Medium": "medium_lemonade.png",
                        "Hard": "hard_lemonade.png"}.get(self.difficulty, "easy_lemonade.png")
         basket_img = _load_fit(basket_name, 480, 400)
         if basket_img is not None:
-            br = basket_img.get_rect(midbottom=(int(GAME_W * 0.205), table_surface_y))
+            br = basket_img.get_rect(midbottom=(int(GAME_W * 0.205), table_surface_y - basket_lift))
             surface.blit(basket_img, br)
 
-        # -- pitcher (center) -- juice fill drawn underneath its glass; its
-        # visible bottom rests exactly on the tabletop surface (no gap, not
-        # sunken into it).
-        light = (255, 219, 90)
-        dark  = (243, 176, 18)
-        # Display = committed juice + this lemon's own (still uncommitted)
-        # progress, so the level visibly rises while squeezing and drops
-        # back to the committed total if released early (discarded).
-        display_fill = (self.pitcher_fill + self._temp_fill) / 100.0
+        # -- pitcher (center) -- juice drawn on top of its glass so the
+        # fill stays clearly visible (see _draw_pitcher); resting
+        # position/size are unchanged (visible bottom on the
+        # tabletop surface) -- only sliding_out/sliding_in offset it
+        # horizontally for the pitcher-replacement animation. A softer,
+        # less saturated lemon-yellow at lower alpha so the glass's own
+        # highlights underneath clearly show through -- reading as real
+        # liquid inside the glass rather than a painted-on shape.
+        light = (255, 240, 170, 150)
+        dark  = (255, 221, 100, 150)
+        pitcher_cx = GAME_W // 2 + int(self._pitcher_x_offset)
+        if self._pitcher_state == "sliding_out":
+            # the OLD, just-filled pitcher riding off to the right -- its
+            # fill isn't reset to 0 until sliding_out finishes, so
+            # self.pitcher_fill still holds the old pitcher's final value
+            # here.
+            pitcher_fill_display = self.pitcher_fill / 100.0
+        elif self._pitcher_state == "sliding_in":
+            # the NEW, empty pitcher arriving from the right
+            pitcher_fill_display = 0.0
+        else:
+            # idle/pouring/full_display: committed juice + this lemon's own
+            # (still uncommitted) hold-preview, so the level visibly rises
+            # while squeezing and drops back if released early (discarded).
+            pitcher_fill_display = (self.pitcher_fill + self._temp_fill) / 100.0
         pitcher_rect = _draw_pitcher(
-            surface, GAME_W // 2, table_surface_y, 560,
-            display_fill, dark, light)
+            surface, pitcher_cx, table_surface_y, 560,
+            pitcher_fill_display, dark, light)
 
-        # -- hand (resting or squeezing) -- right side; its visible bottom
-        # (the forearm) touches the screen's bottom edge, as if reaching up
-        # from off-screen. Both sprites share this exact same anchor call,
-        # so switching between hold/squeeze never shifts the hand.
+        # -- hand (resting or squeezing) -- right side; the forearm is
+        # pushed PAST the screen's bottom edge (FPS-style) so it's actually
+        # clipped by the screen boundary instead of just touching it --
+        # the hand/lemon stay fully visible since they sit in the sprite's
+        # upper portion. Both sprites share this exact same anchor call
+        # (same x, same extra drop), so switching hold/squeeze never shifts
+        # the hand or the lemon's apparent position.
         hand_name = "squeeze_lemonade.png" if self._phase in ("squeezing", "ready") else "hold_lemonade.png"
         hand_img = _load_fit(hand_name, 560, 620)
         hand_x = int(GAME_W * 0.80)
+        hand_bottom_y = GAME_H + int(GAME_H * 0.12)
         if hand_img is not None:
-            hr = hand_img.get_rect(midbottom=(hand_x, GAME_H))
+            hr = hand_img.get_rect(midbottom=(hand_x, hand_bottom_y))
             self._draw_juice_drip(surface, (hr.centerx - 60, hr.y + 120), pitcher_rect)
             surface.blit(hand_img, hr)
+
+        # -- lemon segment progress indicator -- right side, directly above
+        # the hand (same x as the hand's own anchor), clear of the header
+        # above and the hand below regardless of hold/squeeze sprite.
+        self._draw_progress_indicator(surface, hand_x, int(GAME_H * 0.335), 80)
 
         self._draw_lemons_left(surface)
 
