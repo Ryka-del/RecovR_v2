@@ -421,47 +421,45 @@ class TherapistDashboardScene:
         _fd = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                            "assets", "font")
         def _F(name): return os.path.join(_fd, name)
+        # Professional/clinical text system is Poppins throughout (uploaded
+        # specifically to replace Lexend/FjallaOne in this role): SemiBold
+        # for page titles, section headings and important values; Medium for
+        # buttons, tabs, names and interface labels; Regular for body text
+        # and secondary info. The small secondary Sora identity (Home tile
+        # labels, greeting text, empty-state illustrations) and the symbol/
+        # logo fonts are a deliberately different, narrow role untouched by
+        # this -- see the font-consistency pass earlier in this file's
+        # history for why those specific uses stay as they are.
         self.fnt = {
             "logo":        pygame.font.SysFont("arialblack",                 int((36 if self._touch_ui else 51)*_fs)),
-            "nav":         pygame.font.Font(_F("Lexend-Medium.ttf"),         int(27*_fs)),
+            "nav":         pygame.font.Font(_F("Poppins-Medium.ttf"),        int(27*_fs)),
             "nav_sym":     pygame.font.SysFont("segoeuisymbol",              int(35*_fs)),
             "welcome":     pygame.font.Font(_F("Sora-Light.ttf"),            int(33*_fs)),
-            # Was GravitasOne (a heavy poster/game-style display face) -- the
-            # only other page/section title (panel_title, modal_head) uses
-            # FjallaOne, so this is now that SAME family at a larger size for
-            # the one title that needs more visual weight, instead of a
-            # second, unrelated display font for an otherwise identical role.
-            "dash_title":  pygame.font.Font(_F("FjallaOne-Regular.ttf"),     int(60*_fs)),
-            "panel_title": pygame.font.Font(_F("FjallaOne-Regular.ttf"),     int(36*_fs)),
-            "body":        pygame.font.Font(_F("Lexend-Regular.ttf"),        int(27*_fs)),
-            "body_b":      pygame.font.Font(_F("Lexend-SemiBold.ttf"),       int(27*_fs)),
-            "small":       pygame.font.Font(_F("Lexend-Light.ttf"),          int(25*_fs)),
+            "dash_title":  pygame.font.Font(_F("Poppins-SemiBold.ttf"),      int(60*_fs)),
+            "panel_title": pygame.font.Font(_F("Poppins-SemiBold.ttf"),      int(36*_fs)),
+            "body":        pygame.font.Font(_F("Poppins-Regular.ttf"),       int(27*_fs)),
+            "body_b":      pygame.font.Font(_F("Poppins-SemiBold.ttf"),      int(27*_fs)),
+            "small":       pygame.font.Font(_F("Poppins-Regular.ttf"),       int(25*_fs)),
             "small_i":     pygame.font.Font(_F("Sora-ExtraLight.ttf"),       int(25*_fs)),
-            "label":       pygame.font.Font(_F("Lexend-Regular.ttf"),        int(25*_fs)),
-            "input":       pygame.font.Font(_F("Lexend-Regular.ttf"),        int(25*_fs)),
-            "btn":         pygame.font.Font(_F("Lexend-SemiBold.ttf"),       int(27*_fs)),
-            "btn_lg":      pygame.font.Font(_F("Lexend-Bold.ttf"),           int(30*_fs)),
-            # Was Sora-SemiBold -- the role/"Edit Profile" text directly below
-            # this in the same sidebar card (self.fnt["profile"]) is already
-            # Lexend, and every other prominent name display in the app
-            # (Active Patient, Start Session's Patient card, etc.) is Lexend
-            # too; this just matches that instead of being the one name in
-            # the app rendered in a different family.
-            "profile_nm":  pygame.font.Font(_F("Lexend-SemiBold.ttf"),       int(24*_fs)),
-            "profile":     pygame.font.Font(_F("Lexend-Light.ttf"),          int(22*_fs)),
+            "label":       pygame.font.Font(_F("Poppins-Regular.ttf"),       int(25*_fs)),
+            "input":       pygame.font.Font(_F("Poppins-Regular.ttf"),       int(25*_fs)),
+            "btn":         pygame.font.Font(_F("Poppins-Medium.ttf"),        int(27*_fs)),
+            "btn_lg":      pygame.font.Font(_F("Poppins-SemiBold.ttf"),      int(30*_fs)),
+            "profile_nm":  pygame.font.Font(_F("Poppins-Medium.ttf"),        int(24*_fs)),
+            "profile":     pygame.font.Font(_F("Poppins-Regular.ttf"),       int(22*_fs)),
             "card_lbl":    pygame.font.Font(_F("Sora-SemiBold.ttf"),         int(25*_fs)),
             "card_sym":    pygame.font.SysFont("segoeuisymbol",              int(51*_fs)),
-            "modal_head":  pygame.font.Font(_F("FjallaOne-Regular.ttf"),     int(42*_fs)),
-            "modal_lbl":   pygame.font.Font(_F("Lexend-Medium.ttf"),         int(27*_fs)),
-            "modal_inp":   pygame.font.Font(_F("Lexend-Regular.ttf"),        int(27*_fs)),
-            "modal_err":   pygame.font.Font(_F("Lexend-Light.ttf"),          int(23*_fs)),
+            "modal_head":  pygame.font.Font(_F("Poppins-SemiBold.ttf"),      int(42*_fs)),
+            "modal_lbl":   pygame.font.Font(_F("Poppins-Medium.ttf"),        int(27*_fs)),
+            "modal_inp":   pygame.font.Font(_F("Poppins-Regular.ttf"),       int(27*_fs)),
+            "modal_err":   pygame.font.Font(_F("Poppins-Regular.ttf"),       int(23*_fs)),
             "empty_head":  pygame.font.Font(_F("Sora-SemiBold.ttf"),         int(33*_fs)),
-            "section":     pygame.font.Font(_F("Lexend-SemiBold.ttf"),       int(24*_fs)),
-            "tag":         pygame.font.Font(_F("Lexend-Medium.ttf"),         int(22*_fs)),
-            "eyebrow":     pygame.font.Font(_F("Lexend-Medium.ttf"),         int(19*_fs)),
+            "section":     pygame.font.Font(_F("Poppins-SemiBold.ttf"),      int(24*_fs)),
+            "tag":         pygame.font.Font(_F("Poppins-Medium.ttf"),        int(22*_fs)),
+            "eyebrow":     pygame.font.Font(_F("Poppins-Medium.ttf"),        int(19*_fs)),
             "time":        pygame.font.Font(_F("ZenDots-Regular.ttf"),       int(19*_fs)),
-            "header_date": pygame.font.Font(_F("Lexend-Light.ttf"),          int(16*_fs)),
-            "breadcrumb":  pygame.font.Font(_F("Lexend-Light.ttf"),          int(24*_fs)),
+            "header_date": pygame.font.Font(_F("Poppins-Regular.ttf"),       int(16*_fs)),
+            "breadcrumb":  pygame.font.Font(_F("Poppins-Regular.ttf"),       int(24*_fs)),
             "sym26":       pygame.font.SysFont("segoeuisymbol",              int(26*_fs)),
             "sym29":       pygame.font.SysFont("segoeuisymbol",              int(29*_fs)),
         }
@@ -5251,15 +5249,24 @@ class TherapistDashboardScene:
         # Field rows are plain text, not tap targets -- _tt()'s 50px touch
         # floor doesn't belong here; _sc() gives a compact row without it.
         lh    = max(int(34 * H / 1080), self._sc(32))
-        val_w = pa.right - int(30 * W / 1920) - val_x
+        # Reserved unconditionally (not only once scrolling is confirmed
+        # needed) -- wrap width and scroll-need are circular otherwise:
+        # text wrapped against the FULL width could measure as fitting
+        # without scrolling, then overlap the arrows once they appear
+        # because THEY reserve space the wrap never accounted for. This is
+        # what let "Unknown / Not Specified" run under the scrollbar before.
+        arrow_w = self._tt(44)
+        val_w = pa.right - int(30 * W / 1920) - (arrow_w + self._sc(8)) - val_x
 
         # Only the OWNER may edit. A shared patient is read-only here, so the
         # per-section Edit buttons are simply not drawn for a non-owner.
         can_edit = self._is_owner(pt)
-        # Every section's Edit button is the edit_patient_info.png pill
-        # (icon + "Edit" label) now -- sized to actually be readable rather
-        # than squeezed into the old icon-only 20px box.
-        edit_h = max(self._sc(20), int(lh * 0.84))
+        # Small square pencil icon beside each heading (not a wide "Edit"
+        # pill) -- edit_profile.png is the SAME icon-only asset already used
+        # for the sidebar's profile-edit badge, reused here instead of a
+        # second "edit" asset, clamped to the ~36-40px comfortable touch
+        # target this is meant to be.
+        edit_h = max(36, min(40, self._sc(38)))
 
         # measure -> total content height
         groups = self._pv_info_fields(pt)
@@ -5281,10 +5288,9 @@ class TherapistDashboardScene:
         view_h = bottom - top
         self._pv_info_scroll_max = max(0, total - view_h)
         self._pv_info_scroll = max(0, min(self._pv_info_scroll, self._pv_info_scroll_max))
-        arrow_w = self._tt(44) if self._pv_info_scroll_max > 0 else 0
 
         self._pv_sec_edit_rects = {}
-        right_edge = pa.right - int(30 * W / 1920) - (arrow_w + self._sc(8) if arrow_w else 0)
+        right_edge = pa.right - int(30 * W / 1920) - (arrow_w + self._sc(8))
 
         prev = surface.get_clip()
         surface.set_clip(pygame.Rect(pa.x + 1, top, pa.width - 2, view_h))
@@ -5296,33 +5302,27 @@ class TherapistDashboardScene:
                     surface.blit(hdr_s, (x0, y))
                     sec = b[2]
                     if sec and can_edit:
-                        # Immediately beside the subtitle, not pushed to the
-                        # far right of the card -- clearly "this button
-                        # belongs to this section", per row. Anchored by its
-                        # LEFT edge right after the heading text (a wide fit
-                        # box centered within the row's remaining width was
-                        # pushing it toward the middle/right instead).
-                        ex = x0 + hdr_s.get_width() + self._sc(14)
-                        max_w = max(edit_h, right_edge - ex)
-                        edit_img = _img_fit("edit_patient_info.png", max_w, edit_h)
+                        # Immediately beside the heading, small consistent
+                        # gap, vertically centered on the heading text.
+                        ex = x0 + hdr_s.get_width() + self._sc(10)
                         vcenter = y + hdr_s.get_height() // 2
+                        edit_img = _img_fit("edit_profile.png", edit_h, edit_h)
                         if edit_img is not None:
                             drawn_r = edit_img.get_rect(midleft=(ex, vcenter))
                             if drawn_r.right > right_edge:   # never spill past the arrows
                                 drawn_r.right = right_edge
                             surface.blit(edit_img, drawn_r)
                         else:
-                            drawn_r = pygame.Rect(ex, 0, min(max_w, edit_h * 3), edit_h)
+                            drawn_r = pygame.Rect(ex, 0, edit_h, edit_h)
                             drawn_r.centery = vcenter
-                            pygame.draw.rect(surface, (236, 242, 250), drawn_r, border_radius=9)
-                            pygame.draw.rect(surface, (95, 130, 175), drawn_r, 2, border_radius=9)
-                            es = self.fnt["small"].render("Edit", True, (60, 95, 150))
+                            pygame.draw.circle(surface, (40, 150, 170), drawn_r.center, edit_h // 2)
+                            es = self.fnt["sym26"].render("✎", True, (255, 255, 255))
                             surface.blit(es, es.get_rect(center=drawn_r.center))
-                        # only clickable while actually on screen -- the pill
-                        # is wide enough to tap directly, no padded-out touch
-                        # target needed the way the old icon-only button had.
+                        # The icon itself is small, but the tap target stays
+                        # comfortable via this padding, not by enlarging the
+                        # icon's own rendered size.
                         if drawn_r.top >= top and drawn_r.bottom <= bottom:
-                            self._pv_sec_edit_rects[sec] = drawn_r.inflate(self._sc(6), self._sc(6))
+                            self._pv_sec_edit_rects[sec] = drawn_r.inflate(self._sc(14), self._sc(14))
                     hl_y = y + max(lh, edit_h) - int(4 * H / 1080)
                     pygame.draw.line(surface, (200, 214, 232),
                                      (x0, hl_y), (pa.right - int(30 * W / 1920), hl_y), 1)
@@ -5483,32 +5483,20 @@ class TherapistDashboardScene:
             self._sh_up_rect = self._sh_down_rect = pygame.Rect(0, 0, 1, 1)
             return
 
-        # Row height comes from the actual text height (was a raw H/1080
-        # guess shorter than the touch-scaled font, so a 2nd session's row
-        # started before the 1st one's text had finished rendering).
-        row_h       = self.fnt["small"].get_height() + self._sc(20)
         view_top    = hdr_line_y + self._sc(8)
         view_bottom = pa.bottom - int(10*H/1080)
         view_h      = view_bottom - view_top
-        content_h   = len(sessions) * row_h
-        self._sh_scroll_max = max(0, content_h - view_h)
-        self._sh_scroll     = max(0, min(self._sh_scroll, self._sh_scroll_max))
-        scrollable  = self._sh_scroll_max > 0
-        arrow_w     = self._tt(44) if scrollable else 0
-        content_right = pa.right - int(8*W/1920) - (arrow_w + self._sc(8) if scrollable else 0)
+        row_pad     = self._sc(14)
+        row_line_h  = self.fnt["small"].get_height()
+        arrow_w     = self._tt(44)
+        content_right = pa.right - int(8*W/1920) - (arrow_w + self._sc(8))
 
-        prev_clip = surface.get_clip()
-        surface.set_clip(pygame.Rect(pa.x+1, view_top, content_right - pa.x - 1, view_h))
-        for k, s in enumerate(sessions):
-            ry = view_top + k * row_h - self._sh_scroll
-            if ry + row_h <= view_top or ry >= view_bottom:
-                continue
-            row_r = pygame.Rect(pa.x+int(10*W/1920), ry, pa.width-int(20*W/1920), row_h - 4)
-            if k % 2 == 0:
-                bg = pygame.Surface((row_r.width, row_r.height), pygame.SRCALPHA)
-                bg.fill((240,246,255,180)); surface.blit(bg, row_r.topleft)
-            pygame.draw.rect(surface, (215,225,240), row_r, 1, border_radius=8)
-
+        # Build each session's row values once, wrapping long cells onto
+        # multiple lines (touch only) instead of the old ellipsis, so a long
+        # game name is fully readable. Row height grows to fit whichever
+        # cell wrapped the most, same approach as Calibration Records.
+        row_data = []   # (wrapped_cols, row_h)
+        for s in sessions:
             date_str = str(s.get("played_at",""))[:10 if touch else 16]
             mins, secs = divmod(int(s.get("duration_sec", 0)), 60)
             if mins and secs:
@@ -5523,17 +5511,40 @@ class TherapistDashboardScene:
             else:
                 vals = [date_str, s.get("game","—"), str(s.get("score","—")),
                         dur_str, s.get("difficulty","—"), s.get("therapist_name","—")]
-            for i, (cx, v) in enumerate(zip(col_xs, vals)):
-                if touch:
-                    # ellipsize so a long game name can never bleed into the
-                    # next column
-                    avail = (col_xs[i+1] if i+1 < len(col_xs) else content_right) - cx - self._sc(8)
-                    if self.fnt["small"].size(v)[0] > avail:
-                        while v and self.fnt["small"].size(v + "…")[0] > avail:
-                            v = v[:-1]
-                        v = (v + "…") if v else "…"
-                surface.blit(self.fnt["small"].render(v, True, (40,55,75)),
-                             (cx, ry + (row_h - self.fnt["small"].get_height())//2))
+            if touch:
+                wrapped = []
+                for i, v in enumerate(vals):
+                    avail = (col_xs[i+1] if i+1 < len(col_xs) else content_right) - col_xs[i] - self._sc(8)
+                    wrapped.append(self._wrap(v, self.fnt["small"], max(avail, self._sc(20))))
+                rh = max(len(w) for w in wrapped) * row_line_h + row_pad
+            else:
+                wrapped = [[v] for v in vals]
+                rh = row_line_h + row_pad
+            row_data.append((wrapped, rh))
+
+        content_h = sum(rh for _, rh in row_data)
+        self._sh_scroll_max = max(0, content_h - view_h)
+        self._sh_scroll     = max(0, min(self._sh_scroll, self._sh_scroll_max))
+        scrollable  = self._sh_scroll_max > 0
+        arrow_w     = arrow_w if scrollable else 0
+        content_right = pa.right - int(8*W/1920) - (arrow_w + self._sc(8) if scrollable else 0)
+
+        prev_clip = surface.get_clip()
+        surface.set_clip(pygame.Rect(pa.x+1, view_top, content_right - pa.x - 1, view_h))
+        ry = view_top - self._sh_scroll
+        for k, (wrapped, rh) in enumerate(row_data):
+            if ry + rh >= view_top and ry <= view_bottom:
+                row_r = pygame.Rect(pa.x+int(10*W/1920), ry, pa.width-int(20*W/1920), rh - 4)
+                if k % 2 == 0:
+                    bg = pygame.Surface((row_r.width, row_r.height), pygame.SRCALPHA)
+                    bg.fill((240,246,255,180)); surface.blit(bg, row_r.topleft)
+                pygame.draw.rect(surface, (215,225,240), row_r, 1, border_radius=8)
+                for i, (cx, lines) in enumerate(zip(col_xs, wrapped)):
+                    ty = ry + row_pad // 2
+                    for ln in lines:
+                        surface.blit(self.fnt["small"].render(ln, True, (40,55,75)), (cx, ty))
+                        ty += row_line_h
+            ry += rh
         surface.set_clip(prev_clip)
 
         # ── scroll arrows (only when the history overflows) ──────────
@@ -5596,10 +5607,25 @@ class TherapistDashboardScene:
 
         section_gap = int(18*H/1080)
         lbl_h       = int(20*H/1080)
+        # Header band measured from the real font height (self.fnt["section"]
+        # is sized via _fs, a different scale than this function's other
+        # H/1080-based spacing) instead of a fixed guess -- a mismatched
+        # guess is exactly what let a taller font overlap the stat boxes
+        # below it.
+        hdr_band = self.fnt["section"].get_height() + int(8*H/1080)
+        # Stat-box height from its real label+value font heights -- same
+        # fixed-offset-vs-real-font-size mismatch as the header above (the
+        # box was a flat 70*H/1080 regardless of what actually had to fit
+        # inside it, which only coincidentally cleared the old Lexend sizes
+        # at desktop and badly overlapped them at the touch panel's _fs).
+        stat_pad_v = int(8*H/1080)
+        stat_gap_v = int(4*H/1080)
+        stat_box_h = (stat_pad_v * 2 + self.fnt["tag"].get_height()
+                      + stat_gap_v + self.fnt["body_b"].get_height())
         # Fixed per-section advance (heading + stat boxes + chart + gap) --
         # every section takes the same vertical space, so this also doubles
         # as the exact scroll-content-height unit.
-        adv_h = int(36*H/1080) + int(92*H/1080) + int(60*H/1080) + lbl_h + section_gap
+        adv_h = hdr_band + stat_box_h + int(22*H/1080) + int(60*H/1080) + lbl_h + section_gap
 
         view_top    = ly
         view_bottom = pa.bottom - int(10*H/1080)
@@ -5627,12 +5653,12 @@ class TherapistDashboardScene:
                 g_tmin, g_tsec = divmod(sum(g_durs), 60)
 
                 # Section heading
-                surface.blit(self.fnt["section"].render(game_name, True, bar_col),
-                             (lx, cy))
+                hdr_s = self.fnt["section"].render(game_name, True, bar_col)
+                surface.blit(hdr_s, (lx, cy))
+                line_y = cy + hdr_s.get_height() + int(2*H/1080)
                 pygame.draw.line(surface, bar_col,
-                                 (lx, cy + int(28*H/1080)),
-                                 (content_right, cy + int(28*H/1080)), 1)
-                stat_y = cy + int(36*H/1080)
+                                 (lx, line_y), (content_right, line_y), 1)
+                stat_y = cy + hdr_band
 
                 # Stat boxes
                 stat_items = [
@@ -5644,14 +5670,15 @@ class TherapistDashboardScene:
                 sw = int((content_right - lx - int(48*W/1920)) // 4)
                 for si, (lbl, val) in enumerate(stat_items):
                     sx = lx + si * (sw + int(16*W/1920))
-                    box = pygame.Rect(sx, stat_y, sw, int(70*H/1080))
+                    box = pygame.Rect(sx, stat_y, sw, stat_box_h)
                     _card_bg(surface, box, alpha=235,
                              border_col=(*bar_col, 255), border_w=1)
-                    surface.blit(self.fnt["tag"].render(lbl, True, (100,120,150)),
-                                 (sx + int(8*W/1920), stat_y + int(8*H/1080)))
+                    lbl_s = self.fnt["tag"].render(lbl, True, (100,120,150))
+                    surface.blit(lbl_s, (sx + int(8*W/1920), stat_y + stat_pad_v))
                     surface.blit(self.fnt["body_b"].render(val, True, bar_col),
-                                 (sx + int(8*W/1920), stat_y + int(34*H/1080)))
-                chart_y = stat_y + int(92*H/1080)
+                                 (sx + int(8*W/1920),
+                                  stat_y + stat_pad_v + lbl_s.get_height() + stat_gap_v))
+                chart_y = stat_y + stat_box_h + int(22*H/1080)
 
                 # Mini bar chart — last 8 sessions, bars = score/duration (pts/s)
                 recent       = g_sessions[:8][::-1]
@@ -5751,33 +5778,22 @@ class TherapistDashboardScene:
             self._cr_up_rect = self._cr_down_rect = pygame.Rect(0, 0, 1, 1)
             return
 
-        # Row height comes from the actual text height -- same fix as
-        # Session History (the old raw H/1080 guess was shorter than the
-        # touch-scaled font, so consecutive records' rows overlapped).
-        row_h       = self.fnt["body"].get_height() + self._sc(14)
         view_top    = hdr_line_y + self._sc(8)
         view_bottom = pa.bottom - int(10*H/1080)
         view_h      = view_bottom - view_top
-        content_h   = len(records) * row_h
-        self._cr_scroll_max = max(0, content_h - view_h)
-        self._cr_scroll     = max(0, min(self._cr_scroll, self._cr_scroll_max))
-        scrollable  = self._cr_scroll_max > 0
-        arrow_w     = self._tt(44) if scrollable else 0
-        content_right = pa.right - int(8*W/1920) - (arrow_w + self._sc(8) if scrollable else 0)
+        row_pad     = self._sc(10)
+        row_line_h  = self.fnt["body"].get_height()
+        arrow_w     = self._tt(44)
+        content_right = pa.right - int(8*W/1920) - (arrow_w + self._sc(8))
 
-        prev_clip = surface.get_clip()
-        surface.set_clip(pygame.Rect(pa.x+1, view_top, content_right - pa.x - 1, view_h))
-        for j, rec in enumerate(records):
-            ry = view_top + j * row_h - self._cr_scroll
-            if ry + row_h <= view_top or ry >= view_bottom:
-                continue
-            if j % 2 == 0:
-                row_r = pygame.Rect(pa.x+int(8*W/1920), ry, pa.width-int(16*W/1920), row_h)
-                bg = pygame.Surface((row_r.width, row_r.height), pygame.SRCALPHA)
-                pygame.draw.rect(bg, (240,246,255,160),
-                                 (0,0,row_r.width,row_r.height), border_radius=6)
-                surface.blit(bg, row_r.topleft)
-
+        # Build each record's row values once, wrapping long cells onto
+        # multiple lines (touch only -- desktop's columns are wide enough
+        # that this was never needed there) instead of the old ellipsis,
+        # so e.g. a long game name is fully readable instead of cut to
+        # "Grip Stren…". Row height grows to fit whichever cell wrapped the
+        # most, matching the Patient Information tab's own approach.
+        row_data = []   # (wrapped_cols, row_h)
+        for rec in records:
             date_str = str(rec.get("calibrated_at", ""))[:10]
             game_disp = rec.get("game_name") or rec.get("game_type", "—")
             avg_str = f"{rec.get('average', 0):.3f}"
@@ -5794,17 +5810,41 @@ class TherapistDashboardScene:
                     date_str,
                     rec.get("therapist_name", "—"),
                 ]
-            for i, (cx, v) in enumerate(zip(col_xs, vals)):
-                if touch:
-                    # ellipsize so a long game name can never bleed into the
-                    # next column
-                    avail = (col_xs[i+1] if i+1 < len(col_xs) else content_right) - cx - self._sc(8)
-                    if self.fnt["body"].size(v)[0] > avail:
-                        while v and self.fnt["body"].size(v + "…")[0] > avail:
-                            v = v[:-1]
-                        v = (v + "…") if v else "…"
-                surface.blit(self.fnt["body"].render(v, True, (40,55,75)),
-                             (cx, ry + (row_h - self.fnt["body"].get_height())//2))
+            if touch:
+                wrapped = []
+                for i, v in enumerate(vals):
+                    avail = (col_xs[i+1] if i+1 < len(col_xs) else content_right) - col_xs[i] - self._sc(8)
+                    wrapped.append(self._wrap(v, self.fnt["body"], max(avail, self._sc(20))))
+                rh = max(len(w) for w in wrapped) * row_line_h + row_pad
+            else:
+                wrapped = [[v] for v in vals]
+                rh = row_line_h + row_pad
+            row_data.append((wrapped, rh))
+
+        content_h = sum(rh for _, rh in row_data)
+        self._cr_scroll_max = max(0, content_h - view_h)
+        self._cr_scroll     = max(0, min(self._cr_scroll, self._cr_scroll_max))
+        scrollable  = self._cr_scroll_max > 0
+        arrow_w     = arrow_w if scrollable else 0
+        content_right = pa.right - int(8*W/1920) - (arrow_w + self._sc(8) if scrollable else 0)
+
+        prev_clip = surface.get_clip()
+        surface.set_clip(pygame.Rect(pa.x+1, view_top, content_right - pa.x - 1, view_h))
+        ry = view_top - self._cr_scroll
+        for j, (wrapped, rh) in enumerate(row_data):
+            if ry + rh >= view_top and ry <= view_bottom:
+                if j % 2 == 0:
+                    row_r = pygame.Rect(pa.x+int(8*W/1920), ry, pa.width-int(16*W/1920), rh)
+                    bg = pygame.Surface((row_r.width, row_r.height), pygame.SRCALPHA)
+                    pygame.draw.rect(bg, (240,246,255,160),
+                                     (0,0,row_r.width,row_r.height), border_radius=6)
+                    surface.blit(bg, row_r.topleft)
+                for i, (cx, lines) in enumerate(zip(col_xs, wrapped)):
+                    ty = ry + row_pad // 2
+                    for ln in lines:
+                        surface.blit(self.fnt["body"].render(ln, True, (40,55,75)), (cx, ty))
+                        ty += row_line_h
+            ry += rh
         surface.set_clip(prev_clip)
 
         # ── scroll arrows (only when records overflow the viewport) ──
