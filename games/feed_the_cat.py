@@ -14,6 +14,7 @@ Mechanic:
 """
 
 import os
+import random
 import pygame
 from screens.base import BaseScreen
 from games.fatigue import FatigueMixin
@@ -34,6 +35,7 @@ ZONE_TOLERANCE = {"Easy": 150,  "Medium": 110,  "Hard": 75}     # px radius of t
 TRAVEL_SCALE   = {"Easy": 0.75, "Medium": 1.0,  "Hard": 1.3}    # food/cat distance from the bowl, relative to base
 MOVE_SPEED     = {"Easy": 700,  "Medium": 850,  "Hard": 1000}   # hand px/s per unit tilt
 DURATION       = {"Easy": 60,   "Medium": 50,   "Hard": 40}
+TARGET_CATS    = {"Easy": 5,    "Medium": 7,    "Hard": 10}     # "Cats Left to Feed" starting count
 
 FEED_FLASH_DURATION = 1.1   # seconds the cat_food sprite stays up after a feed
 FEEDBACK_DURATION   = 1.0
@@ -64,6 +66,43 @@ HAND_MOVE_RANGE = TRAVEL_BASE * max(TRAVEL_SCALE.values()) + max(ZONE_TOLERANCE.
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _img_cache = {}
+
+# ── cat breed variations ────────────────────────────────────────────────────
+# The therapist may drop in additional cat art under these names (each a
+# hungry/eating pair that must always be swapped together -- see module
+# docstring). Only pairs that actually exist on disk are used; if none of
+# them have been added yet, the game falls back to the single original cat
+# asset pair unchanged, so nothing breaks before new art arrives.
+_CAT_NAMES = ["ragdoll", "calico", "inky", "carrot", "kangkang",
+              "maine", "persian", "siamese", "sphynx"]
+_DEFAULT_CAT_PAIR = ("cat_hungry_feed_the_cat.png", "cat_food_feed_the_cat.png")
+_cat_pairs_cache = None
+
+
+def _discover_cat_pairs():
+    """Return a list of (hungry_filename, eating_filename) pairs found on
+    disk. Each breed name is tried against this project's existing
+    "_feed_the_cat" asset-naming convention first, then the plain
+    "_hungry"/"_eat" convention the therapist described -- a pair is only
+    used when BOTH its images actually exist, so a half-uploaded breed is
+    simply skipped rather than crashing or showing a mismatched cat."""
+    global _cat_pairs_cache
+    if _cat_pairs_cache is not None:
+        return _cat_pairs_cache
+    img_dir = os.path.join(_ROOT, "assets", "images")
+    pairs = []
+    for name in _CAT_NAMES:
+        for hungry, eat in (
+            (f"{name}_hungry_feed_the_cat.png", f"{name}_eat_feed_the_cat.png"),
+            (f"{name}_hungry_feed_the_cat.png", f"{name}_food_feed_the_cat.png"),
+            (f"{name}_hungry.png",              f"{name}_eat.png"),
+        ):
+            if (os.path.isfile(os.path.join(img_dir, hungry)) and
+                    os.path.isfile(os.path.join(img_dir, eat))):
+                pairs.append((hungry, eat))
+                break
+    _cat_pairs_cache = pairs if pairs else [_DEFAULT_CAT_PAIR]
+    return _cat_pairs_cache
 
 
 def _load_image_fit(name, w, h):
@@ -120,6 +159,12 @@ def _draw_counter_box(surface, x, y, w, h, font_lbl, font_num, label, value):
     surface.blit(grad, (x, y))
 
     lbl_s = font_lbl.render(label, True, (255, 255, 255))
+    max_lbl_w = int(w * 0.88)
+    if lbl_s.get_width() > max_lbl_w:
+        scale = max_lbl_w / lbl_s.get_width()
+        lbl_s = pygame.transform.smoothscale(
+            lbl_s, (max(1, int(lbl_s.get_width() * scale)),
+                    max(1, int(lbl_s.get_height() * scale))))
     num_s = font_num.render(f"{value:02d}", True, (255, 255, 255))
     surface.blit(lbl_s, lbl_s.get_rect(centerx=x + w // 2, y=y + int(h * 0.22)))
     surface.blit(num_s, num_s.get_rect(centerx=x + w // 2, y=y + int(h * 0.48)))
@@ -142,6 +187,7 @@ class FeedTheCatGame(FatigueMixin, BaseScreen):
         self.move_deadzone  = cal_params.get("ftc_move_deadzone", MOVE_DEADZONE[self.difficulty])
         self.zone_tolerance = cal_params.get("ftc_zone_tolerance", ZONE_TOLERANCE[self.difficulty])
         self.move_speed     = MOVE_SPEED[self.difficulty]
+        self.cats_target    = int(cal_params.get("ftc_target_cats", TARGET_CATS[self.difficulty]))
 
         travel = TRAVEL_SCALE[self.difficulty]
         self.food_x = BOWL_X - TRAVEL_BASE * travel
@@ -157,8 +203,10 @@ class FeedTheCatGame(FatigueMixin, BaseScreen):
         self._empty_bowl_img = _load_image_fit("empty_bowl_feed_the_cat.png", *BOWL_BOX)
         self._food_bowl_img  = _load_image_fit("food_bowl_feed_the_cat.png", *BOWL_BOX)
         self._food_img       = _load_image_fit("food_feed_the_cat.png", *FOOD_BOX)
-        self._cat_hungry_img = _load_image_fit("cat_hungry_feed_the_cat.png", *CAT_BOX)
-        self._cat_food_img   = _load_image_fit("cat_food_feed_the_cat.png", *CAT_BOX)
+        self._cat_pairs      = _discover_cat_pairs()
+        self._cat_idx        = 0
+        self._cat_hungry_img = None
+        self._cat_food_img   = None
 
         self._font_hud     = pygame.font.SysFont("monospace", 34, bold=True)
         self._font_sm      = pygame.font.SysFont("monospace", 24)
@@ -196,7 +244,8 @@ class FeedTheCatGame(FatigueMixin, BaseScreen):
         self.pause_sel  = 0
 
         self.score = 0
-        self.reps  = 0          # = Cats Fed count
+        self.reps  = 0          # = cats successfully fed this session
+        self.cats_remaining = self.cats_target
         self.time_left  = float(self.duration)
         self.start_time = pygame.time.get_ticks()
 
@@ -206,8 +255,28 @@ class FeedTheCatGame(FatigueMixin, BaseScreen):
         self._need_release  = False
         self._grip_active   = False
         self.feed_flash_t   = 0.0
+        self._pending_next_cat = False
         self.feedback       = None
         self._state = {"grip": 0.0, "tilt_x": 0.0}
+
+        self._load_cat(self._pick_cat())
+
+    def _pick_cat(self, exclude_idx=None):
+        """Randomly choose a cat-pair index, avoiding an immediate repeat of
+        exclude_idx when more than one variation is available."""
+        n = len(self._cat_pairs)
+        if n <= 1:
+            return 0
+        idx = random.randrange(n)
+        while idx == exclude_idx:
+            idx = random.randrange(n)
+        return idx
+
+    def _load_cat(self, idx):
+        self._cat_idx = idx
+        hungry, eat = self._cat_pairs[idx]
+        self._cat_hungry_img = _load_image_fit(hungry, *CAT_BOX)
+        self._cat_food_img   = _load_image_fit(eat, *CAT_BOX)
 
     def _normalize_grip(self, raw):
         rest = self.cal.get("grip_rest", 0.0)
@@ -336,6 +405,10 @@ class FeedTheCatGame(FatigueMixin, BaseScreen):
 
         if self.feed_flash_t > 0:
             self.feed_flash_t -= dt
+            if self.feed_flash_t <= 0 and self._pending_next_cat:
+                self._pending_next_cat = False
+                if self.cats_remaining > 0:
+                    self._load_cat(self._pick_cat(exclude_idx=self._cat_idx))
         if self.feedback:
             self.feedback = (self.feedback[0], self.feedback[1], self.feedback[2] - dt)
             if self.feedback[2] <= 0:
@@ -344,7 +417,9 @@ class FeedTheCatGame(FatigueMixin, BaseScreen):
     def _feed_cat(self):
         self.score += 1
         self.reps  += 1
+        self.cats_remaining = max(0, self.cats_target - self.reps)
         self.feed_flash_t = FEED_FLASH_DURATION
+        self._pending_next_cat = True
         self.feedback = ("Cat fed! +1", (255, 220, 80), FEEDBACK_DURATION)
         play_success()
         # Round reset -- a fresh empty bowl appears at the resting spot; a
@@ -434,7 +509,7 @@ class FeedTheCatGame(FatigueMixin, BaseScreen):
         ch = int(260 * GAME_H / 1080)
         _draw_counter_box(surface, cx, cy, cw, ch,
                           self._font_counter_lbl, self._font_counter_num,
-                          "Cats fed", self.reps)
+                          "Cats Left to Feed", self.cats_remaining)
 
         draw_game_header(surface, "Feed the Cat", self.difficulty,
                           self.time_left, self.score, GAME_W, GAME_H)

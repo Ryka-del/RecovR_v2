@@ -110,9 +110,32 @@ def draw_game_header(surface, game_name, difficulty, time_left, score, game_w, g
                          int(game_w * 0.19), badge_h)
     time_img = _load_fit("time_game.png", int(game_w * 0.155), badge_h)
     score_img = _load_fit("score_game.png", int(game_w * 0.15), badge_h)
-    badges = [img for img in (diff_img, time_img, score_img) if img is not None]
-    badges_w = sum(img.get_width() for img in badges)
-    group_w  = badges_w + inter_gap * max(0, len(badges) - 1)
+
+    f_val = _font("arial", int(badge_h * 0.66), bold=True)
+
+    mins, secs = divmod(max(0, int(time_left)), 60)
+    time_text  = f"{mins:02d}:{secs:02d}"
+    score_text = f"{int(score):03d}"
+
+    def _badge_w(img, text, label_frac):
+        """The image only bakes in the icon + label; the live value is drawn
+        in the blank space to its right. Measure the ACTUAL rendered value
+        text so the badge's reserved width always covers it -- a wide score
+        (growing digit count) or a wide time string never overflows past the
+        badge or the header's own edge."""
+        if img is None:
+            return 0
+        val_w   = f_val.size(text)[0]
+        right_pad = int(img.get_width() * 0.06)
+        needed  = int(img.get_width() * label_frac) + val_w + right_pad
+        return max(img.get_width(), needed)
+
+    diff_w  = diff_img.get_width() if diff_img is not None else 0
+    time_w  = _badge_w(time_img, time_text, 0.58)
+    score_w = _badge_w(score_img, score_text, 0.68)
+
+    badge_widths = [w for w in (diff_w, time_w, score_w) if w > 0]
+    group_w = sum(badge_widths) + inter_gap * max(0, len(badge_widths) - 1)
 
     avail_start = side + pad
     avail_end   = side + header_w - pad
@@ -138,9 +161,7 @@ def draw_game_header(surface, game_name, difficulty, time_left, score, game_w, g
         surface.blit(diff_img, (int(x), top + header_h // 2 - diff_img.get_height() // 2))
         x += diff_img.get_width() + inter_gap
 
-    f_val = _font("arial", int(badge_h * 0.66), bold=True)
-
-    def _value_badge(img, text, label_frac):
+    def _value_badge(img, text, label_frac, reserved_w):
         nonlocal x
         if img is None:
             return
@@ -151,10 +172,12 @@ def draw_game_header(surface, game_name, difficulty, time_left, score, game_w, g
         vs = f_val.render(text, True, (255, 255, 255))
         vx = int(x) + int(img.get_width() * label_frac)
         surface.blit(vs, vs.get_rect(midleft=(vx, y + img.get_height() // 2)))
-        x += img.get_width() + inter_gap
+        # advance by the MEASURED badge width (>= the image's own width),
+        # not just the image's width, so a long value never overlaps/overflows
+        # into the next badge or past the header's edge.
+        x += reserved_w + inter_gap
 
-    mins, secs = divmod(max(0, int(time_left)), 60)
-    _value_badge(time_img, f"{mins:02d}:{secs:02d}", 0.58)
-    _value_badge(score_img, f"{int(score):03d}", 0.68)
+    _value_badge(time_img, time_text, 0.58, time_w)
+    _value_badge(score_img, score_text, 0.68, score_w)
 
     return HEADER_BOTTOM

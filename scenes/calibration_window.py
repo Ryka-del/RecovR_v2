@@ -164,6 +164,9 @@ GAME_PARAM_SCHEMA = {
         {"key": "ftc_zone_tolerance", "label": "Positioning Tolerance",     "unit": "px",
          "min": 40,   "max": 200,  "step": 5,
          "presets": {"Easy": 150,   "Medium": 110,  "Hard": 75}},
+        {"key": "ftc_target_cats",   "label": "Cats to Feed",              "unit": "cats",
+         "min": 3,    "max": 15,   "step": 1,
+         "presets": {"Easy": 5,     "Medium": 7,    "Hard": 10}},
     ],
 }
 # Games that read the generic Speed (Slow/Normal/Fast) setting at all --

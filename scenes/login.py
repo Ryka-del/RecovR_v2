@@ -102,6 +102,14 @@ class LoginScene:
         self.forgot_hovered   = False
         self.launch_triggered = False
 
+        # Set once the 4th PIN digit is entered; the actual verification (DB
+        # lookup) and any scene transition are deferred to the NEXT update()
+        # tick instead of running inline inside this keypress's event
+        # handling, so the frame with all 4 dots filled (and a "Verifying..."
+        # indicator) actually gets drawn to the screen before any work runs.
+        self.verifying        = False
+        self._verify_wait     = 0
+
         # Lock state for currently selected account
         self.lock_attempts    = 0       # failed attempts so far
         self.locked_until     = None    # datetime when lock expires (or None)
@@ -279,6 +287,8 @@ class LoginScene:
 
         # PIN mode
         if self.selected is not None:
+            if self.verifying:
+                return None
             # Forgot PIN link click detection
             if self._forgot_rect().collidepoint(pos):
                 self._start_forgot_workflow()
@@ -372,6 +382,11 @@ class LoginScene:
         if self.selected is None:
             return None
 
+        # Already verifying the last entry -- ignore further input so a
+        # stray keypress can never trigger a second, duplicate verify.
+        if self.verifying:
+            return None
+
         # Locked — ignore key input
         if self.locked_until is not None:
             if datetime.datetime.now() >= self.locked_until:
@@ -388,7 +403,11 @@ class LoginScene:
             self.pin_entered += event.unicode
             self.pin_error    = ""
             if len(self.pin_entered) == 4:
-                return self._verify_pin()
+                # Arm verification for the NEXT update() tick -- see
+                # self.verifying's definition in __init__ for why this isn't
+                # called inline here.
+                self.verifying    = True
+                self._verify_wait = 0
 
         return None
 
@@ -462,6 +481,8 @@ class LoginScene:
         self.pin_entered = ""
         self.pin_error   = ""
         self.show_forgot = False
+        self.verifying   = False
+        self._verify_wait = 0
 
         # Load lock state from DB for this account
         locked, locked_until = self.db.is_locked(acc["id"])
@@ -619,6 +640,19 @@ class LoginScene:
             if self.alpha < 255:
                 self.alpha = min(255, self.alpha + 4)
             return
+
+        # Run the actual PIN check one tick after the 4th digit was entered
+        # (and drawn) rather than inline from the keypress -- see
+        # self.verifying's definition in __init__.
+        if self.verifying:
+            if self._verify_wait >= 1:
+                self.verifying = False
+                result = self._verify_pin()
+                if result:
+                    self._pending_scene = result
+            else:
+                self._verify_wait += 1
+
         self._limit_ok_hov  = self._limit_ok_rect.collidepoint(mouse_pos)
         self.back_hovered   = self._back_rect().collidepoint(mouse_pos)
         self.forgot_hovered = self._forgot_rect().collidepoint(mouse_pos)
@@ -795,36 +829,44 @@ class LoginScene:
         # Render explicit raw standard pin entry fields safely
         self._draw_pin_boxes(panel, cx, cy + r + int(94 * self.HEIGHT/1080), len(self.pin_entered))
 
-        # Attempt counter dots
         dot_y = cy + r + int(158 * self.HEIGHT/1080)
-        if self.lock_attempts > 0:
-            dot_r  = int(5 * self.HEIGHT / 1080)
-            dot_gap = int(14 * self.WIDTH / 1920)
-            total_dot_w = MAX_PIN_ATTEMPTS * 2 * dot_r + (MAX_PIN_ATTEMPTS - 1) * dot_gap
-            dot_x = cx - total_dot_w // 2 + dot_r
-            for j in range(MAX_PIN_ATTEMPTS):
-                col = (230, 80, 80) if j < self.lock_attempts else (100, 120, 160)
-                pygame.draw.circle(panel, col, (dot_x + j * (2 * dot_r + dot_gap), dot_y), dot_r)
-            att_s = self.font_attempts.render(
-                f"{self.lock_attempts}/{MAX_PIN_ATTEMPTS} attempts used",
-                True, (200, 110, 110) if self.lock_attempts >= 3 else (160, 178, 205)
-            )
-            panel.blit(att_s, att_s.get_rect(center=(cx, dot_y + int(18 * self.HEIGHT/1080))))
 
-        # Error text
-        if self.pin_error:
-            es = self.font_error.render(self.pin_error, True, (255, 120, 120))
-            panel.blit(es, es.get_rect(center=(cx, dot_y + int(40 * self.HEIGHT/1080))))
+        if self.verifying:
+            # The 4th digit is already drawn above; this appears on the very
+            # next frame while the PIN check runs, so the box never looks
+            # frozen or stuck on 3 dots.
+            vs = self.font_pin_lbl.render("Verifying...", True, (140, 190, 255))
+            panel.blit(vs, vs.get_rect(center=(cx, dot_y + int(18 * self.HEIGHT/1080))))
+        else:
+            # Attempt counter dots
+            if self.lock_attempts > 0:
+                dot_r  = int(5 * self.HEIGHT / 1080)
+                dot_gap = int(14 * self.WIDTH / 1920)
+                total_dot_w = MAX_PIN_ATTEMPTS * 2 * dot_r + (MAX_PIN_ATTEMPTS - 1) * dot_gap
+                dot_x = cx - total_dot_w // 2 + dot_r
+                for j in range(MAX_PIN_ATTEMPTS):
+                    col = (230, 80, 80) if j < self.lock_attempts else (100, 120, 160)
+                    pygame.draw.circle(panel, col, (dot_x + j * (2 * dot_r + dot_gap), dot_y), dot_r)
+                att_s = self.font_attempts.render(
+                    f"{self.lock_attempts}/{MAX_PIN_ATTEMPTS} attempts used",
+                    True, (200, 110, 110) if self.lock_attempts >= 3 else (160, 178, 205)
+                )
+                panel.blit(att_s, att_s.get_rect(center=(cx, dot_y + int(18 * self.HEIGHT/1080))))
 
-        # "Forgot PIN?" link
-        fc  = (140, 180, 230) if self.forgot_hovered else (120, 148, 195)
-        fts = self.font_forgot.render("Forgot PIN?", True, fc)
-        fty = dot_y + int(66 * self.HEIGHT/1080)
-        panel.blit(fts, fts.get_rect(center=(cx, fty)))
+            # Error text
+            if self.pin_error:
+                es = self.font_error.render(self.pin_error, True, (255, 120, 120))
+                panel.blit(es, es.get_rect(center=(cx, dot_y + int(40 * self.HEIGHT/1080))))
 
-        # Cancel hint
-        hs = self.font_error.render("Tap outside to cancel", True, (130, 148, 175))
-        panel.blit(hs, hs.get_rect(center=(cx, fty + int(24 * self.HEIGHT/1080))))
+            # "Forgot PIN?" link
+            fc  = (140, 180, 230) if self.forgot_hovered else (120, 148, 195)
+            fts = self.font_forgot.render("Forgot PIN?", True, fc)
+            fty = dot_y + int(66 * self.HEIGHT/1080)
+            panel.blit(fts, fts.get_rect(center=(cx, fty)))
+
+            # Cancel hint
+            hs = self.font_error.render("Tap outside to cancel", True, (130, 148, 175))
+            panel.blit(hs, hs.get_rect(center=(cx, fty + int(24 * self.HEIGHT/1080))))
 
         panel.set_alpha(int(255 * alpha_factor))
         surface.blit(panel, (0, 0))
@@ -867,6 +909,10 @@ class LoginScene:
         self._draw_pin_boxes(panel, cx, box_y, len(self.pin_entered))
 
         info_y = box_y + self._tt(46) + self._sc(14)
+        if self.verifying:
+            vs = self.font_pin_lbl.render("Verifying...", True, (140, 190, 255))
+            panel.blit(vs, vs.get_rect(center=(cx, info_y)))
+            info_y += self._sc(24)
         if self.lock_attempts > 0:
             att_s = self.font_attempts.render(
                 f"{self.lock_attempts}/{MAX_PIN_ATTEMPTS} attempts used",

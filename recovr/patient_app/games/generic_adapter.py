@@ -110,10 +110,17 @@ def _mask_results_buttons(game, surface):
 def _mask_pause_button(game, surface):
     """Cover the game's own top-right Pause button during play -- the patient has
     NO pause control; only the therapist (Session in Progress) pauses/resumes.
-    Every game places it at Rect(GAME_W-90, 13, 70, 46). The fill colour is
-    sampled from the top edge just above the button so it blends whether the game
-    draws a solid HUD bar there (basketball, piano tiles, ...) or shows the bare
-    playfield (gravity catch). (games/*.py are left untouched.)
+
+    Only the button's own footprint (plus a small pad) is repainted, using a
+    colour sampled right next to it, rather than flood-filling a strip from
+    the very top of the screen down to the button. The old strip approach
+    assumed the whole column above the button was one uniform colour, which
+    holds for a flat theme-coloured background but not for a detailed art
+    background (e.g. Feed the Cat's sky/trees) -- there it painted a single
+    sampled pixel's colour across a large block, showing up as a solid
+    mis-matched rectangle. Shrinking the masked area to the button itself
+    fixes that while remaining a strict subset of the old coverage for every
+    other game.
     """
     if getattr(game, "_show_instructions", False) or getattr(game, "game_over", False):
         return
@@ -123,18 +130,21 @@ def _mask_pause_button(game, surface):
     w, h = surface.get_size()
     sx, sy = w / 1920.0, h / 1080.0
     pad = int(14 * sx)
-    cx = min(w - 1, max(0, int((r.x + r.width // 2) * sx)))
+    bx = max(0, int(r.x * sx) - pad)
+    by = max(0, int(r.y * sy) - pad)
+    bw = min(w - bx, int(r.width * sx) + 2 * pad)
+    bh = min(h - by, int(r.height * sy) + 2 * pad)
+    sample_x = min(w - 1, max(0, bx - 3))
+    sample_y = min(h - 1, max(0, by + bh // 2))
     try:
-        fill = surface.get_at((cx, 1))[:3]                 # top edge above the button
+        fill = surface.get_at((sample_x, sample_y))[:3]    # just left of the button, same height
     except Exception:
         try:
             from constants import get_theme
             fill = get_theme()["PANEL"]
         except Exception:
             fill = (30, 35, 50)
-    strip = pygame.Rect(int(r.x * sx) - pad, 0,
-                        int(r.width * sx) + 2 * pad, int((r.y + r.height) * sy) + int(12 * sy))
-    surface.fill(fill, strip)
+    surface.fill(fill, pygame.Rect(bx, by, bw, bh))
 
 
 def make_real_adapter(game_cls):
