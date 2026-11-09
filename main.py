@@ -164,45 +164,33 @@ def _draw_close_icon(rect):
         screen.blit(_xs, _xs.get_rect(center=rect.center))
 
 # --- CONFIRM-EXIT DIALOG ---
-_confirm_open    = False                          # True while dialog is visible
-_dlg_font_title  = pygame.font.SysFont("segoeui", int(28 * _DLG_FS))
-_dlg_font_body   = pygame.font.SysFont("segoeui", int(21 * _DLG_FS))
-_dlg_font_btn    = pygame.font.SysFont("segoeui", int(21 * _DLG_FS))
+# Styled through the same shared, theme-aware draw_confirm_dialog every
+# other confirmation popup in the therapist interface uses (see
+# scenes/therapist_dashboard.py) -- this is the one confirmation dialog
+# that lives outside a TherapistDashboardScene instance (it guards the
+# window's own close button, which exists across every scene), so it
+# passes its own fs/tt/sc/fonts instead of a scene's bound methods.
+_confirm_open = False                          # True while dialog is visible
+_dlg_font_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "font")
 
-_dlg_title_s = _dlg_font_title.render("Close RecovR?", True, (30, 45, 70))
-_dlg_body_s  = _dlg_font_body.render("All unsaved changes will be lost.", True, (100, 115, 140))
-_dlg_pad     = _dlg_sc(28)
-_dlg_btn_h   = _dlg_tt(48)
-_dlg_btn_gap = _dlg_sc(20)
-_dlg_btn_w   = max(_dlg_sc(150), _dlg_font_btn.size("Yes, Close")[0] + _dlg_sc(40))
+def _dlg_font(name, size):
+    try:
+        return pygame.font.Font(os.path.join(_dlg_font_dir, name), size)
+    except Exception:
+        return pygame.font.SysFont("segoeui", size)
 
-_dlg_w = max(_dlg_sc(420),
-            _dlg_pad * 2 + 2 * _dlg_btn_w + _dlg_btn_gap,
-            _dlg_title_s.get_width() + _dlg_pad * 2,
-            _dlg_body_s.get_width() + _dlg_pad * 2)
-_dlg_w = min(_dlg_w, int(WIDTH * 0.92))
-_dlg_h = (_dlg_pad + _dlg_title_s.get_height() + _dlg_sc(14)
-         + _dlg_body_s.get_height() + _dlg_sc(28) + _dlg_btn_h + _dlg_pad)
-_dlg_x = (WIDTH  - _dlg_w) // 2
-_dlg_y = (HEIGHT - _dlg_h) // 2
-_dlg_r = pygame.Rect(_dlg_x, _dlg_y, _dlg_w, _dlg_h)
+_dlg_fonts = {
+    "title":       _dlg_font("Poppins-SemiBold.ttf", int(26 * _DLG_FS)),
+    "title_small": _dlg_font("Poppins-SemiBold.ttf", int(20 * _DLG_FS)),
+    "body":        _dlg_font("Poppins-Regular.ttf",  int(19 * _DLG_FS)),
+    "btn":         _dlg_font("Poppins-SemiBold.ttf", int(20 * _DLG_FS)),
+    "sym":         pygame.font.SysFont("segoeuisymbol", int(20 * _DLG_FS)),
+}
 
-_btn_w  = _dlg_btn_w
-_btn_h  = _dlg_btn_h
-_btn_gap = _dlg_btn_gap
-_yes_rect = pygame.Rect(
-    _dlg_r.centerx - _btn_w - _btn_gap // 2,
-    _dlg_r.bottom  - _btn_h - _dlg_pad,
-    _btn_w, _btn_h,
-)
-_no_rect = pygame.Rect(
-    _dlg_r.centerx + _btn_gap // 2,
-    _yes_rect.y,
-    _btn_w, _btn_h,
-)
-
-_yes_hov = False
-_no_hov  = False
+_yes_rect = pygame.Rect(0, 0, 1, 1)
+_no_rect  = pygame.Rect(0, 0, 1, 1)
+_yes_hov  = False
+_no_hov   = False
 
 # --- COORDINATE NORMALISER ---
 _surf_w, _surf_h = screen.get_size()
@@ -222,7 +210,7 @@ from scenes.therapist_welcome   import TherapistWelcomeScene
 from scenes.patient_welcome     import PatientWelcomeScene
 from scenes.login               import LoginScene
 from scenes.register            import RegisterScene
-from scenes.therapist_dashboard import TherapistDashboardScene, _img as _dash_img
+from scenes.therapist_dashboard import TherapistDashboardScene, _img as _dash_img, draw_confirm_dialog
 from scenes.patient_dashboard   import PatientDashboardScene
 from scenes.game_scene          import make_game_scene
 
@@ -232,10 +220,10 @@ from games.basketball     import BasketballGame
 from games.piano_tiles    import PianoTilesGame
 from games.catchingapple  import AppleCatchingGame
 from games.catch_object   import CatchObjectGame
-from games.gravity_catch  import GravityCatchGame
 from games.key_lock       import KeyLockGame
 from games.lemonade       import LemonadeGame
 from games.feed_the_cat   import FeedTheCatGame
+from games.plant_the_garden import PlantTheGardenGame
 
 SCENES = {
     "therapist_welcome"  : TherapistWelcomeScene,
@@ -249,10 +237,10 @@ SCENES = {
     "piano_tiles"        : make_game_scene(PianoTilesGame),
     "catchingapple"      : make_game_scene(AppleCatchingGame),
     "catch_object"       : make_game_scene(CatchObjectGame),
-    "gravity_catch"      : make_game_scene(GravityCatchGame),
     "key_lock"           : make_game_scene(KeyLockGame),
     "lemonade"           : make_game_scene(LemonadeGame),
     "feed_the_cat"       : make_game_scene(FeedTheCatGame),
+    "plant_the_garden"   : make_game_scene(PlantTheGardenGame),
 }
 
 # --- CROSSFADE ---
@@ -272,43 +260,19 @@ def crossfade(screen, outgoing_scene, incoming_scene, clock, steps=25):
 
 # --- DRAW CONFIRM DIALOG ---
 def _draw_confirm_dialog():
-    # Dim overlay
-    dim = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-    dim.fill((10, 14, 22, 180))
-    screen.blit(dim, (0, 0))
-
-    # Card background -- size/position computed once above from the actual
-    # rendered text and button sizes, so title/body/buttons are never cramped
-    # or clipped on the 7-inch panel (previously a fixed 200px-tall dialog
-    # with 19px-tall buttons at 480px height).
-    pygame.draw.rect(screen, (245, 247, 252), _dlg_r, border_radius=16)
-    pygame.draw.rect(screen, (200, 210, 230), _dlg_r, 2, border_radius=16)
-
-    # Title
-    ty = _dlg_r.y + _dlg_pad
-    screen.blit(_dlg_title_s, _dlg_title_s.get_rect(midtop=(_dlg_r.centerx, ty)))
-
-    # Body
-    by = ty + _dlg_title_s.get_height() + _dlg_sc(14)
-    screen.blit(_dlg_body_s, _dlg_body_s.get_rect(midtop=(_dlg_r.centerx, by)))
-
-    # Yes button (red)
-    yes_col = (200, 40, 40) if _yes_hov else (160, 30, 30)
-    pygame.draw.rect(screen, yes_col, _yes_rect, border_radius=10)
-    yes_s = _dlg_font_btn.render("Yes, Close", True, (255, 255, 255))
-    screen.blit(yes_s, yes_s.get_rect(center=_yes_rect.center))
-
-    # No button (neutral)
-    no_col = (90, 110, 140) if _no_hov else (70, 88, 115)
-    pygame.draw.rect(screen, no_col, _no_rect, border_radius=10)
-    no_s = _dlg_font_btn.render("Cancel", True, (255, 255, 255))
-    screen.blit(no_s, no_s.get_rect(center=_no_rect.center))
+    global _yes_rect, _no_rect
+    _yes_rect, _no_rect = draw_confirm_dialog(
+        screen, WIDTH, HEIGHT, tt=_dlg_tt, sc=_dlg_sc, fonts=_dlg_fonts,
+        icon="close", accent=(205, 45, 45),
+        title="Close RecovR?", body="All unsaved changes will be lost.",
+        confirm_label="Yes, Close", cancel_label="Cancel",
+        confirm_hov=_yes_hov, cancel_hov=_no_hov)
 
 # --- STARTING SCENE ---
 _current_scene_name = "therapist_welcome"
 _game_scene_names   = {"basketball", "steady_aim", "piano_tiles",
-                        "catchingapple", "catch_object", "gravity_catch", "key_lock",
-                        "feed_the_cat"}
+                        "catchingapple", "catch_object", "key_lock",
+                        "feed_the_cat", "plant_the_garden"}
 current_scene = TherapistWelcomeScene(screen, WIDTH, HEIGHT)
 
 # --- MAIN LOOP ---

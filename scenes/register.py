@@ -25,8 +25,9 @@ from audio import play_click
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
 
-from database import Database
+from database import Database, validate_username, username_char_allowed, MAX_USERNAME_LEN
 from scenes.icon_renderer import draw_icon, ICONS
+from scenes.therapist_dashboard import draw_confirm_dialog
 
 # Roles relevant to hand rehabilitation for stroke patients
 ROLES = [
@@ -85,6 +86,20 @@ class RegisterScene:
         # matching scenes/therapist_dashboard.py's nav_sym/sym26.
         self.font_sym      = pygame.font.SysFont("segoeuisymbol",           int(22 * _s))
 
+        # Fonts for the shared draw_confirm_dialog (discard-registration /
+        # account-created confirmations) -- matches the Poppins + symbol-font
+        # setup every other confirmation popup in the app uses (see
+        # scenes/therapist_dashboard.py's draw_confirm_dialog / main.py's
+        # _dlg_fonts), just built locally since RegisterScene isn't a
+        # TherapistDashboardScene instance.
+        self._dlg_fonts = {
+            "title":       pygame.font.Font(_F("Poppins-SemiBold.ttf"), int(26 * _s)),
+            "title_small": pygame.font.Font(_F("Poppins-SemiBold.ttf"), int(20 * _s)),
+            "body":        pygame.font.Font(_F("Poppins-Regular.ttf"),  int(19 * _s)),
+            "btn":         pygame.font.Font(_F("Poppins-SemiBold.ttf"), int(20 * _s)),
+            "sym":         pygame.font.SysFont("segoeuisymbol", int(20 * _s)),
+        }
+
         # --- BACKGROUND ---
         self.background_surface = self._create_gradient(width, height)
 
@@ -110,6 +125,17 @@ class RegisterScene:
         self.sq_error_msg      = ""
         self.sq_complete_hov   = False
         self.sq_active_slot    = None
+
+        # "Discard Registration?" -- shown instead of navigating away
+        # immediately when Back/Login would otherwise discard entered data.
+        self._discard_confirm  = False
+        self._discard_go_rect   = pygame.Rect(0, 0, 1, 1)   # "Discard & Go Back"
+        self._discard_cont_rect = pygame.Rect(0, 0, 1, 1)   # "Continue Editing"
+
+        # "Account Created Successfully!" -- shown after security questions
+        # are saved; only "Proceed to Login" advances past it.
+        self._registration_complete = False
+        self._success_ok_rect       = pygame.Rect(0, 0, 1, 1)
 
         # Touch-only scroll state (the field column / security-question
         # column scroll while the icon picker / title / footer stay fixed).
@@ -196,8 +222,8 @@ class RegisterScene:
              "is_pin": False, "max_len": 50,
              "rect": pygame.Rect(fx, form_top + 0 * field_gap, fw, field_h)},
             {"key": "username",   "label": "Username",
-             "value": "", "placeholder": "Letters only, max 15 characters",
-             "is_pin": False, "max_len": 15,
+             "value": "", "placeholder": "Letters, numbers, _ . @ # -",
+             "is_pin": False, "max_len": MAX_USERNAME_LEN,
              "rect": pygame.Rect(fx, form_top + 1 * field_gap, fw, field_h)},
             {"key": "role",       "label": "Role",
              "value": "", "placeholder": "Select your role",
@@ -321,7 +347,7 @@ class RegisterScene:
 
         field_specs = [
             ("full_name",  "Full Name",    "e.g. Maria Santos",                 False, 50),
-            ("username",   "Username",     "Letters only, max 15",              False, 15),
+            ("username",   "Username",     "Letters, numbers, _ . @ # -",        False, MAX_USERNAME_LEN),
             ("role",       "Role",         "Select your role",                  False, 0),
             ("workplace",  "Workplace",    "e.g. PGH Rehabilitation Unit",      False, 60),
             ("pin",        "4-Digit PIN",  "Digits only",                       True,  4),
@@ -367,6 +393,12 @@ class RegisterScene:
     def handle_event(self, event):
         if self.launch_triggered:
             return None
+
+        if self._registration_complete:
+            return self._success_handle_event(event)
+
+        if self._discard_confirm:
+            return self._discard_handle_event(event)
 
         if self.reg_step == 2:
             return self._sq_handle_event(event)
@@ -429,13 +461,11 @@ class RegisterScene:
 
             if self.login_link_rect.collidepoint(pos):
                 play_click()
-                self.launch_triggered = True
-                return "login"
+                return self._try_leave_registration()
 
             if self._back_rect().collidepoint(pos):
                 play_click()
-                self.launch_triggered = True
-                return "login"
+                return self._try_leave_registration()
 
         if event.type == pygame.FINGERDOWN:
             touch = (int(event.x * self.WIDTH), int(event.y * self.HEIGHT))
@@ -443,16 +473,64 @@ class RegisterScene:
                 return None
             if self._back_rect().collidepoint(touch):
                 play_click()
-                self.launch_triggered = True
-                return "login"
+                return self._try_leave_registration()
 
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
-                self.launch_triggered = True
-                return "login"
+                return self._try_leave_registration()
             if self.active_field >= 0:
                 self._handle_key(event)
 
+        return None
+
+    def _is_dirty(self):
+        """True when any account-form field has been entered or an icon
+        chosen -- i.e. Back/Login would actually discard something."""
+        if self.selected_icon != 0:
+            return True
+        return any(f["value"].strip() for f in self.fields)
+
+    def _try_leave_registration(self):
+        """Back / Login-link / Esc during step 1: only warn when leaving
+        would actually discard entered information."""
+        if self._is_dirty():
+            self._discard_confirm = True
+            return None
+        self.launch_triggered = True
+        return "login"
+
+    def _discard_handle_event(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            return self._discard_handle_click(event.pos)
+        if event.type == pygame.FINGERDOWN:
+            touch = (int(event.x * self.WIDTH), int(event.y * self.HEIGHT))
+            return self._discard_handle_click(touch)
+        return None   # swallow keys etc. while the dialog is open
+
+    def _discard_handle_click(self, pos):
+        if self._discard_go_rect.collidepoint(pos):
+            play_click()
+            self._discard_confirm = False
+            self.launch_triggered = True
+            return "login"
+        if self._discard_cont_rect.collidepoint(pos):
+            play_click()
+            self._discard_confirm = False
+        return None
+
+    def _success_handle_event(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            return self._success_handle_click(event.pos)
+        if event.type == pygame.FINGERDOWN:
+            touch = (int(event.x * self.WIDTH), int(event.y * self.HEIGHT))
+            return self._success_handle_click(touch)
+        return None
+
+    def _success_handle_click(self, pos):
+        if self._success_ok_rect.collidepoint(pos):
+            play_click()
+            self.launch_triggered = True
+            return "login"
         return None
 
     def _handle_touch_scroll_click(self, pos):
@@ -490,7 +568,7 @@ class RegisterScene:
             if char.isdigit() and len(field["value"]) < 4:
                 field["value"] += char
         elif key == "username":
-            if char.isalpha() and len(field["value"]) < 15:
+            if username_char_allowed(char) and len(field["value"]) < MAX_USERNAME_LEN:
                 field["value"] += char
         else:
             if field["max_len"] <= 0 or len(field["value"]) < field["max_len"]:
@@ -506,8 +584,8 @@ class RegisterScene:
         idx       = self.selected_icon
 
         if not fn:                                             self.error_msg = "Full Name is required.";             return None
-        if not un:                                             self.error_msg = "Username is required.";              return None
-        if not un.isalpha():                                   self.error_msg = "Username: letters only, no spaces."; return None
+        ok_un, un_msg = validate_username(un)
+        if not ok_un:                                          self.error_msg = un_msg;                               return None
         if not role:                                           self.error_msg = "Please select a Role.";             return None
         if not workplace:                                      self.error_msg = "Workplace is required.";            return None
         if len(pin) != 4 or not pin.isdigit():                 self.error_msg = "PIN must be exactly 4 digits.";    return None
@@ -564,9 +642,39 @@ class RegisterScene:
             self._draw_icon_picker(surface)
             self._draw_form(surface)
             self._draw_back_link(surface)
+        if self._discard_confirm:
+            self._draw_discard_confirm(surface)
+        if self._registration_complete:
+            self._draw_success_confirm(surface)
         if self.alpha < 255:
             self.fade_surface.set_alpha(255 - self.alpha)
             surface.blit(self.fade_surface, (0, 0))
+
+    def _draw_discard_confirm(self, surface):
+        mp = pygame.mouse.get_pos()
+        cr, xr = draw_confirm_dialog(
+            surface, self.WIDTH, self.HEIGHT, tt=self._tt, sc=self._sc,
+            fonts=self._dlg_fonts, icon="warning", accent=(225, 150, 40),
+            title="Discard Registration?",
+            body=("You have entered information that has not been saved. "
+                  "Going back will discard your changes. Are you sure you "
+                  "want to continue?"),
+            confirm_label="Discard & Go Back", cancel_label="Continue Editing",
+            confirm_hov=self._discard_go_rect.collidepoint(mp),
+            cancel_hov=self._discard_cont_rect.collidepoint(mp))
+        self._discard_go_rect, self._discard_cont_rect = cr, xr
+
+    def _draw_success_confirm(self, surface):
+        mp = pygame.mouse.get_pos()
+        cr, _ = draw_confirm_dialog(
+            surface, self.WIDTH, self.HEIGHT, tt=self._tt, sc=self._sc,
+            fonts=self._dlg_fonts, icon="check", accent=(60, 185, 100),
+            title="Account Created Successfully!",
+            body=("Your therapist account has been successfully created. "
+                  "Please proceed to the login page to access your account."),
+            confirm_label="Proceed to Login", single_button=True,
+            confirm_hov=self._success_ok_rect.collidepoint(mp))
+        self._success_ok_rect = cr
 
     # ------------------------------------------------------------------
     # DRAW HELPERS (shared)
@@ -943,8 +1051,10 @@ class RegisterScene:
                 chosen_questions[2], answers[2],
             )
 
-        self.launch_triggered = True
-        return "login"
+        # Don't jump straight to Login -- confirm the account actually
+        # exists in the database first (per the success-popup requirement).
+        self._registration_complete = True
+        return None
 
     def _draw_step2(self, surface):
         W, H = self.WIDTH, self.HEIGHT

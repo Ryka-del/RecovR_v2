@@ -12,6 +12,36 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recovr.db")
 MAX_PIN_ATTEMPTS = 5
 LOCK_DURATION_HOURS = 1
 
+# Username rules shared by every entry point that creates or edits a
+# therapist username (registration, account editing, and the patient-share
+# search field) -- defined once here so the rules can never drift apart
+# between those screens.
+MAX_USERNAME_LEN = 20
+_USERNAME_EXTRA_CHARS = "_.@#-"
+
+
+def username_char_allowed(ch: str) -> bool:
+    """True for a single character allowed in a RecovR username: any letter
+    or digit, plus a small whitelist of separator/symbol characters. Backed
+    by parameterized queries everywhere usernames are used, so this is a
+    UX/format rule, not a SQL-safety one."""
+    return ch.isalnum() or ch in _USERNAME_EXTRA_CHARS
+
+
+def validate_username(username: str):
+    """Returns (ok: bool, error_message: str). Rejects empty/whitespace-only
+    usernames and anything outside username_char_allowed(), but otherwise
+    allows letters, numbers, and common symbol characters (not letters-only
+    any more)."""
+    u = (username or "").strip()
+    if not u:
+        return False, "Username is required."
+    if len(u) > MAX_USERNAME_LEN:
+        return False, f"Username must be {MAX_USERNAME_LEN} characters or fewer."
+    if not all(username_char_allowed(ch) for ch in u):
+        return False, "Username may only contain letters, numbers, and _ . @ # -"
+    return True, ""
+
 
 class Database:
 
@@ -151,17 +181,81 @@ class Database:
         except Exception:
             pass
 
+        # Goal-based sessions (replacing fixed-duration sessions): every
+        # existing row predates this and gets the DEFAULT values below, which
+        # read as "a completed, pre-goal-tracking session" -- no historical
+        # data is lost or reinterpreted. `duration_sec` keeps its name and
+        # column but now holds ELAPSED active-gameplay time, not a configured
+        # countdown; goal/completed_reps are NULL for rows that predate
+        # per-game goals (the UI should just omit progress for those).
+        try:
+            self.conn.execute(
+                "ALTER TABLE sessions ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'")
+            self.conn.commit()
+        except Exception:
+            pass
+        try:
+            self.conn.execute("ALTER TABLE sessions ADD COLUMN goal INTEGER")
+            self.conn.commit()
+        except Exception:
+            pass
+        try:
+            self.conn.execute("ALTER TABLE sessions ADD COLUMN completed_reps INTEGER")
+            self.conn.commit()
+        except Exception:
+            pass
+
+        # Target Mode / Timed Mode: every existing row predates this and is a
+        # Target Mode session (it already has a `goal`, if any, from the
+        # goal-based-only era) -- the DEFAULT below is the correct retroactive
+        # read, not a reinterpretation. `configured_duration_seconds` is only
+        # ever set for Timed Mode rows (the therapist-set session length);
+        # `duration_sec` keeps meaning ACTUAL elapsed active-gameplay time for
+        # both modes.
+        try:
+            self.conn.execute(
+                "ALTER TABLE sessions ADD COLUMN session_mode TEXT NOT NULL DEFAULT 'target'")
+            self.conn.commit()
+        except Exception:
+            pass
+        try:
+            self.conn.execute(
+                "ALTER TABLE sessions ADD COLUMN configured_duration_seconds INTEGER")
+            self.conn.commit()
+        except Exception:
+            pass
+
+        # The three individual trial readings behind every calibration's
+        # average/threshold -- previously computed in memory
+        # (CalibrationWindow.calibration_result["trials"]) but discarded
+        # before saving, so the Calibration Record Details screen had no
+        # historical trial data to show, only the derived average. Every
+        # row that predates this migration gets NULL here (the UI shows
+        # "Not recorded" for those, never a fabricated reading); every
+        # calibration saved from now on populates them for real.
+        for col in ("trial1", "trial2", "trial3"):
+            try:
+                self.conn.execute(f"ALTER TABLE calibrations ADD COLUMN {col} REAL")
+                self.conn.commit()
+            except Exception:
+                pass
+
         self.conn.commit()
 
     # ── CALIBRATION RECORDS ───────────────────────────────────────────
 
     def save_calibration(self, patient_id, therapist_id, result, game_name=""):
         p = result.get("params", {})
+        trials = result.get("trials") or []
+        t1 = trials[0] if len(trials) > 0 else None
+        t2 = trials[1] if len(trials) > 1 else None
+        t3 = trials[2] if len(trials) > 2 else None
         self.conn.execute("""
             INSERT INTO calibrations
               (patient_id, therapist_id, game_type, game_name, sensor, sensitivity,
-               average, threshold, threshold_pct, speed, duration, difficulty, preset)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+               average, threshold, threshold_pct, speed, duration, difficulty, preset,
+               trial1, trial2, trial3)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             patient_id, therapist_id,
             result.get("game_type",   ""),
@@ -175,6 +269,7 @@ class Database:
             p.get("duration",      ""),
             p.get("difficulty",    ""),
             result.get("preset",      ""),
+            t1, t2, t3,
         ))
         self.conn.commit()
 
@@ -207,11 +302,21 @@ class Database:
 
     # ── SESSION RECORDS ───────────────────────────────────────────────
 
-    def save_session(self, patient_id, therapist_id, game, score, duration_sec, difficulty):
+    def save_session(self, patient_id, therapist_id, game, score, duration_sec, difficulty,
+                      goal=None, completed_reps=None, status="completed",
+                      session_mode="target", configured_duration_seconds=None):
+        """duration_sec is ACTUAL ELAPSED active-gameplay time, for both modes.
+        session_mode is "target" (goal/`goal` is the target repetitions) or
+        "timed" (configured_duration_seconds is the therapist-set session
+        length; `goal` is None). status is "completed" or "stopped" (therapist
+        ended it early) -- see games/session_mode.py / games/*.py _end_game()."""
         self.conn.execute("""
-            INSERT INTO sessions (patient_id, therapist_id, game, score, duration_sec, difficulty)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (patient_id, therapist_id, game, score, duration_sec, difficulty))
+            INSERT INTO sessions (patient_id, therapist_id, game, score, duration_sec,
+                                   difficulty, goal, completed_reps, status,
+                                   session_mode, configured_duration_seconds)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (patient_id, therapist_id, game, score, duration_sec, difficulty,
+              goal, completed_reps, status, session_mode, configured_duration_seconds))
         self.conn.commit()
 
     def get_sessions(self, therapist_id, patient_id=None):
@@ -219,6 +324,8 @@ class Database:
             # Return ALL sessions for this patient regardless of which therapist ran them
             cur = self.conn.execute("""
                 SELECT s.id, s.played_at, s.game, s.score, s.duration_sec, s.difficulty,
+                       s.status, s.goal, s.completed_reps,
+                       s.session_mode, s.configured_duration_seconds,
                        p.full_name AS patient_name, t.full_name AS therapist_name
                 FROM sessions s
                 LEFT JOIN patients   p ON s.patient_id   = p.id
@@ -229,6 +336,8 @@ class Database:
         else:
             cur = self.conn.execute("""
                 SELECT s.id, s.played_at, s.game, s.score, s.duration_sec, s.difficulty,
+                       s.status, s.goal, s.completed_reps,
+                       s.session_mode, s.configured_duration_seconds,
                        p.full_name AS patient_name, t.full_name AS therapist_name
                 FROM sessions s
                 LEFT JOIN patients   p ON s.patient_id   = p.id
@@ -237,6 +346,31 @@ class Database:
                 ORDER BY s.played_at DESC
             """, (int(therapist_id),))
         return [dict(r) for r in cur.fetchall()]
+
+    def get_patient_progress_summary(self, patient_id):
+        """Aggregate counts for the Patient Dashboard's Rehabilitation
+        Summary card -- real COUNT()s over the sessions table, nothing
+        fabricated. "Goals Completed" only counts rows that actually had a
+        Target Mode goal set (goal IS NOT NULL); Timed Mode sessions have no
+        goal and are excluded from that ratio's denominator, same as they
+        were always excluded from goal-based progress elsewhere."""
+        cur = self.conn.execute("""
+            SELECT
+                COUNT(*)                                                     AS total_sessions,
+                COUNT(DISTINCT game)                                         AS games_played,
+                SUM(CASE WHEN goal IS NOT NULL THEN 1 ELSE 0 END)            AS goals_assigned,
+                SUM(CASE WHEN goal IS NOT NULL AND completed_reps >= goal
+                         THEN 1 ELSE 0 END)                                  AS goals_completed
+            FROM sessions
+            WHERE patient_id = ? AND status = 'completed'
+        """, (int(patient_id),))
+        r = cur.fetchone()
+        return {
+            "total_sessions":  r["total_sessions"] or 0,
+            "games_played":    r["games_played"] or 0,
+            "goals_assigned":  r["goals_assigned"] or 0,
+            "goals_completed": r["goals_completed"] or 0,
+        }
 
     # ── THERAPIST CREATE ──────────────────────────────────────────────
 

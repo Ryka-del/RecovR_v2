@@ -172,7 +172,7 @@ Shown automatically after a successful login if the account has no security ques
 | # | Field | Type | Rules |
 |---|-------|------|-------|
 | 1 | Full Name | Text | Required, max 50 chars |
-| 2 | Username | Text | Letters only, no spaces, max 15 chars, must be unique |
+| 2 | Username | Text | Letters, numbers, and `_ . @ # -`, no spaces, max 20 chars, must be unique |
 | 3 | Role | Dropdown | Physical Therapist / Occupational Therapist / Other |
 | 4 | Workplace | Text | Required, max 60 chars |
 | 5 | 4-Digit PIN | Masked text | Digits only, exactly 4 digits |
@@ -503,7 +503,8 @@ Session results (score, duration, difficulty) are saved to the database automati
 ### Edit Profile Modal
 - Triggered by: **Edit Profile** link in sidebar.
 - Same fields as registration + optional new PIN.
-- **Delete Account** button (red) → confirmation dialog → if confirmed, account deleted and app returns to Therapist Welcome.
+- **Save** button → "Save Account Changes?" confirmation dialog → if confirmed, changes are written.
+- **Delete Account** button (red) → confirmation dialog with a mandatory 5-second countdown before the Delete Account button becomes clickable → if confirmed, account deleted and the app returns to the Login screen. Refused (with an explanatory dialog) while the therapist still owns any patients — those must be transferred first.
 
 ### Logout Confirmation Modal
 - Triggered by: **Logout** button in sidebar.
