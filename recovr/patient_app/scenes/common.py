@@ -107,15 +107,14 @@ _bg_img_cache: dict = {}
 def recovr_gradient(w: int, h: int) -> pygame.Surface:
     """The background behind the Waiting Screen and the patient Dashboard --
     one shared implementation so both screens stay visually identical instead
-    of drifting apart. Light theme uses the uploaded pd_bg.png artwork
-    (scaled to fill exactly w x h); dark theme keeps the programmatic pastel
-    gradient below, since no dark variant of that artwork exists and the
-    light image would look washed out/out of place there."""
+    of drifting apart. Uses the uploaded pd_bg_light.png / pd_bg_dark.png
+    artwork (scaled to fill exactly w x h) for the active theme, falling
+    back to the programmatic pastel gradient below only if that asset is
+    ever missing."""
     dark = PALETTE["bg"][0] < 40
-    if not dark:
-        img = _pd_bg_image(w, h)
-        if img is not None:
-            return img
+    img = _pd_bg_image(w, h, dark)
+    if img is not None:
+        return img
     key = (w, h, dark)
     g = _grad_cache.get(key)
     if g is not None:
@@ -147,16 +146,18 @@ def recovr_gradient(w: int, h: int) -> pygame.Surface:
     return g
 
 
-def _pd_bg_image(w: int, h: int):
-    """The uploaded pd_bg.png background artwork, scaled to fill exactly
-    w x h and cached. Returns None (silently) if the file is missing, so
+def _pd_bg_image(w: int, h: int, dark: bool):
+    """The uploaded pd_bg_light.png / pd_bg_dark.png background artwork for
+    the active theme, scaled to fill exactly w x h and cached per (w, h,
+    dark). Returns None (silently) if the file is missing, so
     recovr_gradient() falls back to the programmatic gradient instead of
     crashing."""
-    key = (w, h)
+    key = (w, h, dark)
     img = _bg_img_cache.get(key)
     if img is None and key not in _bg_img_cache:
+        name = "pd_bg_dark.png" if dark else "pd_bg_light.png"
         try:
-            raw = pygame.image.load(os.path.join(_IMG_DIR, "pd_bg.png")).convert()
+            raw = pygame.image.load(os.path.join(_IMG_DIR, name)).convert()
             img = pygame.transform.smoothscale(raw, (w, h))
         except Exception:
             img = None
@@ -220,14 +221,34 @@ def draw_recovr_wordmark(surface: pygame.Surface, center_x: int, top_y: int,
 def draw_glass_card(surface: pygame.Surface, rect: pygame.Rect, radius_frac: float = 0.09,
                      fill_alpha: int = 26, border_alpha: int = 120, shadow_alpha: int = 16,
                      fill_color=(255, 255, 255), border_color=(255, 255, 255),
-                     shadow_color=(20, 24, 40), alpha_scale: float = 1.0) -> int:
+                     shadow_color=(20, 24, 40), alpha_scale: float = 1.0,
+                     glow_alpha: int = 0, glow_color=(255, 255, 255), glow_layers: int = 4,
+                     glow_spread_frac: float = 0.05) -> int:
     """The shared frosted-glass card shell (soft single shadow + low-alpha
     translucent fill + a brighter hairline border) used by both the Waiting
     Screen and the patient Dashboard, so the two stay visually consistent
     without either one copying the other's drawing code. Returns the corner
-    radius used, in case a caller needs it for inner-content layout."""
+    radius used, in case a caller needs it for inner-content layout.
+
+    `glow_alpha` (0 by default, i.e. no change for existing callers) adds a
+    soft outward white halo -- several progressively larger, progressively
+    fainter rounded-rect outlines drawn before the shadow/fill, approximating
+    a blur with no blur filter available. Opt-in only: the patient Dashboard's
+    existing draw_glass_card() calls pass no glow and render exactly as
+    before."""
     H = surface.get_height()
     rad = max(6, int(rect.height * radius_frac))
+
+    if glow_alpha > 0:
+        step = max(2, int(rect.height * glow_spread_frac / glow_layers))
+        for i in range(glow_layers, 0, -1):
+            gr = rect.inflate(step * i * 2, step * i * 2)
+            a = max(0, int(glow_alpha * alpha_scale * (i / glow_layers) * 0.5))
+            if a <= 0:
+                continue
+            gl = pygame.Surface((gr.width, gr.height), pygame.SRCALPHA)
+            pygame.draw.rect(gl, (*glow_color, a), gl.get_rect(), border_radius=rad + step * i)
+            surface.blit(gl, gr.topleft)
 
     sr = rect.inflate(int(rect.height * 0.03), int(rect.height * 0.03)).move(0, int(rect.height * 0.025))
     sh = pygame.Surface((sr.width, sr.height), pygame.SRCALPHA)
@@ -250,12 +271,21 @@ _sprite_raw_cache: dict = {}
 _sprite_scaled_cache: dict = {}
 
 
-def sprite(name: str, size: int):
+def sprite(name: str, size: int, crop: bool = False):
     """A square illustration from assets/images/, scaled uniformly to
     `size x size` (never distorted). Shared by the Waiting Screen and the
-    patient Dashboard so both draw the exact same asset-loading path."""
+    patient Dashboard so both draw the exact same asset-loading path.
+
+    `crop` (opt-in, False by default so the patient Dashboard's own sprite()
+    calls render exactly as before) first crops to the asset's own opaque
+    bounding box before scaling -- several of the waiting-screen illustrations
+    ship with a lot of transparent canvas padding, which otherwise makes the
+    actual artwork look much smaller than the requested `size` once scaled.
+    The cropped content is fit (not stretched) and centred on a transparent
+    size x size canvas, so callers that position this square by its edges
+    (e.g. icon_rect midleft) see no difference in behaviour."""
     size = max(1, int(size))
-    key = (name, size)
+    key = (name, size, crop)
     img = _sprite_scaled_cache.get(key)
     if img is None:
         raw = _sprite_raw_cache.get(name)
@@ -267,64 +297,68 @@ def sprite(name: str, size: int):
             _sprite_raw_cache[name] = raw
         if raw is None:
             return None
-        img = pygame.transform.smoothscale(raw, (size, size))
+        if crop:
+            bbox = raw.get_bounding_rect(min_alpha=10)
+            content = raw.subsurface(bbox).copy() if bbox.width and bbox.height else raw
+            cw, ch = content.get_size()
+            scale = size / max(cw, ch)
+            sw, sh = max(1, int(cw * scale)), max(1, int(ch * scale))
+            scaled = pygame.transform.smoothscale(content, (sw, sh))
+            img = pygame.Surface((size, size), pygame.SRCALPHA)
+            img.blit(scaled, ((size - sw) // 2, (size - sh) // 2))
+        else:
+            img = pygame.transform.smoothscale(raw, (size, size))
         _sprite_scaled_cache[key] = img
         if len(_sprite_scaled_cache) > 32:
             _sprite_scaled_cache.clear()
     return img
 
 
-def _ease_out_carousel(p):   # decelerate into the centre
+def _ease_in_out_carousel(p):   # smoothstep -- symmetric accelerate/decelerate
     p = max(0.0, min(1.0, p))
-    return 1.0 - (1.0 - p) ** 3
-
-
-def _ease_in_carousel(p):    # accelerate out of the centre
-    p = max(0.0, min(1.0, p))
-    return p ** 3
+    return p * p * (3.0 - 2.0 * p)
 
 
 def carousel_frame(t: int, w: int, card_w: int, n: int = 1, *,
-                    enter_ms: int = 950, hold_ms: int = 3200, exit_ms: int = 950,
-                    overlap_ms: int = 650, margin_frac: float = 0.06):
-    """The Waiting Screen's endless slide-in -> hold -> slide-out motion,
-    shared so any screen can show a card 'moving just like the Waiting
-    Screen' without re-deriving or copying the timing/easing math.
+                    hold_ms: int = 3200, transition_ms: int = 900, margin_frac: float = 0.06):
+    """The Waiting Screen's endless hold -> synchronized swipe motion, shared
+    so any screen can show a card 'moving just like the Waiting Screen'
+    without re-deriving or copying the timing/easing math.
+
+    While holding, only the current card is drawn, centred. During a
+    transition, the outgoing card (sliding centre -> fully off-screen-left)
+    and the incoming card (sliding fully off-screen-right -> centre) use the
+    SAME progress `p` and the SAME ease-in-out curve, so they move at
+    identical speed and stay a constant horizontal distance apart -- a clean
+    linked swap, never two independently-timed cards that can linger near
+    each other at once (that mismatch used to let a mostly-arrived incoming
+    card overlap an outgoing card that had barely started leaving).
 
     Returns a list of (item_index, center_x, alpha) for the 1-2 card
-    instances that should be drawn "now" (an entering one can overlap a
-    still-exiting one). `t` is elapsed ms since that screen's own t0;
-    `w`/`card_w` are in the same coordinate space the caller will draw in."""
-    span = enter_ms + hold_ms + exit_ms
-    cycle = max(1, span - overlap_ms)
+    instances to draw "now" -- alpha is always 1.0 (no fade: a card is either
+    not yet on-screen, visibly sliding, or has fully left, so hiding it via
+    alpha was never actually needed and caller-side clipping covers the
+    rest). `t` is elapsed ms since that screen's own t0; `w`/`card_w` are in
+    the same coordinate space the caller will draw in."""
+    cycle = max(1, hold_ms + transition_ms)
     margin = int(w * margin_frac)
     off_left_cx  = -card_w // 2 - margin
     off_right_cx = w + card_w // 2 + margin
     cx = w // 2
-    j_now = t // cycle
     n = max(1, n)
 
-    out = []
-    for j in (j_now - 1, j_now):
-        if j < 0:
-            continue
-        local = t - j * cycle
-        if local < 0 or local >= span:
-            continue
-        if local < enter_ms:
-            p = _ease_out_carousel(local / enter_ms)
-            x = off_right_cx + (cx - off_right_cx) * p
-            a = min(1.0, local / 240.0)
-        elif local < enter_ms + hold_ms:
-            x, a = cx, 1.0
-        else:
-            p = _ease_in_carousel((local - enter_ms - hold_ms) / exit_ms)
-            x = cx + (off_left_cx - cx) * p
-            a = max(0.0, 1.0 - (local - enter_ms - hold_ms) / exit_ms)
-        if a <= 0.01:
-            continue
-        out.append((int(j % n), int(x), a))
-    return out
+    j = t // cycle
+    local = t - j * cycle
+    cur_idx = int(j % n)
+
+    if local < hold_ms:
+        return [(cur_idx, cx, 1.0)]
+
+    p = _ease_in_out_carousel((local - hold_ms) / transition_ms)
+    nxt_idx = int((j + 1) % n)
+    old_x = cx + (off_left_cx - cx) * p
+    new_x = off_right_cx + (cx - off_right_cx) * p
+    return [(cur_idx, int(old_x), 1.0), (nxt_idx, int(new_x), 1.0)]
 
 
 def icon_text_geometry(rect: pygame.Rect, pad_x_frac: float = 0.04, pad_y_frac: float = 0.065,
@@ -349,7 +383,10 @@ def draw_icon_text_card(surface: pygame.Surface, rect: pygame.Rect, sprite_name:
                          text_items: list, *, radius_frac: float = 0.09, pad_x_frac: float = 0.04,
                          pad_y_frac: float = 0.065, icon_frac: float = 0.94, gap_frac: float = 0.045,
                          line_gap_frac: float = 0.26, fill_alpha: int = 26, border_alpha: int = 120,
-                         shadow_alpha: int = 16, alpha_scale: float = 1.0):
+                         shadow_alpha: int = 16, alpha_scale: float = 1.0,
+                         glow_alpha: int = 0, icon_bg_color: tuple | None = None,
+                         icon_bg_scale: float = 1.32, divider_color: tuple | None = None,
+                         divider_inset_frac: float = 0.16, divider_width: int = 2):
     """The Waiting Screen's "[ LARGE SPRITE ] [ text ]" instruction card,
     shared so any screen can show the same icon-text combination without
     copying the layout: a frosted glass shell (draw_glass_card), a large
@@ -362,10 +399,17 @@ def draw_icon_text_card(surface: pygame.Surface, rect: pygame.Rect, sprite_name:
     legibility shadow the Waiting Screen uses, so callers can mix fonts/colors
     per line (e.g. a bold accent-coloured line among plain ones) while still
     sharing the actual drawing code. Returns the icon's on-screen rect (or
-    None if there was no sprite)."""
+    None if there was no sprite).
+
+    `icon_bg_color` (opt-in, None by default) draws a pale circle behind the
+    sprite, `divider_color` (opt-in, None by default) draws a thin vertical
+    rule between the icon and the text column inset from the card's own top
+    /bottom edges -- both match the Waiting Screen's card reference and are
+    no-ops for any other existing caller that doesn't pass them."""
     H = surface.get_height()
     draw_glass_card(surface, rect, radius_frac=radius_frac, fill_alpha=fill_alpha,
-                    border_alpha=border_alpha, shadow_alpha=shadow_alpha, alpha_scale=alpha_scale)
+                    border_alpha=border_alpha, shadow_alpha=shadow_alpha, alpha_scale=alpha_scale,
+                    glow_alpha=glow_alpha)
 
     icon_size, text_left, _ = icon_text_geometry(
         rect, pad_x_frac, pad_y_frac, icon_frac, gap_frac, has_icon=bool(sprite_name))
@@ -373,7 +417,15 @@ def draw_icon_text_card(surface: pygame.Surface, rect: pygame.Rect, sprite_name:
     icon_rect = None
     if sprite_name:
         pad_x = int(rect.width * pad_x_frac)
-        spr = sprite(sprite_name, icon_size)
+
+        if icon_bg_color is not None:
+            d = int(icon_size * icon_bg_scale)
+            a = max(0, min(255, int((icon_bg_color[3] if len(icon_bg_color) > 3 else 255) * alpha_scale)))
+            circ = pygame.Surface((d, d), pygame.SRCALPHA)
+            pygame.draw.circle(circ, (*icon_bg_color[:3], a), (d // 2, d // 2), d // 2)
+            surface.blit(circ, circ.get_rect(center=(rect.left + pad_x + icon_size // 2, rect.centery)))
+
+        spr = sprite(sprite_name, icon_size, crop=True)
         if spr is not None:
             if alpha_scale < 1.0:
                 spr = spr.copy()
@@ -381,6 +433,15 @@ def draw_icon_text_card(surface: pygame.Surface, rect: pygame.Rect, sprite_name:
                          special_flags=pygame.BLEND_RGBA_MULT)
             icon_rect = spr.get_rect(midleft=(rect.left + pad_x, rect.centery))
             surface.blit(spr, icon_rect)
+
+    if divider_color is not None and sprite_name:
+        icon_right = rect.left + int(rect.width * pad_x_frac) + icon_size
+        dx = (icon_right + text_left) // 2
+        inset = int(rect.height * divider_inset_frac)
+        a = max(0, min(255, int((divider_color[3] if len(divider_color) > 3 else 255) * alpha_scale)))
+        dv = pygame.Surface((divider_width, rect.height - inset * 2), pygame.SRCALPHA)
+        dv.fill((*divider_color[:3], a))
+        surface.blit(dv, (dx, rect.top + inset))
 
     if not text_items:
         return icon_rect

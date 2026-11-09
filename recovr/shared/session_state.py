@@ -34,9 +34,12 @@ class SessionConfig:
     patient_name: str = ""
     therapist_name: str = ""
     account_id: int | None = None      # therapist DB id (production dual-monitor path)
-    selected_game: str = "Gravity Catch"
+    selected_game: str = ""            # "" = none chosen yet (patient_main only starts a
+                                        # session once this is truthy -- see _begin_session)
     difficulty: str = "Easy"
-    duration_sec: int = 60
+    session_mode: str = "target"        # "target" (set goal) or "timed" (set duration)
+    target_reps: int | None = None      # Target Mode: None = game's own difficulty preset
+    duration_sec: int | None = None     # Timed Mode: None = game's own difficulty preset
     speed: str = "Normal"
     dark_mode: bool = False             # mirror of the live theme for the game payload
     calibration: dict = field(default_factory=dict)   # calibration_result passed to the game
@@ -55,14 +58,24 @@ class SessionConfig:
             except (TypeError, ValueError):
                 self.account_id = None
         if "selected_game" in data:
-            self.selected_game = str(data["selected_game"]).strip() or "Gravity Catch"
+            self.selected_game = str(data["selected_game"]).strip()
         if "difficulty" in data:
             self.difficulty = str(data["difficulty"]).strip() or "Easy"
+        if "session_mode" in data:
+            mode = str(data["session_mode"]).strip() or "target"
+            self.session_mode = mode if mode in ("target", "timed") else "target"
+        if "target_reps" in data:
+            try:
+                val = int(data["target_reps"]) if data["target_reps"] is not None else None
+                self.target_reps = val if val and val > 0 else None
+            except (TypeError, ValueError):
+                self.target_reps = None
         if "duration_sec" in data:
             try:
-                self.duration_sec = max(5, min(3600, int(data["duration_sec"])))
+                self.duration_sec = (max(5, min(3600, int(data["duration_sec"])))
+                                      if data["duration_sec"] is not None else None)
             except (TypeError, ValueError):
-                pass
+                self.duration_sec = None
         if "speed" in data:
             self.speed = str(data["speed"]).strip() or "Normal"
         if "dark_mode" in data:
@@ -210,17 +223,43 @@ class SessionStore:
                 hist = []
                 for h in (data.get("history") or [])[:30]:
                     if isinstance(h, dict):
+                        # Full per-session detail (not just game/date/score) so
+                        # the Patient Dashboard's Latest Session card can show
+                        # the real game-specific result (completed_reps),
+                        # duration, and goal/session_mode -- these are genuine
+                        # DB columns (see database.py's sessions table), not
+                        # invented fields. goal/completed_reps stay None when
+                        # absent (pre-goal-tracking rows, or Timed Mode) rather
+                        # than being coerced to 0, so the Dashboard can tell
+                        # "no goal was set" apart from "goal of zero".
                         hist.append({
-                            "game":       str(h.get("game", "")),
-                            "played_at":  str(h.get("played_at", "")),
-                            "difficulty": str(h.get("difficulty", "")),
-                            "score":      h.get("score", ""),
+                            "game":                        str(h.get("game", "")),
+                            "played_at":                   str(h.get("played_at", "")),
+                            "difficulty":                  str(h.get("difficulty", "")),
+                            "score":                       h.get("score", ""),
+                            "status":                      str(h.get("status", "completed")),
+                            "goal":                        h.get("goal"),
+                            "completed_reps":               h.get("completed_reps"),
+                            "duration_sec":                 h.get("duration_sec", 0) or 0,
+                            "session_mode":                 str(h.get("session_mode", "target")),
+                            "configured_duration_seconds":  h.get("configured_duration_seconds"),
                         })
+                stats_in = data.get("stats")
+                stats = None
+                if isinstance(stats_in, dict):
+                    stats = {
+                        "total_sessions":  int(stats_in.get("total_sessions", 0) or 0),
+                        "games_played":    int(stats_in.get("games_played", 0) or 0),
+                        "goals_assigned":  int(stats_in.get("goals_assigned", 0) or 0),
+                        "goals_completed": int(stats_in.get("goals_completed", 0) or 0),
+                    }
                 self._state.selected_patient = {
                     "id":        data.get("id"),
                     "full_name": str(data.get("full_name", "")),
                     "sex":       str(data.get("sex", "")),   # Dashboard's male/female illustration
                     "history":   hist,     # recent sessions for the Patient Dashboard
+                    "stats":     stats,    # aggregate counts, or None if unavailable --
+                                            # see database.py's get_patient_progress_summary()
                 }
             else:
                 self._state.selected_patient = {}

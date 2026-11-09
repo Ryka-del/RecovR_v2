@@ -10,13 +10,11 @@ from recovr.shared import protocol
 
 bp = Blueprint("views", __name__)
 
-# The seven RecovR games. Only "Gravity Catch" is integrated so far; selecting
-# any other one leaves the patient app on its Waiting screen with a notice until
-# that game is wired into recovr/patient_app/game_runner.py.
+# Every game currently wired into recovr/patient_app/game_runner.py.
 KNOWN_GAMES = [
-    "Gravity Catch",
     "Basketball", "Piano Tiles", "Steady Aim", "Apple Catching",
-    "Key and Lock", "Catch the Falling Object",
+    "Key and Lock", "Catch 'n Grab", "Lemonade", "Feed the Cat",
+    "Plant the Garden",
 ]
 DIFFICULTIES = ["Easy", "Medium", "Hard"]
 

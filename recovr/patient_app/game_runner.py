@@ -38,20 +38,19 @@ class GameSpec:
     uses_sensors: bool = False
 
 
-# therapist-facing name -> (game module, GameClass name). Every one of the seven
-# original games is playable on the patient monitor: "Gravity Catch" keeps its
-# dedicated adapter (it also drives the prototype path); the rest are wrapped by
-# the generic real-game adapter. No games/*.py file is modified.
+# therapist-facing name -> (game module, GameClass name). Every registered
+# game is wrapped by the generic real-game adapter. No games/*.py file is
+# modified by the wrapping itself.
 _REAL_GAMES = {
     "Basketball":               ("games.basketball",    "BasketballGame"),
     "Piano Tiles":              ("games.piano_tiles",   "PianoTilesGame"),
     "Apple Catching":           ("games.catchingapple", "AppleCatchingGame"),
-    "Gravity Catch":            ("games.gravity_catch", "GravityCatchGame"),
     "Key and Lock":             ("games.key_lock",      "KeyLockGame"),
     "Steady Aim":               ("games.steady_aim",    "SteadyAimGame"),
-    "Catch the Falling Object": ("games.catch_object",  "CatchObjectGame"),
+    "Catch 'n Grab":             ("games.catch_object",  "CatchObjectGame"),
     "Lemonade":                 ("games.lemonade",      "LemonadeGame"),
     "Feed the Cat":             ("games.feed_the_cat",  "FeedTheCatGame"),
+    "Plant the Garden":         ("games.plant_the_garden", "PlantTheGardenGame"),
 }
 
 
@@ -66,10 +65,6 @@ def resolve_game(name: str) -> GameSpec:
     once a game is actually selected. Raises GameNotAvailable for unknown names.
     """
     key = (name or "").strip()
-
-    if key == "Gravity Catch":
-        from recovr.patient_app.games.gravity_catch_adapter import GravityCatchAdapter
-        return GameSpec(GravityCatchAdapter, uses_sensors=True)
 
     if key in _REAL_GAMES:
         mod_path, cls_name = _REAL_GAMES[key]
@@ -170,7 +165,7 @@ class GameRunner:
 
         # A game signals completion either by asking its ScreenManager to move
         # on (older games) or by raising an internal `game_over` flag without
-        # navigating (Gravity Catch and friends).
+        # navigating (every current goal-based game).
         if getattr(self.game, "game_over", False):
             self.finished = True
         next_scene, _ = self.game.manager.get_next()

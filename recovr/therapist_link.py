@@ -92,7 +92,7 @@ class TherapistLink:
 
     def calibrate_begin(self, game_type: str):
         """Tell the patient window a (therapist-driven) calibration has started."""
-        self._enqueue(protocol.EP_CONFIG, {"selected_game": game_type or "Gravity Catch"})
+        self._enqueue(protocol.EP_CONFIG, {"selected_game": game_type or ""})
         self._enqueue(protocol.EP_COMMAND, {"command": cmd.CALIBRATE})
 
     def calibrate_end(self):

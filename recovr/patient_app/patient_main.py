@@ -566,7 +566,9 @@ class PatientApp:
             "session_id": self.session_id,
             "patient_name": config.get("patient_name", ""),
             "difficulty": config.get("difficulty", "Easy"),
-            "duration_sec": config.get("duration_sec", 60),
+            "session_mode": config.get("session_mode", "target"),
+            "target_reps": config.get("target_reps"),
+            "duration_sec": config.get("duration_sec"),
         }
         if DUAL:
             # apply the therapist's light/dark choice to constants BEFORE the

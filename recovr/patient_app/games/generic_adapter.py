@@ -18,8 +18,7 @@ hooks GameRunner looks for:
   get_telemetry()/get_result()  best-effort, from whatever attributes the game
                               exposes (score / reps / time_left / difficulty).
 
-Gravity Catch keeps its own dedicated adapter (it also supports the prototype
-path); every other game routes through this wrapper.
+Every registered game routes through this wrapper.
 """
 
 import pygame
@@ -70,31 +69,18 @@ def _sensor_telemetry(game):
     return out
 
 
-def _mask_begin_prompt(game, surface):
-    """Cover the game's own "Press any key or click to begin" line while its
-    How-to-Play screen is up -- the patient never starts the game, the therapist's
-    START does. The prompt sits at the bottom of a centred instruction panel;
-    this paints that strip with the current theme's panel colour.
-    """
-    if not getattr(game, "_show_instructions", False):
-        return
-    try:
-        from constants import get_theme
-        panel = get_theme()["PANEL"]
-    except Exception:
-        panel = (30, 35, 50)
-    w, h = surface.get_size()
-    # the "press any key" hint sits ~0.70-0.76 h, centred, near the bottom of the
-    # instruction panel; cover just that band with the panel colour.
-    strip = pygame.Rect(int(w * 0.31), int(h * 0.695), int(w * 0.38), int(h * 0.055))
-    surface.fill(panel, strip)
-
-
 def _mask_results_buttons(game, surface):
-    """Cover the "Play Again" / "Exit" buttons on the game's own Session-Complete
-    screen -- the patient cannot restart or exit; only the therapist controls the
-    session. The buttons sit near the bottom of a centred ~640x400 results modal.
-    """
+    """Cover the "Play Again" / "Exit" (or, for Steady Aim, "Play Again" /
+    "Exit" via _results_back_rect) buttons on the game's own Session-Complete
+    screen -- the patient cannot restart or exit; only the therapist controls
+    the session.
+
+    Reads the game's OWN stored button Rects (_results_again_rect and
+    whichever of _results_exit_rect / _results_back_rect it uses) instead of
+    a guessed screen-fraction strip -- those rects are exactly where the game
+    just drew the buttons this frame, so this never drifts out of sync when a
+    game's results layout changes (a hardcoded strip previously did, landing
+    visibly off-target after the Round Complete card redesign)."""
     if not getattr(game, "game_over", False):
         return
     try:
@@ -102,49 +88,45 @@ def _mask_results_buttons(game, surface):
         panel = get_theme()["PANEL"]
     except Exception:
         panel = (30, 35, 50)
-    w, h = surface.get_size()
-    strip = pygame.Rect(int(w * 0.345), int(h * 0.60), int(w * 0.31), int(h * 0.075))
+
+    rects = [r for r in (
+        getattr(game, "_results_again_rect", None),
+        getattr(game, "_results_exit_rect", None),
+        getattr(game, "_results_back_rect", None),
+    ) if r is not None and r.width > 1 and r.height > 1]
+
+    if not rects:
+        return
+    strip = rects[0].unionall(rects[1:]).inflate(16, 16)
     surface.fill(panel, strip)
 
 
-def _mask_pause_button(game, surface):
-    """Cover the game's own top-right Pause button during play -- the patient has
-    NO pause control; only the therapist (Session in Progress) pauses/resumes.
+def _hidden_pause_rect(game):
+    """The game is about to draw its own top-right Pause button (the
+    patient has NO pause control; only the therapist's Session-in-Progress
+    panel pauses/resumes) -- return the off-screen Rect it should be drawn
+    at instead, so it never appears on the patient display, in ANY game
+    state. Returns None only when the game has no _pause_btn_rect at all.
 
-    Only the button's own footprint (plus a small pad) is repainted, using a
-    colour sampled right next to it, rather than flood-filling a strip from
-    the very top of the screen down to the button. The old strip approach
-    assumed the whole column above the button was one uniform colour, which
-    holds for a flat theme-coloured background but not for a detailed art
-    background (e.g. Feed the Cat's sky/trees) -- there it painted a single
-    sampled pixel's colour across a large block, showing up as a solid
-    mis-matched rectangle. Shrinking the masked area to the button itself
-    fixes that while remaining a strict subset of the old coverage for every
-    other game.
-    """
-    if getattr(game, "_show_instructions", False) or getattr(game, "game_over", False):
-        return
+    This used to let the game draw the button on-screen and then paint over
+    its footprint with a sampled colour. That cannot reproduce detailed
+    background art (e.g. Feed the Cat's sky/trees): a single sampled pixel
+    flood-filled across the button's box showed up as a solid mismatched
+    rectangle in that corner. Relocating the button before the game ever
+    draws it fixes the actual rendering issue instead of covering it up.
+
+    Previously this skipped hiding during _show_instructions/game_over,
+    assuming the game's own overlay (instruction panel / results dialog)
+    would already cover it -- but those overlays are translucent (e.g.
+    _draw_results()'s alpha=185 dim), so the button showed through, dimmed
+    but clearly visible, on the Session Complete screen. Hiding it
+    unconditionally is always safe: a game that doesn't draw the button in
+    some state is unaffected, and one that does (like the results screen)
+    now has it correctly relocated off-screen in every state."""
     r = getattr(game, "_pause_btn_rect", None)
     if r is None:
-        return
-    w, h = surface.get_size()
-    sx, sy = w / 1920.0, h / 1080.0
-    pad = int(14 * sx)
-    bx = max(0, int(r.x * sx) - pad)
-    by = max(0, int(r.y * sy) - pad)
-    bw = min(w - bx, int(r.width * sx) + 2 * pad)
-    bh = min(h - by, int(r.height * sy) + 2 * pad)
-    sample_x = min(w - 1, max(0, bx - 3))
-    sample_y = min(h - 1, max(0, by + bh // 2))
-    try:
-        fill = surface.get_at((sample_x, sample_y))[:3]    # just left of the button, same height
-    except Exception:
-        try:
-            from constants import get_theme
-            fill = get_theme()["PANEL"]
-        except Exception:
-            fill = (30, 35, 50)
-    surface.fill(fill, pygame.Rect(bx, by, bw, bh))
+        return None
+    return pygame.Rect(-10000, -10000, r.width, r.height)
 
 
 def make_real_adapter(game_cls):
@@ -198,21 +180,49 @@ def make_real_adapter(game_cls):
                 stop_music()
             except Exception:
                 pass
+            # The patient side has no in-game Exit control here -- only the
+            # therapist's STOP (Session in Progress panel) can end a session
+            # mid-play -- so the original game's own
+            # _exit_to_game_config() -> _save_session("stopped") path (the
+            # single-process app's only route to a "stopped" row) is never
+            # reached in the dual-monitor architecture. Without this, a
+            # therapist-stopped session was silently never persisted at all.
+            # Mirrors the exact game_over/_show_instructions guard every
+            # game's own exit path already uses, and calls the SAME
+            # self._save_session the "completed" path does -- so therapist
+            # attribution (self.account_id, captured once at session start)
+            # can never drift between the two outcomes.
+            if (not getattr(self, "game_over", False)
+                    and not getattr(self, "_show_instructions", False)
+                    and not getattr(self, "_stop_saved", False)):
+                save = getattr(self, "_save_session", None)
+                if callable(save):
+                    self._stop_saved = True
+                    try:
+                        save(status="stopped")
+                    except Exception:
+                        pass
 
         # -- draw ---------------------------------------------
         def draw(self, surface):
-            if getattr(self, "_external_pause", False):
-                real_paused = getattr(self, "paused", False)
-                self.paused = False
-                try:
+            real_rect = getattr(self, "_pause_btn_rect", None)
+            hidden_rect = _hidden_pause_rect(self)
+            if hidden_rect is not None:
+                self._pause_btn_rect = hidden_rect
+            try:
+                if getattr(self, "_external_pause", False):
+                    real_paused = getattr(self, "paused", False)
+                    self.paused = False
+                    try:
+                        super().draw(surface)
+                    finally:
+                        self.paused = real_paused
+                else:
                     super().draw(surface)
-                finally:
-                    self.paused = real_paused
-            else:
-                super().draw(surface)
-            _mask_begin_prompt(self, surface)
+            finally:
+                if hidden_rect is not None:
+                    self._pause_btn_rect = real_rect
             _mask_results_buttons(self, surface)
-            _mask_pause_button(self, surface)
 
         # -- events -----------------------------------------
         def handle_event(self, event):
@@ -221,41 +231,43 @@ def make_real_adapter(game_cls):
                 super().handle_event(event)
 
         # -- telemetry / result -------------------------
-        def _elapsed_remaining(self):
-            # Every wrapped game stores the countdown in self.duration /
-            # self.time_left EXCEPT BasketballGame, which names the total
-            # "self.time_start" instead -- without this fallback dur reads 0
-            # for Basketball and elapsed_sec is stuck at 0 for its entire
-            # session even though time_left is counting down correctly.
-            dur = getattr(self, "duration", None)
-            if dur is None:
-                dur = getattr(self, "time_start", None)
-            dur = float(dur or 0)
-            tl  = float(getattr(self, "time_left", dur) or 0)
-            return max(0.0, dur - tl), max(0.0, tl), dur
-
+        # Every wrapped game uses games/session_mode.py's SessionModeMixin:
+        # self.elapsed counts UP (seconds of active, unpaused gameplay) in
+        # BOTH modes; self.session_mode is "target" (self.goal is the
+        # required reps; ends when self.reps reaches it) or "timed"
+        # (self.time_left counts DOWN from the configured duration; ends at
+        # zero, self.goal is None).
         def get_telemetry(self):
-            elapsed, remaining, dur = self._elapsed_remaining()
             return {
                 "game": self.GAME_NAME,
                 "status": "running",
                 "score": getattr(self, "score", 0),
                 "reps": getattr(self, "reps", 0),
-                "elapsed_sec": round(elapsed, 2),
-                "remaining_sec": round(remaining, 2),
-                "duration_sec": int(dur),
+                "session_mode": getattr(self, "session_mode", "target"),
+                "goal": getattr(self, "goal", None),
+                "elapsed_sec": round(float(getattr(self, "elapsed", 0.0) or 0.0), 2),
+                "remaining_sec": (round(float(self.time_left), 2)
+                                  if getattr(self, "time_left", None) is not None else None),
                 "difficulty": getattr(self, "difficulty", ""),
                 "sensors": _sensor_telemetry(self),
             }
 
         def get_result(self):
-            elapsed, _remaining, _dur = self._elapsed_remaining()
+            goal = getattr(self, "goal", None)
+            reps = getattr(self, "reps", 0)
+            mode = getattr(self, "session_mode", "target")
+            completed = (reps >= goal) if (mode == "target" and goal is not None) else \
+                        (getattr(self, "time_left", 1) is not None and self.time_left <= 0)
             return {
                 "game": self.GAME_NAME,
                 "difficulty": getattr(self, "difficulty", ""),
-                "duration_sec": int(round(elapsed)),
+                "session_mode": mode,
+                "duration_sec": int(round(float(getattr(self, "elapsed", 0.0) or 0.0))),
+                "configured_duration_seconds": getattr(self, "timed_duration", None),
                 "score": getattr(self, "game_over_score", getattr(self, "score", 0)),
-                "reps": getattr(self, "reps", 0),
+                "reps": reps,
+                "goal": goal,
+                "completed": bool(completed),
             }
 
     RealGameAdapter.__name__ = f"{RealGameAdapter.GAME_NAME}RealAdapter"

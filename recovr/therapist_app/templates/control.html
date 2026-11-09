@@ -36,8 +36,17 @@
             {% for d in difficulties %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
           </select>
         </label>
-        <label>Duration (seconds)
-          <input name="duration_sec" type="number" min="5" max="3600" value="60">
+        <label>Session mode
+          <select name="session_mode" id="session-mode">
+            <option value="target">Target Mode (set goal)</option>
+            <option value="timed">Timed Mode (set duration)</option>
+          </select>
+        </label>
+        <label id="target-field">Target repetitions (blank = game default)
+          <input name="target_reps" type="number" min="1" max="999" placeholder="e.g. 20">
+        </label>
+        <label id="duration-field" style="display:none">Duration (seconds, blank = game default)
+          <input name="duration_sec" type="number" min="5" max="3600" placeholder="e.g. 60">
         </label>
         <button type="submit" class="btn">Apply configuration</button>
       </form>
@@ -78,8 +87,9 @@
       <h2>Live game data</h2>
       <div class="state-grid">
         <div><span class="k">Score</span><span id="t-score" class="v big">&mdash;</span></div>
-        <div><span class="k">Remaining</span><span id="t-remaining" class="v big">&mdash;</span></div>
+        <div><span class="k">Progress</span><span id="t-goal" class="v big">&mdash;</span></div>
         <div><span class="k">Elapsed</span><span id="t-elapsed" class="v">&mdash;</span></div>
+        <div><span class="k">Remaining</span><span id="t-remaining" class="v">&mdash;</span></div>
         <div><span class="k">Accuracy</span><span id="t-accuracy" class="v">&mdash;</span></div>
         <div><span class="k">Reps</span><span id="t-reps" class="v">&mdash;</span></div>
         <div><span class="k">Reaction (ms)</span><span id="t-rt" class="v">&mdash;</span></div>

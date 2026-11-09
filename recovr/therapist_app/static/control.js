@@ -21,11 +21,20 @@ async function postJSON(path, body) {
 }
 
 // --- Configuration form -------------------------------------------------
+function updateModeFields() {
+  const timed = $("session-mode").value === "timed";
+  $("target-field").style.display = timed ? "none" : "";
+  $("duration-field").style.display = timed ? "" : "none";
+}
+$("session-mode").addEventListener("change", updateModeFields);
+updateModeFields();
+
 $("config-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const fd = new FormData(e.target);
   const body = Object.fromEntries(fd.entries());
-  body.duration_sec = parseInt(body.duration_sec, 10) || 60;
+  if (body.target_reps === "") delete body.target_reps;
+  if (body.duration_sec === "") delete body.duration_sec;
   const { ok } = await postJSON("/api/session/config", body);
   setMsg(ok ? "Configuration applied." : "Failed to apply configuration.", ok ? "ok" : "err");
 });
@@ -73,8 +82,11 @@ function render(state) {
   $("s-pending").textContent = state.pending_action || "—";
 
   $("t-score").textContent = fmt(tel.score);
-  $("t-remaining").textContent = tel.remaining_sec !== undefined ? fmt(tel.remaining_sec, 1) + "s" : "—";
+  $("t-goal").textContent = tel.goal !== undefined && tel.goal !== null
+    ? `${fmt(tel.reps)}/${fmt(tel.goal)}` : fmt(tel.reps);
   $("t-elapsed").textContent = tel.elapsed_sec !== undefined ? fmt(tel.elapsed_sec, 1) + "s" : "—";
+  $("t-remaining").textContent = (tel.remaining_sec !== undefined && tel.remaining_sec !== null)
+    ? fmt(tel.remaining_sec, 1) + "s" : "—";
   $("t-accuracy").textContent = tel.accuracy !== undefined ? fmt(tel.accuracy * 100, 0) + "%" : "—";
   $("t-reps").textContent = fmt(tel.reps);
   $("t-rt").textContent = fmt(tel.reaction_time_ms);

@@ -30,42 +30,51 @@ from recovr.patient_app.scenes.common import (
 
 
 # ── EDIT ME: the instructions, shown one at a time, looping forever ──────────
-# Each entry pairs the on-screen text with the sprite illustration shown above
-# it (filename inside assets/images/). Sprites are the real uploaded PNGs --
-# no generic icons, nothing drawn from scratch.
+# Each entry is (primary, secondary, sprite_name): the bold headline, an
+# optional lighter supporting line (None if there isn't one), and the sprite
+# illustration shown beside it (filename inside assets/images/). Sprites are
+# the real uploaded PNGs -- no generic icons, nothing drawn from scratch.
 WAITING_INSTRUCTIONS = [
-    ("Position yourself comfortably.",              "waiting_screen_comfortably.png"),
-    ("Relax and take a deep breath.",                "waiting_screen_breath.png"),
-    ("Put on your gloves. Ask for assistance.",      "waiting_screen_gloves.png"),
-    ("Keep your elbow at approximately 90°.",        "waiting_screen_elbow.png"),
+    ("Position yourself comfortably.",       None,                    "waiting_screen_comfortably.png"),
+    ("Relax and take a deep breath.",        None,                    "waiting_screen_breath.png"),
+    ("Put on your rehabilitation glove.",    "Ask for assistance.",   "waiting_screen_gloves.png"),
+    ("Keep your elbow at approximately 90°.", None,                   "waiting_screen_elbow.png"),
 ]
 
 # ── EDIT ME: carousel timing (milliseconds) ───────────────────────────────
-ENTER_MS   = 950     # slide in from the left edge -> centre (eased)
-HOLD_MS    = 3200    # stay centred (reading time)
-EXIT_MS    = 950     # slide centre -> off the left edge (eased)
-OVERLAP_MS = 650     # the next card starts entering this long before the
-                     # current one has finished leaving -> continuous motion
+HOLD_MS       = 3200   # stay centred (reading time)
+TRANSITION_MS = 900    # synchronized swipe: current card slides out to the
+                        # left while the next slides in from the right, both
+                        # moving together at the same speed (see
+                        # common.carousel_frame) -- a clean linked swap, not
+                        # two independently-timed slides that can overlap
 
 # ── EDIT ME: layout / look (fractions of the patient display) ─────────────
-LOGO_TOP_FRAC      = 0.022   # margin above the RecovR wordmark
-LOGO_H_FRAC        = 0.185   # wordmark box height -- large, anchors the top area
+LOGO_H_FRAC        = 0.14    # wordmark box height -- ~24% smaller than before,
+                              # so the instruction card (not the logo) dominates
 CARD_W_FRAC        = 0.82
 CARD_H_FRAC        = 0.46
 CARD_CENTER_Y_FRAC = 0.520   # pulled up, right under the logo
-CARD_RADIUS_FRAC   = 0.09    # of the card height
-CARD_PAD_X_FRAC    = 0.04    # left/right inner padding, of the card width
-CARD_PAD_Y_FRAC    = 0.065   # top/bottom inner padding, of the card height
-ICON_FRAC          = 0.94    # sprite size, of the card's inner (padded) height -- large
-ICON_TEXT_GAP_FRAC = 0.045   # gap between sprite and text, of the card width
-TEXT_SIZE_FRAC     = 0.27    # of the card height -- much larger instruction text
-LINE_GAP_FRAC      = 0.26    # extra gap between wrapped lines (of line height)
-CARD_FILL_ALPHA    = 26      # frosted-glass fill -- translucent, gradient shows through
-CARD_BORDER_ALPHA  = 120
-SHADOW_ALPHA       = 16      # single soft shadow, kept light so it never looks muddy
+CARD_RADIUS_FRAC   = 0.13    # of the card height
+CARD_PAD_X_FRAC    = 0.05    # left/right inner padding, of the card width
+CARD_PAD_Y_FRAC    = 0.06    # top/bottom inner padding, of the card height
+ICON_FRAC          = 0.82    # sprite size, of the card's inner (padded) height --
+                              # large; paired with sprite(..., crop=True) so this
+                              # is the size of the actual artwork, not its canvas
+ICON_TEXT_GAP_FRAC = 0.065   # gap between sprite and the divider+text, of the card width
+TEXT_SIZE_FRAC     = 0.225   # primary line height, of the card height -- large
+SECONDARY_SIZE_FRAC = 0.145  # secondary line height, of the card height
+LINE_GAP_FRAC      = 0.30    # gap between wrapped lines (of line height)
+CARD_FILL_ALPHA    = 70      # frosted-glass fill -- translucent, gradient shows through
+CARD_BORDER_ALPHA  = 190     # thin, bright white border
+SHADOW_ALPHA       = 22      # soft shadow
+GLOW_ALPHA         = 55      # soft outward white glow around the card
 DOT_GAP_FRAC       = 0.06    # gap between the card's bottom edge and the dots, of H
 DOT_R_FRAC         = 0.009   # dot radius, of H
 DOT_SPACING_FRAC   = 0.034   # centre-to-centre spacing between dots, of W
+
+NAVY_TEXT        = (7, 23, 71)          # #071747 -- primary/secondary text, light theme
+DIVIDER_COLOR    = (176, 196, 221, 170) # thin light blue-gray vertical rule
 
 
 _FONT_DIR = os.path.abspath(os.path.join(
@@ -73,15 +82,22 @@ _FONT_DIR = os.path.abspath(os.path.join(
 _font_cache: dict = {}
 
 
-def _font(size, italic=True):
-    key = (size, italic)
+def _poppins_path(weight):
+    return os.path.join(_FONT_DIR, f"Poppins-{weight}.ttf")
+
+
+def _font(size, weight="Regular"):
+    """Poppins at the given weight ("SemiBold" for the primary instruction,
+    "Regular" for the lighter supporting line) -- the project's own Poppins
+    family (assets/font/), the same loading pattern scenes/therapist_dashboard.py
+    uses for its own Poppins text, never a substitute font."""
+    key = (size, weight)
     f = _font_cache.get(key)
     if f is None:
         try:
-            f = pygame.font.Font(os.path.join(_FONT_DIR, "Sora-Medium.ttf"), size)
+            f = pygame.font.Font(_poppins_path(weight), size)
         except Exception:
-            f = pygame.font.SysFont("lexend,arial,dejavusans", size)
-        f.set_italic(bool(italic))
+            f = pygame.font.SysFont("arial,dejavusans", size, bold=(weight != "Regular"))
         _font_cache[key] = f
     return f
 
@@ -117,20 +133,27 @@ class WaitingScreen:
         cw, ch = int(W * CARD_W_FRAC), int(H * CARD_H_FRAC)
         return pygame.Rect((W - cw) // 2, int(H * CARD_CENTER_Y_FRAC) - ch // 2, cw, ch)
 
-    def _draw_logo(self, surface, W, H):
+    def _draw_logo(self, surface, W, H, card_top):
         """The existing RecovR wordmark, shared with the patient Dashboard via
         scenes/common.py -- not a new logo and not the reference image's hand
         icon. See common.draw_recovr_wordmark for the actual technique (it
-        matches scenes/therapist_welcome.py's arialblack two-tone treatment)."""
-        return draw_recovr_wordmark(surface, W // 2, int(H * LOGO_TOP_FRAC),
-                                    int(W * 0.7), int(H * LOGO_H_FRAC))
+        matches scenes/therapist_welcome.py's arialblack two-tone treatment).
+        Positioned so its vertical center sits at the midpoint between the
+        screen's top edge and the top of the instruction card below it, per
+        the requested layout -- same size/aspect ratio, just recentered in
+        the space above the card instead of a fixed top margin."""
+        box_w, box_h = int(W * 0.7), int(H * LOGO_H_FRAC)
+        top_y = (card_top // 2) - box_h // 2
+        return draw_recovr_wordmark(surface, W // 2, top_y, box_w, box_h)
 
-    def _draw_card(self, surface, rect, text_col, text, sprite_name=None, alpha_scale=1.0):
-        """Icon-left / text-right instruction card: [ LARGE SPRITE ] [ TEXT ],
-        both vertically centred on the card so they read as one combined
-        icon-text unit. The card itself is a soft, translucent frosted panel --
-        a single light shadow plus a low-alpha fill, so the pastel gradient
-        keeps showing through instead of a heavy/opaque (or muddy) block."""
+    def _draw_card(self, surface, rect, text_col, primary, secondary=None,
+                   sprite_name=None, alpha_scale=1.0):
+        """Icon-left / text-right instruction card: [ pale circle + sprite ]
+        [ divider ] [ bold primary line(s) + lighter secondary line ], all
+        vertically centred so they read as one combined unit. The card itself
+        is a soft, translucent frosted-glass panel with a bright hairline
+        border and a faint outward glow, so the pastel gradient keeps showing
+        through instead of a heavy/opaque block."""
         # Wrap-and-shrink-to-fit needs the text column's width *before* the
         # shared draw call, so ask the shared geometry helper for it first --
         # the actual icon+text painting is then one call, shared with the
@@ -140,30 +163,40 @@ class WaitingScreen:
             has_icon=bool(sprite_name))
 
         text_items = []
-        if text:
-            key = (text, rect.width, rect.height)
-            rendered = self._text_cache.get(key)
-            if rendered is None:
+        key = (primary, secondary, rect.width, rect.height)
+        rendered = self._text_cache.get(key)
+        if rendered is None:
+            rendered = []
+            if primary:
                 fsz = max(14, int(rect.height * TEXT_SIZE_FRAC))
-                f = _font(fsz)
-                lines = _wrap(text, f, text_max_w)
-                while len(lines) > 2 and fsz > 26:               # keep it to <= 2 lines
-                    fsz = int(fsz * 0.9); f = _font(fsz)
-                    lines = _wrap(text, f, text_max_w)
-                rendered = [f.render(ln, True, (255, 255, 255)) for ln in lines]
-                self._text_cache[key] = rendered
-                if len(self._text_cache) > 24:
-                    self._text_cache = dict(list(self._text_cache.items())[-16:])
-            text_items = [(s, text_col) for s in rendered]
+                f = _font(fsz, "SemiBold")
+                lines = _wrap(primary, f, text_max_w)
+                while len(lines) > 2 and fsz > 20:            # natural wrap, not excessive shrink
+                    fsz = int(fsz * 0.92); f = _font(fsz, "SemiBold")
+                    lines = _wrap(primary, f, text_max_w)
+                rendered += [f.render(ln, True, (255, 255, 255)) for ln in lines]
+            if secondary:
+                fsz = max(12, int(rect.height * SECONDARY_SIZE_FRAC))
+                f = _font(fsz, "Regular")
+                lines = _wrap(secondary, f, text_max_w)
+                while len(lines) > 2 and fsz > 16:
+                    fsz = int(fsz * 0.92); f = _font(fsz, "Regular")
+                    lines = _wrap(secondary, f, text_max_w)
+                rendered += [f.render(ln, True, (255, 255, 255)) for ln in lines]
+            self._text_cache[key] = rendered
+            if len(self._text_cache) > 24:
+                self._text_cache = dict(list(self._text_cache.items())[-16:])
+        text_items = [(s, text_col) for s in rendered]
 
         draw_icon_text_card(surface, rect, sprite_name, text_items,
                             radius_frac=CARD_RADIUS_FRAC, pad_x_frac=CARD_PAD_X_FRAC,
                             pad_y_frac=CARD_PAD_Y_FRAC, icon_frac=ICON_FRAC,
                             gap_frac=ICON_TEXT_GAP_FRAC, line_gap_frac=LINE_GAP_FRAC,
                             fill_alpha=CARD_FILL_ALPHA, border_alpha=CARD_BORDER_ALPHA,
-                            shadow_alpha=SHADOW_ALPHA, alpha_scale=alpha_scale)
+                            shadow_alpha=SHADOW_ALPHA, alpha_scale=alpha_scale,
+                            glow_alpha=GLOW_ALPHA, divider_color=DIVIDER_COLOR)
 
-    def _draw_dots(self, surface, card, active_idx, N):
+    def _draw_dots(self, surface, card, active_idx, N, dot_col):
         H, W = surface.get_size()[1], surface.get_size()[0]
         r = max(3, int(H * DOT_R_FRAC))
         spacing = int(W * DOT_SPACING_FRAC)
@@ -173,10 +206,10 @@ class WaitingScreen:
         for i in range(N):
             cx = cx0 + i * spacing
             if i == active_idx:
-                pygame.draw.circle(surface, (255, 255, 255), (cx, cy), int(r * 1.35))
+                pygame.draw.circle(surface, dot_col, (cx, cy), int(r * 1.35))
             else:
                 dim = pygame.Surface((r * 2, r * 2), pygame.SRCALPHA)
-                pygame.draw.circle(dim, (255, 255, 255, 130), (r, r), r)
+                pygame.draw.circle(dim, (*dot_col, 130), (r, r), r)
                 surface.blit(dim, (cx - r, cy - r))
 
     # -- main -------------------------------------------------------
@@ -190,23 +223,41 @@ class WaitingScreen:
         surface.blit(recovr_gradient(W, H), (0, 0))
 
         dark = PALETTE["bg"][0] < 40
-        text_col = PALETTE["text"] if dark else (92, 94, 104)
-
-        self._draw_logo(surface, W, H)
+        # Deep navy Poppins text on the light pastel card, per the reference;
+        # dark theme (no reference provided for it) keeps the theme's own
+        # light-on-dark text colour so it stays legible against the dark bg.
+        text_col = PALETTE["text"] if dark else NAVY_TEXT
+        dot_col = PALETTE["text"] if dark else NAVY_TEXT
 
         card = self._card_rect(W, H)
+        self._draw_logo(surface, W, H, card.top)
+
         N = len(WAITING_INSTRUCTIONS) or 1
 
         # No static side rectangles -- only the animated instruction card(s)
         # are drawn; the dot row below is the sole "more to come" cue. Motion
-        # comes from the shared common.carousel_frame() -- the same slide-in
-        # -> hold -> slide-out math the patient Dashboard's card also uses.
-        frame = carousel_frame(t, W, card.width, N, enter_ms=ENTER_MS, hold_ms=HOLD_MS,
-                               exit_ms=EXIT_MS, overlap_ms=OVERLAP_MS)
+        # comes from the shared common.carousel_frame() -- the same hold ->
+        # synchronized-swipe math the patient Dashboard's card also uses.
+        #
+        # Everything belonging to a card -- its glass shell, icon, divider
+        # and text -- is painted by one call (_draw_card -> draw_icon_text_card)
+        # using the SAME rect, so it all moves together as one unit. The clip
+        # is a belt-and-braces guard (never strictly needed once the two
+        # cards' motion is properly synchronized -- see carousel_frame -- but
+        # guarantees nothing from a card can ever paint outside the carousel
+        # band regardless): the carousel's own vertical band, full width.
+        prev_clip = surface.get_clip()
+        clip_pad = int(H * 0.02)
+        surface.set_clip(pygame.Rect(0, card.top - clip_pad, W, card.height + clip_pad * 2))
+
+        frame = carousel_frame(t, W, card.width, N, hold_ms=HOLD_MS, transition_ms=TRANSITION_MS)
         for idx, x, a in frame:
             r = card.copy(); r.centerx = x
-            text, sprite_name = WAITING_INSTRUCTIONS[idx]
-            self._draw_card(surface, r, text_col, text, sprite_name=sprite_name, alpha_scale=a)
+            primary, secondary, sprite_name = WAITING_INSTRUCTIONS[idx]
+            self._draw_card(surface, r, text_col, primary, secondary,
+                            sprite_name=sprite_name, alpha_scale=a)
 
-        cycle = max(1, ENTER_MS + HOLD_MS + EXIT_MS - OVERLAP_MS)
-        self._draw_dots(surface, card, (t // cycle) % N, N)
+        surface.set_clip(prev_clip)
+
+        cycle = max(1, HOLD_MS + TRANSITION_MS)
+        self._draw_dots(surface, card, (t // cycle) % N, N, dot_col)
