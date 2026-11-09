@@ -10,15 +10,16 @@ import random
 import math
 from screens.base import BaseScreen
 from games.fatigue import FatigueMixin
+from games.session_mode import SessionModeMixin
 from sensors.input_handler import input_handler
 from audio import play_success, play_error, play_completion, start_music, stop_music, game_music_path, play_click
-from constants import get_theme, GAME_W, GAME_H
+from constants import get_theme, is_dark_mode, GAME_W, GAME_H
 from games.game_header import draw_game_header
 
-GOALS      = {"Easy": 10, "Medium": 15, "Hard": 20}
+GOALS      = {"Easy": 10, "Medium": 15, "Hard": 20}   # Target Mode: shots to make to complete
+DURATION   = {"Easy": 40,  "Medium": 35,  "Hard": 30}  # Timed Mode: session length in seconds
 ZONE_WIDTH = {"Easy": 0.25, "Medium": 0.16, "Hard": 0.09}
 ZONE_SPEED = {"Easy": 0.0,  "Medium": 0.18, "Hard": 0.28}
-TIME_START = {"Easy": 40,   "Medium": 35,   "Hard": 30}
 
 RAMP_UP = 0.6   # grip rises at 0.6 units/sec while squeezing
 
@@ -311,7 +312,7 @@ def _draw_vertical_gradient_rect(surface, rect, top_col, bot_col, radius):
     surface.blit(grad, rect.topleft)
 
 
-class BasketballGame(FatigueMixin, BaseScreen):
+class BasketballGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
     def on_enter(self, data):
         self.account_id = data.get("account_id")
@@ -325,13 +326,10 @@ class BasketballGame(FatigueMixin, BaseScreen):
         # calibration Advanced Settings screen) take priority; absent an
         # override, fall back to the normal per-difficulty preset.
         cal_params  = self.cal.get("params", {})
-        self.goal   = cal_params.get("bb_goal", GOALS[self.difficulty])
+        self._session_init(data, GOALS, DURATION, self.difficulty, cal_goal_key="bb_goal")
         self.zone_w = cal_params.get("bb_zone_width", ZONE_WIDTH[self.difficulty])
         _spd_map    = {"Slow": 0.07, "Normal": 0.18, "Fast": 0.32}
         self.zone_speed = _spd_map.get(data.get("speed", "Normal"), 0.18)
-
-        dur = data.get("duration_sec")
-        self.time_start = int(dur) if dur else TIME_START[self.difficulty]
 
         self.game_over           = False
         self.game_over_score     = 0
@@ -362,10 +360,8 @@ class BasketballGame(FatigueMixin, BaseScreen):
         self._grip_ignore_timer  = 0.0
         self.score          = 0
         self.reps           = 0
-        self.time_left      = float(self.time_start)
+        self._session_reset()
         self.start_time     = pygame.time.get_ticks()
-        self._pre_complete   = False
-        self._pre_complete_t = 0.0
 
         self.zone_pos = random.uniform(0.15, 0.50)
         self.zone_dir = 1
@@ -486,17 +482,8 @@ class BasketballGame(FatigueMixin, BaseScreen):
         if self.fatigue_paused or self.paused:
             return
 
-        self.time_left -= dt
-        if self.time_left <= 0:
-            self.time_left = 0.0
-            if not self._pre_complete:
-                self._pre_complete   = True
-                self._pre_complete_t = 0.8
-                pygame.mixer.music.fadeout(800)
-            else:
-                self._pre_complete_t -= dt
-                if self._pre_complete_t <= 0:
-                    self._end_game()
+        if self._session_tick(dt):
+            self._end_game()
             return
 
         raw = self._normalize(self._state["grip"])
@@ -613,6 +600,10 @@ class BasketballGame(FatigueMixin, BaseScreen):
             self.ball_x      = self._next_ball_x
             self.ball_y      = float(GAME_H - 160)
             self._next_ball_x = None
+        # Goal reached -- let the made shot's flight finish (above) before
+        # ending, instead of cutting it off mid-animation.
+        if self._session_target_reached():
+            self._end_game()
 
     def _shoot(self):
         bx0 = self.ball_x
@@ -655,79 +646,67 @@ class BasketballGame(FatigueMixin, BaseScreen):
         ov.fill((0, 0, 0, 210))
         surface.blit(ov, (0, 0))
 
-        pw, ph = 860, 560
-        px, py = (GAME_W - pw) // 2, (GAME_H - ph) // 2
-        bg = pygame.Surface((pw, ph), pygame.SRCALPHA)
-        pygame.draw.rect(bg, T["PANEL"] + (252,), (0, 0, pw, ph), border_radius=16)
-        surface.blit(bg, (px, py))
-        pygame.draw.rect(surface, T["ACCENT"], pygame.Rect(px, py, pw, ph), 2, border_radius=16)
+        # Fully designed "How To Play" card art (title, numbered steps, tip
+        # banner all baked in) -- replaces the hand-drawn panel. Per-theme,
+        # cropped to its own opaque content (it ships with transparent side
+        # padding for the drop shadow) then fit preserving aspect ratio.
+        card_name = f"basketball_how_to_play_{'dark' if is_dark_mode() else 'light'}.png"
+        top_margin, bottom_reserved = int(GAME_H * 0.05), int(GAME_H * 0.07)
+        card = _load_image_fit(card_name, int(GAME_W * 0.60), GAME_H - top_margin - bottom_reserved)
+        bottom_y = GAME_H // 2
+        if card is not None:
+            cr = card.get_rect(midtop=(GAME_W // 2, top_margin))
+            surface.blit(card, cr)
+            bottom_y = cr.bottom
 
-        f_title = pygame.font.SysFont("monospace", 36, bold=True)
-        f_head  = pygame.font.SysFont("monospace", 22, bold=True)
-        f_body  = pygame.font.SysFont("monospace", 19)
-        f_hint  = pygame.font.SysFont("monospace", 21, bold=True)
-
-        diff_col = {"Easy": T["GREEN"], "Medium": T["YELLOW"], "Hard": T["RED"]}[self.difficulty]
-        title = f_title.render("How to Play", True, diff_col)
-        surface.blit(title, title.get_rect(centerx=GAME_W // 2, top=py + 26))
-        pygame.draw.line(surface, T["ACCENT"], (px + 40, py + 78), (px + pw - 40, py + 78), 1)
-
-        y = py + 96
-        for header, lines in [
-            ("OBJECTIVE", [
-                "Squeeze your hand to raise the needle on the grip bar.",
-                "When the needle enters the GREEN zone, RELEASE to shoot!",
-                "The ball must pass through the hoop to score a basket.",
-            ]),
-            ("CONTROLS", [
-                "Squeeze - pushes the needle up.",
-                "Release - stops the needle.",
-            ]),
-            ("THIS SESSION", [
-                f"Duration:   {self.time_start} seconds",
-                f"Difficulty: {self.difficulty}",
-            ]),
-        ]:
-            surface.blit(f_head.render(header, True, T["ACCENT"]), (px + 48, y))
-            y += 30
-            for line in lines:
-                surface.blit(f_body.render(line, True, T["TEXT"]), (px + 64, y))
-                y += 26
-            y += 14
-
-        blink_col = T["YELLOW"] if (pygame.time.get_ticks() // 600) % 2 == 0 else T["GRAY"]
-        hint = f_hint.render("Press any key or click to begin", True, blink_col)
-        surface.blit(hint, hint.get_rect(centerx=GAME_W // 2, bottom=py + ph - 20))
+        # This session's goal/difficulty aren't part of the (static) card
+        # art, so they stay as a small live line underneath it -- the one
+        # piece of dynamic info the original panel showed that the new
+        # artwork has no room for. No "press any key" prompt here -- the
+        # patient never starts the game themselves, only the therapist's
+        # own START control does, so that instruction doesn't apply.
+        f_info = pygame.font.SysFont("monospace", 22, bold=True)
+        sess_txt = (f"Goal: Make {self.goal} shots" if self.session_mode == "target" else
+                    f"Duration: {int(self.timed_duration)}s — make as many shots as you can")
+        info = f_info.render(f"{sess_txt}   ·   Difficulty: {self.difficulty}", True, T["WHITE"])
+        info_r = info.get_rect(centerx=GAME_W // 2, top=bottom_y + 14)
+        surface.blit(info, info_r)
 
     def _exit_to_game_config(self):
         import builtins
         stop_music()
+        if not self.game_over and not self._show_instructions:
+            self._save_session(status="stopped")
         builtins.pending_panel   = 4
         builtins.pending_patient = self._patient
         builtins.pending_account = self.account
         self.manager.go_to("therapist_dashboard")
+
+    def _save_session(self, status):
+        try:
+            from database import Database
+            db = Database()
+            patient_id = self._patient.get("id") if self._patient else None
+            db.save_session(
+                patient_id     = patient_id,
+                therapist_id   = self.account_id,
+                game           = "Basketball",
+                score          = self.score,
+                difficulty     = self.difficulty,
+                status         = status,
+                **self._session_result_fields(),
+            )
+        except Exception:
+            pass
 
     def _end_game(self):
         if self.game_over:
             return
         stop_music()
         play_completion()
-        self.game_over_duration = (pygame.time.get_ticks() - self.start_time) // 1000
+        self.game_over_duration = int(round(self.elapsed))
         self.game_over_score    = self.score
-        try:
-            from database import Database
-            db = Database()
-            patient_id = self._patient.get("id") if self._patient else None
-            db.save_session(
-                patient_id   = patient_id,
-                therapist_id = self.account_id,
-                game         = "Basketball",
-                score        = self.score,
-                duration_sec = self.game_over_duration,
-                difficulty   = self.difficulty,
-            )
-        except Exception:
-            pass
+        self._save_session(status="completed")
         self.game_over = True
 
     def _draw_results(self, surface):
@@ -736,39 +715,43 @@ class BasketballGame(FatigueMixin, BaseScreen):
         ov.fill((0, 0, 0, 185))
         surface.blit(ov, (0, 0))
 
-        mw, mh = 640, 400
-        mx, my = (GAME_W - mw) // 2, (GAME_H - mh) // 2
-        mr = pygame.Rect(mx, my, mw, mh)
+        card_name = f"basketball_round_complete_{'dark' if is_dark_mode() else 'light'}.png"
+        top_margin, bottom_reserved = int(GAME_H * 0.05), int(GAME_H * 0.17)
+        card = _load_image_fit(card_name, int(GAME_W * 0.50), GAME_H - top_margin - bottom_reserved)
+        bottom_y = GAME_H // 2
+        if card is not None:
+            cr = card.get_rect(midtop=(GAME_W // 2, top_margin))
+            surface.blit(card, cr)
+            bottom_y = cr.bottom
 
-        bg = pygame.Surface((mw, mh), pygame.SRCALPHA)
-        pygame.draw.rect(bg, T["PANEL"] + (245,), (0, 0, mw, mh), border_radius=16)
-        surface.blit(bg, mr.topleft)
-        pygame.draw.rect(surface, T["ACCENT"], mr, 2, border_radius=16)
+            # The card's own "You shot / [[gap]] / Balls" stat slot -- same
+            # relative position on every how-to-play/round-complete asset in
+            # this set (confirmed across games), expressed as a fraction of
+            # the card's OWN rendered size so it still lands correctly
+            # whatever box size _load_image_fit scaled it to.
+            num_col = T["WHITE"] if not is_dark_mode() else (20, 80, 150)
+            f_num = pygame.font.SysFont("monospace", max(18, int(cr.height * 0.075)), bold=True)
+            num_s = f_num.render(self._session_count_text(), True, num_col)
+            surface.blit(num_s, num_s.get_rect(
+                center=(cr.x + int(cr.width * 0.81), cr.y + int(cr.height * 0.80))))
 
-        f_big = pygame.font.SysFont("monospace", 48, bold=True)
-        f_mid = pygame.font.SysFont("monospace", 32, bold=True)
         f_sm  = pygame.font.SysFont("monospace", 24)
         f_btn = pygame.font.SysFont("monospace", 28, bold=True)
 
-        title = f_big.render("Session Complete!", True, T["YELLOW"])
-        surface.blit(title, title.get_rect(center=(mr.centerx, my + 60)))
-
-        sc_s = f_mid.render(f"Score:    {self.game_over_score}", True, T["TEXT"])
-        surface.blit(sc_s, sc_s.get_rect(midleft=(mx + 80, my + 140)))
-
         mins, secs = divmod(self.game_over_duration, 60)
-        dur_str = f"{mins}:{secs:02d}" if mins else f"{secs}s"
-        du_s = f_mid.render(f"Duration: {dur_str}", True, T["TEXT"])
-        surface.blit(du_s, du_s.get_rect(midleft=(mx + 80, my + 190)))
-
-        dif_s = f_sm.render(f"Difficulty: {self.difficulty}", True, T["GRAY"])
-        surface.blit(dif_s, dif_s.get_rect(midleft=(mx + 80, my + 238)))
+        mode_lbl = "Target Mode" if self.session_mode == "target" else "Timed Mode"
+        du_s = f_sm.render(
+            f"Elapsed Time: {mins:02d}:{secs:02d}   ·   {self.difficulty} · {mode_lbl}",
+            True, T["WHITE"])
+        du_r = du_s.get_rect(centerx=GAME_W // 2, top=bottom_y + 16)
+        surface.blit(du_s, du_r)
 
         mp  = pygame.mouse.get_pos()
         bw, bh = 220, 52
+        by  = du_r.bottom + 20
 
-        again_r = pygame.Rect(mx + 60,           my + mh - 80, bw, bh)
-        exit_r  = pygame.Rect(mx + mw - 60 - bw, my + mh - 80, bw, bh)
+        again_r = pygame.Rect(GAME_W // 2 - bw - 16, by, bw, bh)
+        exit_r  = pygame.Rect(GAME_W // 2 + 16,       by, bw, bh)
         self._results_again_rect = again_r
         self._results_exit_rect  = exit_r
 
@@ -827,6 +810,10 @@ class BasketballGame(FatigueMixin, BaseScreen):
         surface.blit(font_sm.render(f"{int(self._grip * 100)}%", True, T["ACCENT"]),
                      (BAR_X - 8, BAR_Y + BAR_H + 8))
 
+        # Live goal progress
+        prog_s = font_sm.render(self._session_progress_text("shots"), True, T["TEXT"])
+        surface.blit(prog_s, (int(40 * GAME_W / 1920), int(GAME_H * 0.14)))
+
         # Score flash
         if self.score_flash > 0:
             alpha = int(80 * min(1.0, self.score_flash / 0.3))
@@ -836,7 +823,7 @@ class BasketballGame(FatigueMixin, BaseScreen):
 
         # HUD
         draw_game_header(surface, "Basketball", self.difficulty,
-                          self.time_left, self.score, GAME_W, GAME_H)
+                          self._session_header_time(), self.score, GAME_W, GAME_H)
 
         # Feedback
         if self.feedback:

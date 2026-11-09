@@ -18,9 +18,11 @@ import random
 import pygame
 from screens.base import BaseScreen
 from games.fatigue import FatigueMixin
+from games.session_mode import SessionModeMixin
 from sensors.input_handler import input_handler
-from audio import start_music, stop_music, play_completion, play_click, play_success
-from constants import get_theme, GAME_W, GAME_H
+from audio import (start_music, stop_music, pause_music, resume_music,
+                    game_bgm_path, play_completion, play_click, play_success)
+from constants import get_theme, is_dark_mode, GAME_W, GAME_H
 from games.game_header import draw_game_header, HEADER_BOTTOM
 
 # ── difficulty-scaled parameters ────────────────────────────────────────────
@@ -34,11 +36,25 @@ MOVE_DEADZONE  = {"Easy": 0.05, "Medium": 0.08, "Hard": 0.12}   # wrist tilt mag
 ZONE_TOLERANCE = {"Easy": 150,  "Medium": 110,  "Hard": 75}     # px radius of the bowl/food/cat interaction zones
 TRAVEL_SCALE   = {"Easy": 0.75, "Medium": 1.0,  "Hard": 1.3}    # food/cat distance from the bowl, relative to base
 MOVE_SPEED     = {"Easy": 700,  "Medium": 850,  "Hard": 1000}   # hand px/s per unit tilt
-DURATION       = {"Easy": 60,   "Medium": 50,   "Hard": 40}
-TARGET_CATS    = {"Easy": 5,    "Medium": 7,    "Hard": 10}     # "Cats Left to Feed" starting count
+GOAL           = {"Easy": 5,    "Medium": 7,    "Hard": 10}     # Target Mode: cats to feed to complete
+DURATION       = {"Easy": 60,   "Medium": 50,   "Hard": 40}     # Timed Mode: session length in seconds
+
+# The resting bowl's own grab zone is more forgiving than the shared
+# food/cat zone_tolerance -- patients with limited wrist/grip control don't
+# need to land on it precisely to pick it up. 25% extra margin, comfortably
+# inside the food/cat travel distance at every difficulty (see
+# HAND_MOVE_RANGE below) so it can never reach into those zones.
+BOWL_GRAB_TOLERANCE_SCALE = 1.25
 
 FEED_FLASH_DURATION = 1.1   # seconds the cat_food sprite stays up after a feed
 FEEDBACK_DURATION   = 1.0
+
+# Cat swap transition -- after the eating flash, the fed cat slides fully
+# off the right edge, the next cat is picked, then it slides in from the
+# right to the resting cat position. Each leg is its own fixed duration so
+# the motion is frame-rate independent; an ease-out curve keeps it from
+# feeling mechanical.
+CAT_SLIDE_DURATION = 0.45   # seconds for each leg (exit, then enter)
 
 # on-screen target box each sprite is cropped-to-content and fit within
 # (aspect ratio preserved, never stretched) -- see _load_image_fit.
@@ -81,26 +97,27 @@ _cat_pairs_cache = None
 
 def _discover_cat_pairs():
     """Return a list of (hungry_filename, eating_filename) pairs found on
-    disk. Each breed name is tried against this project's existing
-    "_feed_the_cat" asset-naming convention first, then the plain
-    "_hungry"/"_eat" convention the therapist described -- a pair is only
-    used when BOTH its images actually exist, so a half-uploaded breed is
-    simply skipped rather than crashing or showing a mismatched cat."""
+    disk, matching this project's actual "{name}_cat_hungry_feed_the_cat.png"
+    / "{name}_cat_food_feed_the_cat.png" asset-naming convention. A pair is
+    only used when BOTH its images actually exist, so a half-uploaded breed
+    is simply skipped rather than crashing or showing a mismatched cat. The
+    original un-prefixed cat pair is included too (it is a complete, valid
+    pair in its own right), so it joins the random rotation instead of only
+    being used as an emergency fallback."""
     global _cat_pairs_cache
     if _cat_pairs_cache is not None:
         return _cat_pairs_cache
     img_dir = os.path.join(_ROOT, "assets", "images")
     pairs = []
     for name in _CAT_NAMES:
-        for hungry, eat in (
-            (f"{name}_hungry_feed_the_cat.png", f"{name}_eat_feed_the_cat.png"),
-            (f"{name}_hungry_feed_the_cat.png", f"{name}_food_feed_the_cat.png"),
-            (f"{name}_hungry.png",              f"{name}_eat.png"),
-        ):
-            if (os.path.isfile(os.path.join(img_dir, hungry)) and
-                    os.path.isfile(os.path.join(img_dir, eat))):
-                pairs.append((hungry, eat))
-                break
+        hungry = f"{name}_cat_hungry_feed_the_cat.png"
+        eat    = f"{name}_cat_food_feed_the_cat.png"
+        if (os.path.isfile(os.path.join(img_dir, hungry)) and
+                os.path.isfile(os.path.join(img_dir, eat))):
+            pairs.append((hungry, eat))
+    if (os.path.isfile(os.path.join(img_dir, _DEFAULT_CAT_PAIR[0])) and
+            os.path.isfile(os.path.join(img_dir, _DEFAULT_CAT_PAIR[1]))):
+        pairs.append(_DEFAULT_CAT_PAIR)
     _cat_pairs_cache = pairs if pairs else [_DEFAULT_CAT_PAIR]
     return _cat_pairs_cache
 
@@ -170,7 +187,7 @@ def _draw_counter_box(surface, x, y, w, h, font_lbl, font_num, label, value):
     surface.blit(num_s, num_s.get_rect(centerx=x + w // 2, y=y + int(h * 0.48)))
 
 
-class FeedTheCatGame(FatigueMixin, BaseScreen):
+class FeedTheCatGame(SessionModeMixin, FatigueMixin, BaseScreen):
     def on_enter(self, data):
         self.account_id = data.get("account_id")
         self.account    = data.get("account")
@@ -186,15 +203,13 @@ class FeedTheCatGame(FatigueMixin, BaseScreen):
         self.grip_threshold = cal_params.get("ftc_grip_threshold", GRIP_THRESHOLD[self.difficulty])
         self.move_deadzone  = cal_params.get("ftc_move_deadzone", MOVE_DEADZONE[self.difficulty])
         self.zone_tolerance = cal_params.get("ftc_zone_tolerance", ZONE_TOLERANCE[self.difficulty])
+        self.bowl_grab_tolerance = self.zone_tolerance * BOWL_GRAB_TOLERANCE_SCALE
         self.move_speed     = MOVE_SPEED[self.difficulty]
-        self.cats_target    = int(cal_params.get("ftc_target_cats", TARGET_CATS[self.difficulty]))
+        self._session_init(data, GOAL, DURATION, self.difficulty, cal_goal_key="ftc_target_cats")
 
         travel = TRAVEL_SCALE[self.difficulty]
         self.food_x = BOWL_X - TRAVEL_BASE * travel
         self.cat_x  = BOWL_X + TRAVEL_BASE * travel
-
-        dur = data.get("duration_sec")
-        self.duration = int(dur) if dur else DURATION[self.difficulty]
 
         self._bg_img         = _load_image_cover("bg_feed_the_cat.png", GAME_W, GAME_H)
         self._hand_img       = _load_image_fit("hand_feed_the_cat.png", *HAND_BOX)
@@ -245,8 +260,7 @@ class FeedTheCatGame(FatigueMixin, BaseScreen):
 
         self.score = 0
         self.reps  = 0          # = cats successfully fed this session
-        self.cats_remaining = self.cats_target
-        self.time_left  = float(self.duration)
+        self._session_reset()
         self.start_time = pygame.time.get_ticks()
 
         self.hand_x        = BOWL_X
@@ -255,9 +269,16 @@ class FeedTheCatGame(FatigueMixin, BaseScreen):
         self._need_release  = False
         self._grip_active   = False
         self.feed_flash_t   = 0.0
-        self._pending_next_cat = False
+        self._cat_exit_pending = False
         self.feedback       = None
         self._state = {"grip": 0.0, "tilt_x": 0.0}
+
+        # Cat swap transition state -- "idle" (resting at cat_x, feedable),
+        # "exit" (the just-fed cat sliding off the right edge), "enter" (the
+        # newly-picked cat sliding in from the right). See _update_cat_anim.
+        self._cat_state   = "idle"
+        self._cat_anim_t  = 0.0
+        self._cat_draw_x  = self.cat_x
 
         self._load_cat(self._pick_cat())
 
@@ -299,7 +320,7 @@ class FeedTheCatGame(FatigueMixin, BaseScreen):
                     input_handler.was_pressed(event, "action")):
                 self._show_instructions = False
                 self.start_time = pygame.time.get_ticks()
-                start_music()
+                start_music(game_bgm_path("Feed the Cat"))
             return
 
         if self.game_over:
@@ -307,7 +328,7 @@ class FeedTheCatGame(FatigueMixin, BaseScreen):
                 if self._results_again_rect.collidepoint(event.pos):
                     play_click()
                     self._reset()
-                    start_music()
+                    start_music(game_bgm_path("Feed the Cat"))
                 elif self._results_exit_rect.collidepoint(event.pos):
                     play_click()
                     self._exit_to_game_config()
@@ -322,9 +343,11 @@ class FeedTheCatGame(FatigueMixin, BaseScreen):
         if (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
                 and self._pause_btn_rect.collidepoint(event.pos)):
             self.paused = True
+            pause_music()
             return
         if input_handler.was_pressed(event, "back"):
             self.paused = True; self.pause_sel = 0
+            pause_music()
 
     def _pause_handle(self, event):
         pos = None
@@ -346,8 +369,8 @@ class FeedTheCatGame(FatigueMixin, BaseScreen):
             self.vol_active = False
             return
         opts_actions = [
-            lambda: setattr(self, "paused", False),
-            lambda: (self._reset(), start_music()),
+            lambda: (setattr(self, "paused", False), resume_music()),
+            lambda: (self._reset(), start_music(game_bgm_path("Feed the Cat"))),
             lambda: setattr(self, "vol_active", True),
             self._exit_to_game_config,
         ]
@@ -367,9 +390,9 @@ class FeedTheCatGame(FatigueMixin, BaseScreen):
         if self.fatigue_paused or self.paused:
             return
 
-        self.time_left -= dt
-        if self.time_left <= 0:
-            self._end_game(); return
+        if self._session_tick(dt):
+            self._end_game()
+            return
 
         # ── wrist movement -- horizontal only, per spec ────────────────
         tx = self._normalize_tilt(self._state["tilt_x"])
@@ -396,32 +419,81 @@ class FeedTheCatGame(FatigueMixin, BaseScreen):
                     self.bowl_filled = True
                     self.feedback = ("Food collected!", (120, 220, 255), FEEDBACK_DURATION)
             else:
-                if abs(self.hand_x - self.cat_x) <= self.zone_tolerance:
+                # Feeding is disabled while the previous/next cat is
+                # sliding -- the patient just waits a beat with the bowl.
+                if self._cat_state == "idle" and abs(self.hand_x - self.cat_x) <= self.zone_tolerance:
                     self._feed_cat()
         else:
             if grip_valid and not self._need_release:
-                if abs(self.hand_x - BOWL_X) <= self.zone_tolerance:
+                if abs(self.hand_x - BOWL_X) <= self.bowl_grab_tolerance:
                     self.bowl_carried = True   # bowl_filled is preserved as-is
 
         if self.feed_flash_t > 0:
             self.feed_flash_t -= dt
-            if self.feed_flash_t <= 0 and self._pending_next_cat:
-                self._pending_next_cat = False
-                if self.cats_remaining > 0:
-                    self._load_cat(self._pick_cat(exclude_idx=self._cat_idx))
+            if self.feed_flash_t <= 0:
+                if self._session_target_reached():
+                    self._end_game()
+                    return
+                if self._cat_exit_pending:
+                    self._cat_exit_pending = False
+                    self._cat_state  = "exit"
+                    self._cat_anim_t = 0.0
+        self._update_cat_anim(dt)
         if self.feedback:
             self.feedback = (self.feedback[0], self.feedback[1], self.feedback[2] - dt)
             if self.feedback[2] <= 0:
                 self.feedback = None
 
+    def _cats_remaining(self):
+        """Target Mode only -- how many more cats to reach the goal. Timed
+        Mode has no goal, so this is meaningless there (callers show the
+        plain fed-so-far count instead, see draw())."""
+        return max(0, self.goal - self.reps) if self.session_mode == "target" else 0
+
+    def _update_cat_anim(self, dt):
+        """Advance the exit/enter cat-swap slide (see _reset()'s _cat_state
+        docstring). A no-op while idle. Each leg eases out over
+        CAT_SLIDE_DURATION, frame-rate independent since it is driven by
+        elapsed time, not a fixed per-frame step."""
+        if self._cat_state == "idle":
+            return
+        self._cat_anim_t += dt
+        t     = min(1.0, self._cat_anim_t / CAT_SLIDE_DURATION)
+        eased = 1 - (1 - t) ** 2
+        offscreen_x = GAME_W + CAT_BOX[0]
+
+        if self._cat_state == "exit":
+            self._cat_draw_x = self.cat_x + (offscreen_x - self.cat_x) * eased
+            if t >= 1.0:
+                # The previous cat has fully left before the next one is
+                # even chosen, so the two sprites never overlap on screen.
+                self._load_cat(self._pick_cat(exclude_idx=self._cat_idx))
+                self._cat_draw_x = offscreen_x
+                self._cat_state  = "enter"
+                self._cat_anim_t = 0.0
+        elif self._cat_state == "enter":
+            self._cat_draw_x = offscreen_x + (self.cat_x - offscreen_x) * eased
+            if t >= 1.0:
+                self._cat_draw_x = self.cat_x
+                self._cat_state  = "idle"
+                self._cat_anim_t = 0.0
+
     def _feed_cat(self):
         self.score += 1
         self.reps  += 1
-        self.cats_remaining = max(0, self.cats_target - self.reps)
-        self.feed_flash_t = FEED_FLASH_DURATION
-        self._pending_next_cat = True
         self.feedback = ("Cat fed! +1", (255, 220, 80), FEEDBACK_DURATION)
         play_success()
+
+        if self._session_target_reached():
+            # Goal reached -- the session is complete regardless of how long
+            # it took. Still show this cat's eating sprite/flash for a beat
+            # before handing off to the results screen (see update()).
+            self.feed_flash_t = FEED_FLASH_DURATION
+            self._cat_exit_pending = False
+            return
+
+        self.feed_flash_t = FEED_FLASH_DURATION
+        self._cat_exit_pending = True
         # Round reset -- a fresh empty bowl appears at the resting spot; a
         # new grip activation is required before it can be grabbed, even if
         # the patient never actually released this whole trip.
@@ -432,32 +504,41 @@ class FeedTheCatGame(FatigueMixin, BaseScreen):
     def _exit_to_game_config(self):
         import builtins
         stop_music()
+        # The patient quit before reaching the goal -- still record the
+        # attempt (elapsed time + partial progress) instead of silently
+        # discarding it, as long as actual gameplay had started.
+        if not self.game_over and not self._show_instructions:
+            self._save_session(status="stopped")
         builtins.pending_panel   = 4
         builtins.pending_patient = self._patient
         builtins.pending_account = self.account
         self.manager.go_to("therapist_dashboard")
+
+    def _save_session(self, status):
+        try:
+            from database import Database
+            db = Database()
+            patient_id = self._patient.get("id") if self._patient else None
+            db.save_session(
+                patient_id     = patient_id,
+                therapist_id   = self.account_id,
+                game           = "Feed the Cat",
+                score          = self.score,
+                difficulty     = self.difficulty,
+                status         = status,
+                **self._session_result_fields(),
+            )
+        except Exception:
+            pass
 
     def _end_game(self):
         if self.game_over:
             return
         stop_music()
         play_completion()
-        self.game_over_duration = (pygame.time.get_ticks() - self.start_time) // 1000
+        self.game_over_duration = int(round(self.elapsed))
         self.game_over_score    = self.score
-        try:
-            from database import Database
-            db = Database()
-            patient_id = self._patient.get("id") if self._patient else None
-            db.save_session(
-                patient_id   = patient_id,
-                therapist_id = self.account_id,
-                game         = "Feed the Cat",
-                score        = self.score,
-                duration_sec = self.game_over_duration,
-                difficulty   = self.difficulty,
-            )
-        except Exception:
-            pass
+        self._save_session(status="completed")
         self.game_over = True
 
     # ── draw ─────────────────────────────────────────────────────────────
@@ -480,10 +561,17 @@ class FeedTheCatGame(FatigueMixin, BaseScreen):
             r = self._food_img.get_rect(midbottom=(int(self.food_x), FOOD_BOTTOM_Y))
             surface.blit(self._food_img, r)
 
-        # Cat (static x position, sprite swaps hungry <-> fed)
-        cat_img = self._cat_food_img if self.feed_flash_t > 0 else self._cat_hungry_img
+        # Cat -- sprite swaps hungry <-> fed while idle; during the swap
+        # transition it slides at self._cat_draw_x instead of the fixed
+        # resting self.cat_x (see _update_cat_anim).
+        if self._cat_state == "exit":
+            cat_img = self._cat_food_img      # leaves looking satisfied
+        elif self._cat_state == "enter":
+            cat_img = self._cat_hungry_img    # arrives hungry
+        else:
+            cat_img = self._cat_food_img if self.feed_flash_t > 0 else self._cat_hungry_img
         if cat_img is not None:
-            r = cat_img.get_rect(midbottom=(int(self.cat_x), CAT_BOTTOM_Y))
+            r = cat_img.get_rect(midbottom=(int(self._cat_draw_x), CAT_BOTTOM_Y))
             surface.blit(cat_img, r)
 
         # Bowl (resting) + hand, OR hand+bowl combined while carried --
@@ -502,17 +590,22 @@ class FeedTheCatGame(FatigueMixin, BaseScreen):
                 r = self._hand_img.get_rect(midbottom=(int(self.hand_x), HAND_BOTTOM_Y))
                 surface.blit(self._hand_img, r)
 
-        # Cats fed counter (top-left, below the header)
+        # Cats counter (top-left, below the header) -- Target Mode counts
+        # down to the goal; Timed Mode has no goal, so it counts fed-so-far.
         cx = int(40 * GAME_W / 1920)
         cy = HEADER_BOTTOM + int(20 * GAME_H / 1080)
         cw = int(330 * GAME_W / 1920)
         ch = int(260 * GAME_H / 1080)
+        if self.session_mode == "target":
+            counter_label, counter_val = "Cats Left to Feed", self._cats_remaining()
+        else:
+            counter_label, counter_val = "Cats Fed", self.reps
         _draw_counter_box(surface, cx, cy, cw, ch,
                           self._font_counter_lbl, self._font_counter_num,
-                          "Cats Left to Feed", self.cats_remaining)
+                          counter_label, counter_val)
 
         draw_game_header(surface, "Feed the Cat", self.difficulty,
-                          self.time_left, self.score, GAME_W, GAME_H)
+                          self._session_header_time(), self.score, GAME_W, GAME_H)
 
         if self.feedback:
             msg = self._font_fb.render(self.feedback[0], True, self.feedback[1])
@@ -550,49 +643,23 @@ class FeedTheCatGame(FatigueMixin, BaseScreen):
         ov.fill((0, 0, 0, 210))
         surface.blit(ov, (0, 0))
 
-        pw, ph = 900, 580
-        px, py = (GAME_W - pw) // 2, (GAME_H - ph) // 2
-        bg = pygame.Surface((pw, ph), pygame.SRCALPHA)
-        pygame.draw.rect(bg, T["PANEL"] + (252,), (0, 0, pw, ph), border_radius=16)
-        surface.blit(bg, (px, py))
-        pygame.draw.rect(surface, T["ACCENT"], pygame.Rect(px, py, pw, ph), 2, border_radius=16)
+        card_name = f"feed_the_cat_how_to_play_{'dark' if is_dark_mode() else 'light'}.png"
+        top_margin, bottom_reserved = int(GAME_H * 0.05), int(GAME_H * 0.07)
+        card = _load_image_fit(card_name, int(GAME_W * 0.60), GAME_H - top_margin - bottom_reserved)
+        bottom_y = GAME_H // 2
+        if card is not None:
+            cr = card.get_rect(midtop=(GAME_W // 2, top_margin))
+            surface.blit(card, cr)
+            bottom_y = cr.bottom
 
-        f_title = pygame.font.SysFont("monospace", 36, bold=True)
-        f_head  = pygame.font.SysFont("monospace", 22, bold=True)
-        f_body  = pygame.font.SysFont("monospace", 19)
-        f_hint  = pygame.font.SysFont("monospace", 21, bold=True)
-
-        diff_col = {"Easy": T["GREEN"], "Medium": T["YELLOW"], "Hard": T["RED"]}[self.difficulty]
-        title = f_title.render("How to Play", True, diff_col)
-        surface.blit(title, title.get_rect(centerx=GAME_W // 2, top=py + 26))
-        pygame.draw.line(surface, T["ACCENT"], (px + 40, py + 78), (px + pw - 40, py + 78), 1)
-
-        y = py + 96
-        for header, lines in [
-            ("OBJECTIVE", [
-                "Move the hand to the bowl and grab it.",
-                "Carry it to the food, then carry the filled bowl to the cat to feed it.",
-            ]),
-            ("CONTROLS", [
-                "Tilt wrist LEFT / RIGHT to move the hand.",
-                "Grip (squeeze) to grab and hold the bowl -- keep squeezing while carrying.",
-                "If your grip drops, the bowl stays where it is -- go grab it again.",
-            ]),
-            ("THIS SESSION", [
-                f"Duration:   {self.duration} seconds",
-                f"Difficulty: {self.difficulty}",
-            ]),
-        ]:
-            surface.blit(f_head.render(header, True, T["ACCENT"]), (px + 48, y))
-            y += 30
-            for line in lines:
-                surface.blit(f_body.render(line, True, T["TEXT"]), (px + 64, y))
-                y += 26
-            y += 14
-
-        blink_col = T["YELLOW"] if (pygame.time.get_ticks() // 600) % 2 == 0 else T["GRAY"]
-        hint = f_hint.render("Press any key or click to begin", True, blink_col)
-        surface.blit(hint, hint.get_rect(centerx=GAME_W // 2, bottom=py + ph - 20))
+        # No "press any key" prompt -- the patient never starts the game
+        # themselves, only the therapist's own START control does.
+        f_info = pygame.font.SysFont("monospace", 22, bold=True)
+        sess_txt = (f"Goal: Feed {self.goal} cats" if self.session_mode == "target" else
+                    f"Duration: {int(self.timed_duration)}s — feed as many cats as you can")
+        info = f_info.render(f"{sess_txt}   ·   Difficulty: {self.difficulty}", True, T["WHITE"])
+        info_r = info.get_rect(centerx=GAME_W // 2, top=bottom_y + 14)
+        surface.blit(info, info_r)
 
     def _draw_results(self, surface):
         T = get_theme()
@@ -600,39 +667,38 @@ class FeedTheCatGame(FatigueMixin, BaseScreen):
         ov.fill((0, 0, 0, 185))
         surface.blit(ov, (0, 0))
 
-        mw, mh = 640, 420
-        mx, my = (GAME_W - mw) // 2, (GAME_H - mh) // 2
-        mr = pygame.Rect(mx, my, mw, mh)
+        card_name = f"feed_the_cat_round_complete_{'dark' if is_dark_mode() else 'light'}.png"
+        top_margin, bottom_reserved = int(GAME_H * 0.05), int(GAME_H * 0.17)
+        card = _load_image_fit(card_name, int(GAME_W * 0.50), GAME_H - top_margin - bottom_reserved)
+        bottom_y = GAME_H // 2
+        if card is not None:
+            cr = card.get_rect(midtop=(GAME_W // 2, top_margin))
+            surface.blit(card, cr)
+            bottom_y = cr.bottom
 
-        bg = pygame.Surface((mw, mh), pygame.SRCALPHA)
-        pygame.draw.rect(bg, T["PANEL"] + (245,), (0, 0, mw, mh), border_radius=16)
-        surface.blit(bg, mr.topleft)
-        pygame.draw.rect(surface, T["ACCENT"], mr, 2, border_radius=16)
+            num_col = T["WHITE"] if not is_dark_mode() else (20, 80, 150)
+            f_num = pygame.font.SysFont("monospace", max(18, int(cr.height * 0.075)), bold=True)
+            num_s = f_num.render(self._session_count_text(), True, num_col)
+            surface.blit(num_s, num_s.get_rect(
+                center=(cr.x + int(cr.width * 0.81), cr.y + int(cr.height * 0.80))))
 
-        f_big = pygame.font.SysFont("monospace", 48, bold=True)
-        f_mid = pygame.font.SysFont("monospace", 32, bold=True)
         f_sm  = pygame.font.SysFont("monospace", 24)
         f_btn = pygame.font.SysFont("monospace", 28, bold=True)
 
-        title = f_big.render("Session Complete!", True, T["YELLOW"])
-        surface.blit(title, title.get_rect(center=(mr.centerx, my + 56)))
-
-        sc_s = f_mid.render(f"Cats Fed: {self.game_over_score}", True, T["TEXT"])
-        surface.blit(sc_s, sc_s.get_rect(midleft=(mx + 80, my + 136)))
-
         mins, secs = divmod(self.game_over_duration, 60)
-        dur_str = f"{mins}:{secs:02d}" if mins else f"{secs}s"
-        du_s = f_mid.render(f"Duration: {dur_str}", True, T["TEXT"])
-        surface.blit(du_s, du_s.get_rect(midleft=(mx + 80, my + 186)))
-
-        dif_s = f_sm.render(f"Difficulty: {self.difficulty}", True, T["GRAY"])
-        surface.blit(dif_s, dif_s.get_rect(midleft=(mx + 80, my + 234)))
+        mode_lbl = "Target Mode" if self.session_mode == "target" else "Timed Mode"
+        du_s = f_sm.render(
+            f"Elapsed Time: {mins:02d}:{secs:02d}   ·   {self.difficulty} · {mode_lbl}",
+            True, T["WHITE"])
+        du_r = du_s.get_rect(centerx=GAME_W // 2, top=bottom_y + 16)
+        surface.blit(du_s, du_r)
 
         mp  = pygame.mouse.get_pos()
         bw, bh = 220, 52
+        by  = du_r.bottom + 20
 
-        again_r = pygame.Rect(mx + 60,           my + mh - 80, bw, bh)
-        exit_r  = pygame.Rect(mx + mw - 60 - bw, my + mh - 80, bw, bh)
+        again_r = pygame.Rect(GAME_W // 2 - bw - 16, by, bw, bh)
+        exit_r  = pygame.Rect(GAME_W // 2 + 16,       by, bw, bh)
         self._results_again_rect = again_r
         self._results_exit_rect  = exit_r
 

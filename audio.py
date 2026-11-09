@@ -24,6 +24,27 @@ def game_music_path(game: str, difficulty: str) -> str:
     path = os.path.join(_AUDIO_DIR, filename)
     return path if os.path.exists(path) else _MUSIC
 
+
+# One background-music track per game (flat, not per-difficulty) -- actual
+# on-disk filenames, exact capitalization/spacing preserved.
+_GAME_BGM = {
+    "Apple Catching":   "apple_catching.mp3",
+    "Plant the Garden": "plant_the_garden.mp3",
+    "Feed the Cat":     "feed_the_cat.mp3",
+    "Steady Aim":       "Steady Aim.mp3",
+    "Key and Lock":     "Key and Lock.mp3",
+}
+
+
+def game_bgm_path(game: str) -> str:
+    """Return this game's own assigned BGM track, falling back to the
+    default track if `game` has none assigned or its file is missing."""
+    filename = _GAME_BGM.get(game)
+    if not filename:
+        return _MUSIC
+    path = os.path.join(_AUDIO_DIR, filename)
+    return path if os.path.exists(path) else _MUSIC
+
 _sounds: dict = {}
 
 
@@ -53,6 +74,23 @@ def start_music(path=None):
 def stop_music():
     try:
         pygame.mixer.music.stop()
+    except Exception:
+        pass
+
+
+def pause_music():
+    """Pause the looping BGM in place (therapist pause) -- resume_music()
+    continues from exactly this point, it does not restart the track."""
+    try:
+        pygame.mixer.music.pause()
+    except Exception:
+        pass
+
+
+def resume_music():
+    """Continue BGM paused by pause_music() from where it left off."""
+    try:
+        pygame.mixer.music.unpause()
     except Exception:
         pass
 

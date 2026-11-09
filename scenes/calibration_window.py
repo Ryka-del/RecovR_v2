@@ -26,6 +26,58 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sensors.input_handler import input_handler
 
+_IMG_DIR   = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "assets", "images")
+_img_cache: dict = {}
+
+
+def _img(name, size=None):
+    """A square icon from assets/images/, uniformly scaled to size x size
+    and cached -- identical loader to therapist_dashboard.py's own _img(),
+    so the Light/Dark toggle and Close button use the exact same asset
+    pipeline as the rest of RecovR. Returns None (silently) if the file is
+    missing, so a missing asset degrades gracefully instead of crashing."""
+    key = (name, size)
+    im = _img_cache.get(key)
+    if im is None and key not in _img_cache:
+        try:
+            raw = pygame.image.load(os.path.join(_IMG_DIR, name)).convert_alpha()
+            im = pygame.transform.smoothscale(raw, (size, size)) if size else raw
+        except Exception:
+            im = None
+        _img_cache[key] = im
+    return im
+
+
+_img_bbox_cache: dict = {}
+_img_fit_cache: dict = {}
+
+
+def _img_fit(name, w, h):
+    """Like _img(), but for assets that bake extra transparent padding into
+    a square canvas -- crops to the actual opaque content once, then scales
+    it to fit within w x h preserving its own aspect ratio. Identical to
+    therapist_dashboard.py's own _img_fit()."""
+    key = (name, w, h)
+    if key in _img_fit_cache:
+        return _img_fit_cache[key]
+    cropped = _img_bbox_cache.get(name)
+    if cropped is None and name not in _img_bbox_cache:
+        try:
+            raw = pygame.image.load(os.path.join(_IMG_DIR, name)).convert_alpha()
+            cropped = raw.subsurface(raw.get_bounding_rect(min_alpha=10)).copy()
+        except Exception:
+            cropped = None
+        _img_bbox_cache[name] = cropped
+    if cropped is None:
+        _img_fit_cache[key] = None
+        return None
+    cw, ch = cropped.get_size()
+    scale = min(w / cw, h / ch)
+    result = pygame.transform.smoothscale(cropped, (max(1, int(cw * scale)), max(1, int(ch * scale))))
+    _img_fit_cache[key] = result
+    return result
+
 
 # ── sensor/game-type config ────────────────────────────────────────────────────
 
@@ -92,13 +144,13 @@ TRIAL_DONE_PAUSE = 1.5
 # preset card is picked and to restore via "Reset to Preset". "key" is the
 # calibration_result["params"] key the game checks (falling back to its own
 # difficulty dict when absent, so normal non-customized sessions are
-# unaffected). Games not listed here (Gravity Catch, Catch the Falling
-# Object, Whack-a-Mole Twist) have not been individually audited for
-# overridable constants, so they get no game-specific rows -- only the
-# generic Speed/Duration controls that already apply to every game.
+# unaffected). Games not listed here (Whack-a-Mole Twist) have not been
+# individually audited for overridable constants, so they get no
+# game-specific rows -- only the generic Speed control that already applies
+# to the games listed in GAMES_USING_SPEED.
 GAME_PARAM_SCHEMA = {
     "Basketball": [
-        {"key": "bb_goal",       "label": "Target Score",       "unit": "pts",
+        {"key": "bb_goal",       "label": "Target Score",       "unit": "pts", "is_goal": True,
          "min": 5,  "max": 30,  "step": 1,
          "presets": {"Easy": 10,   "Medium": 15,   "Hard": 20}},
         {"key": "bb_zone_width", "label": "Target Zone Size",   "unit": "%",
@@ -106,7 +158,7 @@ GAME_PARAM_SCHEMA = {
          "presets": {"Easy": 25,   "Medium": 16,   "Hard": 9}},
     ],
     "Lemonade": [
-        {"key": "lem_target",         "label": "Lemons Required",         "unit": "lemons",
+        {"key": "lem_target",         "label": "Lemons Required",         "unit": "lemons", "is_goal": True,
          "min": 5,   "max": 100, "step": 1,
          "presets": {"Easy": 15,   "Medium": 30,   "Hard": 50}},
         {"key": "lem_grip_threshold", "label": "Grip Threshold",          "unit": "%",
@@ -117,11 +169,20 @@ GAME_PARAM_SCHEMA = {
          "presets": {"Easy": 0.8,  "Medium": 1.2,  "Hard": 1.6}},
     ],
     "Piano Tiles": [
-        {"key": "pt_spawn_rate", "label": "Tile Spawn Interval", "unit": "s",
+        {"key": "pt_goal",            "label": "Tiles Required",            "unit": "tiles", "is_goal": True,
+         "min": 10,  "max": 80,  "step": 1,
+         "presets": {"Easy": 20,    "Medium": 30,   "Hard": 40}},
+        {"key": "pt_flex_threshold",  "label": "Finger Flexion Threshold",  "unit": "%",
+         "min": 15,  "max": 85,  "step": 1, "scale": 0.01,
+         "presets": {"Easy": 35,    "Medium": 50,   "Hard": 65}},
+        {"key": "pt_spawn_rate",      "label": "Tile Spawn Interval",       "unit": "s",
          "min": 0.2, "max": 2.0, "step": 0.05,
          "presets": {"Easy": 1.0,  "Medium": 0.7,  "Hard": 0.45}},
     ],
     "Apple Catching": [
+        {"key": "ac_goal",        "label": "Apples Required",             "unit": "apples", "is_goal": True,
+         "min": 5,   "max": 60,   "step": 1,
+         "presets": {"Easy": 15,    "Medium": 25,    "Hard": 35}},
         {"key": "ac_apple_speed", "label": "Apple Falling Speed",          "unit": "px/s",
          "min": 100, "max": 800,  "step": 10,
          "presets": {"Easy": 260,   "Medium": 380,   "Hard": 520}},
@@ -130,21 +191,28 @@ GAME_PARAM_SCHEMA = {
          "presets": {"Easy": 750,   "Medium": 900,   "Hard": 1050}},
     ],
     "Key and Lock": [
+        {"key": "kl_goal",      "label": "Locks Required",          "unit": "locks", "is_goal": True,
+         "min": 5,   "max": 40,  "step": 1,
+         "presets": {"Easy": 10,   "Medium": 15,   "Hard": 20}},
         {"key": "kl_tolerance", "label": "Wrist Angle Tolerance",   "unit": "°",
          "min": 2,   "max": 30,  "step": 1,
          "presets": {"Easy": 15,   "Medium": 8,    "Hard": 3}},
         {"key": "kl_hold_time", "label": "Required Hold Duration", "unit": "s",
-         "min": 0.2, "max": 3.0, "step": 0.1,
-         # the game's HOLD_TIME is currently one fixed constant (0.5s) for
-         # every difficulty -- not yet difficulty-scaled, so all 3 presets
-         # start at that same real value instead of inventing variation.
-         "presets": {"Easy": 0.5,  "Medium": 0.5,  "Hard": 0.5}},
+         "min": 0.2, "max": 4.0, "step": 0.1,
+         # Uniform 2 continuous seconds across every difficulty, per spec --
+         # still overridable here.
+         "presets": {"Easy": 2.0,  "Medium": 2.0,  "Hard": 2.0}},
+    ],
+    "Catch 'n Grab": [
+        {"key": "cg_goal", "label": "Objects Required", "unit": "objects", "is_goal": True,
+         "min": 5,  "max": 60,  "step": 1,
+         "presets": {"Easy": 15,   "Medium": 25,   "Hard": 35}},
     ],
     "Steady Aim": [
-        {"key": "sa_goal",       "label": "Target Hits Required",  "unit": "hits",
+        {"key": "sa_goal",       "label": "Target Shots Required",  "unit": "shots", "is_goal": True,
          "min": 3,   "max": 25,   "step": 1,
          "presets": {"Easy": 8,     "Medium": 10,   "Hard": 12}},
-        {"key": "sa_circle_r",   "label": "Target Size",           "unit": "px",
+        {"key": "sa_circle_r",   "label": "Aim Tolerance",          "unit": "px",
          "min": 30,  "max": 160,  "step": 5,
          "presets": {"Easy": 120,   "Medium": 80,   "Hard": 45}},
         {"key": "sa_cursor_spd", "label": "Cursor Sensitivity",    "unit": "",
@@ -152,7 +220,10 @@ GAME_PARAM_SCHEMA = {
          "presets": {"Easy": 900,   "Medium": 1000, "Hard": 1100}},
         {"key": "sa_hold_time",  "label": "Required Hold Duration","unit": "s",
          "min": 0.5, "max": 4.0,  "step": 0.1,
-         "presets": {"Easy": 1.5,   "Medium": 2.0,  "Hard": 2.5}},
+         "presets": {"Easy": 3.0,   "Medium": 3.0,  "Hard": 3.0}},
+        {"key": "sa_arrows",     "label": "Arrows Available",      "unit": "arrows",
+         "min": 5,   "max": 40,   "step": 1,
+         "presets": {"Easy": 20,    "Medium": 16,   "Hard": 14}},
     ],
     "Feed the Cat": [
         {"key": "ftc_grip_threshold", "label": "Grip Threshold",            "unit": "%",
@@ -164,9 +235,29 @@ GAME_PARAM_SCHEMA = {
         {"key": "ftc_zone_tolerance", "label": "Positioning Tolerance",     "unit": "px",
          "min": 40,   "max": 200,  "step": 5,
          "presets": {"Easy": 150,   "Medium": 110,  "Hard": 75}},
-        {"key": "ftc_target_cats",   "label": "Cats to Feed",              "unit": "cats",
+        {"key": "ftc_target_cats",   "label": "Cats to Feed",              "unit": "cats", "is_goal": True,
          "min": 3,    "max": 15,   "step": 1,
          "presets": {"Easy": 5,     "Medium": 7,    "Hard": 10}},
+    ],
+    "Plant the Garden": [
+        {"key": "ptg_goal",            "label": "Plants to Grow",            "unit": "plants", "is_goal": True,
+         "min": 3,    "max": 25,   "step": 1,
+         "presets": {"Easy": 5,     "Medium": 10,   "Hard": 15}},
+        {"key": "ptg_grip_threshold",  "label": "Grip Threshold",            "unit": "%",
+         "min": 15,   "max": 85,   "step": 1, "scale": 0.01,
+         "presets": {"Easy": 30,    "Medium": 45,   "Hard": 60}},
+        {"key": "ptg_flex_threshold",  "label": "Finger Flexion Threshold",  "unit": "%",
+         "min": 10,   "max": 70,   "step": 1, "scale": 0.01,
+         "presets": {"Easy": 20,    "Medium": 30,   "Hard": 40}},
+        {"key": "ptg_move_deadzone",   "label": "Wrist Movement Sensitivity","unit": "%",
+         "min": 2,    "max": 25,   "step": 1, "scale": 0.01,
+         "presets": {"Easy": 5,     "Medium": 8,    "Hard": 12}},
+        {"key": "ptg_zone_tolerance",  "label": "Positioning Tolerance",     "unit": "px",
+         "min": 40,   "max": 140,  "step": 5,
+         "presets": {"Easy": 130,   "Medium": 100,  "Hard": 70}},
+        {"key": "ptg_water_hold",      "label": "Watering Hold Duration",    "unit": "s",
+         "min": 0.5,  "max": 3.0,  "step": 0.1,
+         "presets": {"Easy": 0.8,   "Medium": 1.2,  "Hard": 1.6}},
     ],
 }
 # Games that read the generic Speed (Slow/Normal/Fast) setting at all --
@@ -182,12 +273,28 @@ class CalibrationWindow:
     def __init__(self, width, height, game_type, game_name=None, dark_mode=True):
         self.W         = width
         self.H         = height
-        self.game_type = game_type
-        self.game_name = game_name            # specific game, e.g. "Lemonade" -- drives
+        # game_type is normally a single sensor-type string (unchanged,
+        # single-pass calibration for every existing game). Passing a LIST
+        # instead opts into sequential multi-sensor calibration -- each
+        # sensor runs through the exact same sensitivity->countdown->
+        # recording->trial_done(x3) phases, one after another, before a
+        # single combined Results screen. Only "Plant the Garden" is
+        # launched with a list today (see therapist_dashboard.py); every
+        # other game's single-string call site, and everything below that
+        # only ever sees len(self.game_types) == 1, is unaffected.
+        self.game_types = list(game_type) if isinstance(game_type, (list, tuple)) else [game_type]
+        self.sensor_idx = 0
+        self.game_type  = self.game_types[0]
+        self.game_name  = game_name            # specific game, e.g. "Lemonade" -- drives
                                                # which Advanced Settings rows are shown
         self.dark_mode = dark_mode
-        self.cfg       = SENSOR_CFG.get(game_type, SENSOR_CFG["Grip Strength"])
+        self.cfg       = SENSOR_CFG.get(self.game_type, SENSOR_CFG["Grip Strength"])
         self.param_schema = GAME_PARAM_SCHEMA.get(game_name, [])
+        # Multi-sensor only: each finished sensor's own trial bucket, and the
+        # flat per-sensor rows _accept_multi_sensor() builds for saving one DB
+        # row per sensor. Both stay empty for every single-sensor game.
+        self.sensor_results      = {}
+        self.multi_sensor_results = []
 
         # ── phase state ───────────────────────────────────────────────
         self.phase         = "sensitivity"
@@ -224,26 +331,46 @@ class CalibrationWindow:
         self.cancelled          = False
         self.calibration_result = None
 
+        # ── touch-aware scaling ─────────────────────────────────────────
+        # Every size/position in this window used to scale off a flat
+        # H/1080 (or W/1920) ratio, which is correct for a 1080p desktop
+        # window but makes everything roughly 44% of its intended size on
+        # the actual 800x480 touch panel this runs on in production --
+        # that undersizing was the root cause of the "too small to read"
+        # complaints. Below a touch-sized window, scale against a much
+        # smaller reference (400 tall / 680 wide) instead of 1080/1920 --
+        # deliberately well past a bare 2x fix (an earlier pass at 512/854
+        # still read as too small on the physical 7" panel), capped so a
+        # taller touch window doesn't blow up disproportionately; a genuine
+        # desktop-sized window (height > 820) keeps the original H/1080
+        # behaviour untouched.
+        self._touch = height <= 820
+        self._FS    = min(height / 400.0, 1.7) if self._touch else (height / 1080.0)
+        self._FSW   = min(width  / 680.0, 1.7) if self._touch else (width  / 1920.0)
+
         # ── fonts ─────────────────────────────────────────────────────
         H = height
         _fd = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                            "assets", "font")
         def _F(name): return os.path.join(_fd, name)
         self.fnt = {
-            "title":  pygame.font.Font(_F("FjallaOne-Regular.ttf"),    int(44 * (H / 1080))),
-            "sub":    pygame.font.Font(_F("Sora-Light.ttf"),            int(27 * (H / 1080))),
-            "body":   pygame.font.Font(_F("Lexend-Regular.ttf"),        int(25 * (H / 1080))),
-            "bold":   pygame.font.Font(_F("Lexend-SemiBold.ttf"),       int(25 * (H / 1080))),
-            "small":  pygame.font.Font(_F("Lexend-Light.ttf"),          int(21 * (H / 1080))),
-            "smallb": pygame.font.Font(_F("Lexend-Medium.ttf"),         int(21 * (H / 1080))),
-            "big":    pygame.font.Font(_F("GravitasOne-Regular.ttf"),   int(86 * (H / 1080))),
-            "big2":   pygame.font.Font(_F("GravitasOne-Regular.ttf"),   int(58 * (H / 1080))),
-            "med":    pygame.font.Font(_F("FjallaOne-Regular.ttf"),     int(42 * (H / 1080))),
-            "tag":    pygame.font.Font(_F("Lexend-Medium.ttf"),         int(20 * (H / 1080))),
-            "head2":  pygame.font.Font(_F("Lexend-SemiBold.ttf"),       int(25 * (H / 1080))),
-            "sym44":  pygame.font.SysFont("segoeuisymbol",              int(44 * (H / 1080))),
-            "sym25":  pygame.font.SysFont("segoeuisymbol",              int(25 * (H / 1080))),
+            "title":  pygame.font.Font(_F("FjallaOne-Regular.ttf"),    self._sc(44)),
+            "sub":    pygame.font.Font(_F("Sora-Light.ttf"),            self._sc(27)),
+            "body":   pygame.font.Font(_F("Lexend-Regular.ttf"),        self._sc(25)),
+            "bold":   pygame.font.Font(_F("Lexend-SemiBold.ttf"),       self._sc(25)),
+            "small":  pygame.font.Font(_F("Lexend-Light.ttf"),          self._sc(21)),
+            "smallb": pygame.font.Font(_F("Lexend-Medium.ttf"),         self._sc(21)),
+            "big":    pygame.font.Font(_F("GravitasOne-Regular.ttf"),   self._sc(86)),
+            "big2":   pygame.font.Font(_F("GravitasOne-Regular.ttf"),   self._sc(42)),
+            "med":    pygame.font.Font(_F("FjallaOne-Regular.ttf"),     self._sc(42)),
+            "tag":    pygame.font.Font(_F("Lexend-Medium.ttf"),         self._sc(20)),
+            "head2":  pygame.font.Font(_F("Lexend-SemiBold.ttf"),       self._sc(25)),
         }
+        self._title_font_path = _F("FjallaOne-Regular.ttf")
+        self._small_font_path = _F("Lexend-Light.ttf")
+        self._bold_font_path  = _F("Lexend-SemiBold.ttf")
+        self._sub_font_path   = _F("Sora-Light.ttf")
+        self._fit_font_cache  = {}
 
         # ── interaction rects (updated each draw) ─────────────────────
         self._begin_rect        = pygame.Rect(0, 0, 1, 1)
@@ -253,6 +380,24 @@ class CalibrationWindow:
         self._toggle_rect       = pygame.Rect(0, 0, 1, 1)
         self._preset_card_rects = {}          # {"Easy": Rect, ...}
         self._adv_open_rect     = pygame.Rect(0, 0, 1, 1)   # "Advanced Settings" button (results screen)
+
+        # ── Results screen vertical scroll ──────────────────────────────
+        # The results screen's content (banner + results card + difficulty
+        # cards + preset summary) can be taller than the 800x480 panel --
+        # scrolled, not shrunk, per spec. Drag-to-scroll needs real motion
+        # tracking (down -> motion -> up) that the rest of this file's
+        # fire-on-down click model doesn't have, so it's handled as its own
+        # small state machine, scoped to pointer-downs that start inside
+        # the results viewport -- every other button/phase keeps its
+        # original immediate fire-on-down behaviour, untouched.
+        self._results_scroll_y   = 0
+        self._results_content_h  = 0
+        self._results_viewport   = pygame.Rect(0, 0, 1, 1)
+        self._scroll_drag_active   = False   # a pointer-down started inside the viewport
+        self._scroll_is_dragging   = False   # that pointer has since moved past the drag threshold
+        self._scroll_drag_start_pos   = (0, 0)
+        self._scroll_drag_start_scroll = 0
+        self._scroll_pending_tap_pos  = None  # resolved as a real tap only if released without dragging
         # ── Advanced Settings screen (separate phase) ──────────────────
         self._adv_back_rect     = pygame.Rect(0, 0, 1, 1)
         self._adv_reset_rect    = pygame.Rect(0, 0, 1, 1)
@@ -308,9 +453,56 @@ class CalibrationWindow:
                 white   = (255, 255, 255),
             )
 
+    # ── touch-aware scaling helpers (see __init__) ─────────────────────────────
+
+    def _sc(self, px):
+        """Scale a height-relative size/position value for the actual window."""
+        return max(1, int(px * self._FS))
+
+    def _scw(self, px):
+        """Scale a width-relative size/position value for the actual window."""
+        return max(1, int(px * self._FSW))
+
+    def _tt(self, px):
+        """Like _sc, but floors interactive controls at a fingertip-sized
+        50px on the touch panel (desktop/non-touch is unaffected)."""
+        v = int(px * self._FS)
+        return max(v, 50) if self._touch else v
+
+    def _fit_text(self, font_path, base_size, text, max_w, color, min_size):
+        """Render `text` at base_size, shrinking in steps only if this
+        particular string is too wide for max_w -- every shorter string
+        through the same call site keeps its full, normal size."""
+        size = base_size
+        while True:
+            key = (font_path, size)
+            f = self._fit_font_cache.get(key)
+            if f is None:
+                f = pygame.font.Font(font_path, size)
+                self._fit_font_cache[key] = f
+            s = f.render(text, True, color)
+            if s.get_width() <= max_w or size <= min_size:
+                return s
+            size -= 2
+
+    def _fit_title(self, text, max_w, color, min_size=20):
+        """Header title -- shrinks only if too wide for the room actually
+        left beside it (e.g. a long sensor name next to the Light/Dark
+        toggle + Close button)."""
+        return self._fit_text(self._title_font_path, self._sc(44), text, max_w, color, min_size)
+
     # ── event handling ────────────────────────────────────────────────────────
 
     def handle_event(self, event):
+        # Results-screen drag-to-scroll needs real down -> motion -> up
+        # tracking that this file's fire-on-down click model otherwise
+        # doesn't have -- it's handled as its own small state machine,
+        # scoped to pointer-downs starting inside the results viewport
+        # (see _handle_results_scroll_event). Everything else below is
+        # the original immediate fire-on-down behaviour, untouched.
+        if self.phase == "results" and self._handle_results_scroll_event(event):
+            return
+
         pos = None
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             raw = event.pos
@@ -334,13 +526,11 @@ class CalibrationWindow:
                 self._start_countdown()
 
         elif self.phase == "results":
-            # preset card selection -- never touches recommended_preset, only
-            # which one the therapist currently has selected.
-            for name, r in self._preset_card_rects.items():
-                if r.collidepoint(pos):
-                    self._apply_preset(name)
-                    return
-
+            # Only the fixed footer buttons reach here -- taps inside the
+            # scrollable viewport (e.g. the preset cards) are handled by
+            # _handle_results_scroll_event/_dispatch_results_tap instead,
+            # so a card that happens to be scrolled near the footer can
+            # never be hit by a tap actually meant for a footer button.
             if self._adv_open_rect.collidepoint(pos):
                 self._enter_advanced()
                 return
@@ -366,12 +556,6 @@ class CalibrationWindow:
             if self._adv_threshold_plus.collidepoint(pos):
                 self._step_threshold(+1); return
 
-            # generic Duration stepper
-            if self._adv_dur_minus.collidepoint(pos):
-                self._step_duration(-10); return
-            if self._adv_dur_plus.collidepoint(pos):
-                self._step_duration(+10); return
-
             # Speed (Slow/Normal/Fast), only for games that use it
             for opt, r in self._adv_speed_rects:
                 if r.collidepoint(pos):
@@ -386,6 +570,83 @@ class CalibrationWindow:
                     self._step_param(spec, -1); return
                 if plus_r.collidepoint(pos):
                     self._step_param(spec, +1); return
+
+    def _handle_results_scroll_event(self, event):
+        """Results-screen drag-to-scroll state machine. Returns True if this
+        event was consumed (the generic handler above must not also act on
+        it). A pointer-down inside the results viewport starts as a PENDING
+        tap; if it moves past a small threshold before release, it becomes
+        a scroll drag instead and the tap is cancelled -- released without
+        ever crossing that threshold, it fires as a real tap via
+        _dispatch_results_tap, same as every other button in this file."""
+        if event.type == pygame.MOUSEWHEEL:
+            mp = pygame.mouse.get_pos()
+            mp = builtins.normalise_pos(mp) if hasattr(builtins, "normalise_pos") else mp
+            if self._results_viewport.collidepoint(mp):
+                max_scroll = max(0, self._results_content_h - self._results_viewport.height)
+                self._results_scroll_y = max(0, min(max_scroll,
+                                              self._results_scroll_y - event.y * self._sc(40)))
+                return True
+            return False
+
+        pos, down = None, False
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            pos = builtins.normalise_pos(event.pos) if hasattr(builtins, "normalise_pos") else event.pos
+            down = True
+        elif event.type == pygame.FINGERDOWN:
+            pos = (int(event.x * self.W), int(event.y * self.H))
+            down = True
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            pos = builtins.normalise_pos(event.pos) if hasattr(builtins, "normalise_pos") else event.pos
+        elif event.type == pygame.FINGERUP:
+            pos = (int(event.x * self.W), int(event.y * self.H))
+        elif event.type == pygame.MOUSEMOTION:
+            pos = builtins.normalise_pos(event.pos) if hasattr(builtins, "normalise_pos") else event.pos
+        elif event.type == pygame.FINGERMOTION:
+            pos = (int(event.x * self.W), int(event.y * self.H))
+        else:
+            return False
+
+        if down:
+            if not self._results_viewport.collidepoint(pos):
+                return False
+            self._scroll_drag_active       = True
+            self._scroll_is_dragging       = False
+            self._scroll_drag_start_pos    = pos
+            self._scroll_drag_start_scroll = self._results_scroll_y
+            self._scroll_pending_tap_pos   = pos
+            return True
+
+        if not self._scroll_drag_active:
+            return False
+
+        dx = pos[0] - self._scroll_drag_start_pos[0]
+        dy = pos[1] - self._scroll_drag_start_pos[1]
+
+        if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION):
+            if not self._scroll_is_dragging and (abs(dx) + abs(dy)) > 10:
+                self._scroll_is_dragging     = True
+                self._scroll_pending_tap_pos = None
+            if self._scroll_is_dragging:
+                max_scroll = max(0, self._results_content_h - self._results_viewport.height)
+                self._results_scroll_y = max(0, min(max_scroll, self._scroll_drag_start_scroll - dy))
+            return True
+
+        # MOUSEBUTTONUP / FINGERUP -- resolve
+        self._scroll_drag_active = False
+        if not self._scroll_is_dragging and self._scroll_pending_tap_pos is not None:
+            self._dispatch_results_tap(self._scroll_pending_tap_pos)
+        self._scroll_is_dragging     = False
+        self._scroll_pending_tap_pos = None
+        return True
+
+    def _dispatch_results_tap(self, pos):
+        """A confirmed (non-drag) tap inside the results viewport -- only
+        the preset cards live there."""
+        for name, r in self._preset_card_rects.items():
+            if r.collidepoint(pos):
+                self._apply_preset(name)
+                return
 
     # ── update ────────────────────────────────────────────────────────────────
 
@@ -418,11 +679,35 @@ class CalibrationWindow:
             if self.pause_t >= TRIAL_DONE_PAUSE:
                 self.current_trial += 1
                 if self.current_trial >= 3:
-                    self._enter_results()
+                    if len(self.game_types) > 1:
+                        self._finish_sensor()
+                    else:
+                        self._enter_results()
                 else:
                     self._start_countdown()
 
     # ── internal transitions ──────────────────────────────────────────────────
+
+    def _finish_sensor(self):
+        """Multi-sensor calibration only. Store the sensor just finished,
+        then either move on to the NEXT sensor's own Begin-Calibration
+        screen (fresh countdown/trials) or, once every sensor in
+        self.game_types is done, enter the one combined Results screen."""
+        avg = sum(self.trial_results) / len(self.trial_results) if self.trial_results else 0.0
+        self.sensor_results[self.game_type] = {
+            "sensor_name": self.cfg["sensor_name"],
+            "trials":      list(self.trial_results),
+            "average":     round(avg, 4),
+        }
+        if self.sensor_idx + 1 < len(self.game_types):
+            self.sensor_idx    += 1
+            self.game_type      = self.game_types[self.sensor_idx]
+            self.cfg             = SENSOR_CFG.get(self.game_type, SENSOR_CFG["Grip Strength"])
+            self.current_trial   = 0
+            self.trial_results   = []
+            self.phase            = "sensitivity"
+        else:
+            self._enter_results()
 
     def _start_countdown(self):
         self.phase       = "countdown"
@@ -431,6 +716,7 @@ class CalibrationWindow:
 
     def _enter_results(self):
         self.phase = "results"
+        self._results_scroll_y = 0
         # Recommended difficulty: new logic (none existed before) -- how far
         # through the sensor's own 0-1 range the patient's average trial
         # reached. Low average -> limited strength/range -> Easy; high
@@ -492,18 +778,6 @@ class CalibrationWindow:
         self.adv_threshold_pct = opts[max(0, min(len(opts) - 1, i + direction))]
         self.customized = True
 
-    def _step_duration(self, delta_sec):
-        try:
-            cur = int(self.adv_duration.split()[0]) if self.adv_duration != "Custom" \
-                else int(self.adv_custom_dur or 120)
-        except (ValueError, IndexError):
-            cur = 120
-        cur = max(20, min(300, cur + delta_sec))
-        self.adv_duration   = f"{cur} s"
-        self.adv_custom_dur = ""
-        self.adv_dur_active = False
-        self.customized = True
-
     def _step_param(self, spec, direction):
         # Step in DISPLAY units (step/min/max are defined in display units,
         # e.g. whole percent) then convert back to the REAL unit the game
@@ -521,6 +795,9 @@ class CalibrationWindow:
         self.customized = True
 
     def _accept(self):
+        if len(self.game_types) > 1:
+            self._accept_multi_sensor()
+            return
         avg = sum(self.trial_results) / len(self.trial_results) if self.trial_results else 0.0
         threshold = round(avg * self.adv_threshold_pct / 100.0, 4)
         params = {
@@ -548,12 +825,100 @@ class CalibrationWindow:
         }
         self.done = True
 
+    def _accept_multi_sensor(self):
+        """Multi-sensor calibration only (len(self.game_types) > 1 -- today
+        just Plant the Garden). Builds TWO things:
+          - self.multi_sensor_results: one flat, save_calibration()-shaped
+            row per sensor, so the dashboard can record one DB row per
+            sensor exactly like a normal single-sensor calibration (no DB
+            schema change needed).
+          - self.calibration_result: the single combined dict the GAME
+            itself reads. It also finally populates grip_rest/grip_max/
+            wrist_min/wrist_max/flex_threshold from this session's real
+            per-sensor trial data -- every game's existing
+            _normalize_grip/_normalize_tilt already reads these exact keys
+            with a hardcoded fallback, so this only ever takes effect for a
+            game that actually goes through this multi-sensor path.
+        """
+        threshold_pct = self.adv_threshold_pct
+        shared_params = {
+            "threshold_pct": threshold_pct,
+            "speed":         self.adv_speed,
+            "duration":      self.adv_duration,
+            "difficulty":    self.adv_difficulty,
+            "sensitivity":   self.sensitivity,
+        }
+        shared_params.update(self.custom_params)   # game-specific overrides, if any
+
+        self.multi_sensor_results = []
+        sensors_block = {}
+        extra = {}
+        for sensor_type in self.game_types:
+            data = self.sensor_results.get(sensor_type) or {
+                "sensor_name": SENSOR_CFG[sensor_type]["sensor_name"], "trials": [], "average": 0.0}
+            avg = data["average"]
+            thr = round(avg * threshold_pct / 100.0, 4)
+            row_params = dict(shared_params)
+            row_params["threshold"] = thr
+            self.multi_sensor_results.append({
+                "game_type":   sensor_type,
+                "game_name":   self.game_name,
+                "sensor":      data["sensor_name"],
+                "sensitivity": self.sensitivity,
+                "trials":      data["trials"],
+                "average":     avg,
+                "threshold":   thr,
+                "preset":      self.selected_preset,
+                "recommended": self.recommended_preset,
+                "customized":  self.customized,
+                "dark_mode":   self.dark_mode,
+                "params":      row_params,
+            })
+            sensors_block[sensor_type] = {"average": avg, "threshold": thr, "trials": data["trials"]}
+
+            if sensor_type == "Grip Strength":
+                extra["grip_rest"] = 0.0
+                extra["grip_max"]  = max(avg, 0.05)
+            elif sensor_type == "Wrist Rotation":
+                extra["wrist_min"] = -max(avg, 0.05)
+                extra["wrist_max"] =  max(avg, 0.05)
+            elif sensor_type == "Finger Flexion":
+                extra["flex_threshold"] = thr if thr > 0 else input_handler.FLEX_THRESH
+
+        primary = sensors_block.get(self.game_type, {"average": 0.0, "threshold": 0.0, "trials": []})
+        merged_params = dict(shared_params)
+        merged_params["threshold"] = primary["threshold"]
+
+        self.calibration_result = {
+            "game_type":   "Multi-skill",
+            "game_name":   self.game_name,
+            "sensor":      " + ".join(SENSOR_CFG[t]["sensor_name"] for t in self.game_types),
+            "sensitivity": self.sensitivity,
+            "trials":      primary["trials"],
+            "average":     primary["average"],
+            "threshold":   primary["threshold"],
+            "preset":      self.selected_preset,
+            "recommended": self.recommended_preset,
+            "customized":  self.customized,
+            "dark_mode":   self.dark_mode,
+            "params":      merged_params,
+            "sensors":     sensors_block,
+            **extra,
+        }
+        self.done = True
+
     def _retry(self):
         self.current_trial = 0
         self.trial_results = []
         self.custom_params = {}
         self.customized     = False
         self.phase         = "sensitivity"
+        # Multi-sensor: Results only shows once every sensor is done, so
+        # Retry restarts the whole sequence from the first sensor.
+        self.sensor_idx      = 0
+        self.game_type       = self.game_types[0]
+        self.cfg              = SENSOR_CFG.get(self.game_type, SENSOR_CFG["Grip Strength"])
+        self.sensor_results   = {}
 
     # ── draw ─────────────────────────────────────────────────────────────────
 
@@ -564,57 +929,104 @@ class CalibrationWindow:
         surface.fill(C["bg"])
 
         # ── top bar ───────────────────────────────────────────────────
-        top_h = int(68 * H / 1080)
+        top_h = self._sc(68)
         pygame.draw.rect(surface, C["panel"], (0, 0, W, top_h))
         pygame.draw.line(surface, C["border"], (0, top_h), (W, top_h), 1)
 
-        _bw = int(40 * W / 1920)
-        _bh = int(36 * H / 1080)
+        _bw = self._tt(40)
+        _bh = self._tt(40)
+
+        # ── Light/Dark toggle + Close button geometry, upper right, in
+        # that order -- computed FIRST so the title (below) knows exactly
+        # how much room is actually left beside it and can shrink a long
+        # sensor name instead of running underneath these controls.
+        pad_r  = self._scw(20)
+        gap    = self._scw(10)
+        row_h  = _bh
+        tog_w  = row_h * 2
+        if self.phase != "advanced":
+            close_r = pygame.Rect(W - pad_r - row_h, top_h // 2 - row_h // 2, row_h, row_h)
+            toggle_right = close_r.left - gap
+        else:
+            close_r = None
+            toggle_right = W - pad_r
+        controls_left_x = toggle_right - tog_w
 
         if self.phase == "advanced":
             # Advanced Settings is its own screen (spec 2) -- its own header:
             # Back arrow, "Advanced Settings", selected game name. No X here
             # (that would cancel the whole calibration); Back returns to
-            # Results instead, discarding only unapplied edits.
-            back_r = pygame.Rect(int(20 * W / 1920), top_h // 2 - _bh // 2, _bw, _bh)
-            pygame.draw.rect(surface, C["panel2"], back_r, border_radius=8)
-            pygame.draw.rect(surface, C["border"], back_r, 1, border_radius=8)
-            bk_s = self.fnt["sym25"].render("←", True, C["text"])
-            surface.blit(bk_s, bk_s.get_rect(center=back_r.center))
+            # Results instead, discarding only unapplied edits. Uses the
+            # same back_button_therapist.png asset, at the same WIDE aspect
+            # ratio therapist_dashboard.py's own back button uses it at (it's
+            # a complete pill-shaped button with its own background baked
+            # in, not a square glyph) -- not a Unicode arrow.
+            back_w = self._tt(128)
+            back_r = pygame.Rect(self._scw(20), top_h // 2 - _bh // 2, back_w, _bh)
+            back_img = _img_fit("back_button_therapist.png", back_r.width, back_r.height)
+            if back_img is not None:
+                surface.blit(back_img, back_img.get_rect(center=back_r.center))
+            else:
+                pygame.draw.rect(surface, C["panel2"], back_r, border_radius=10)
+                pygame.draw.rect(surface, C["border"], back_r, 1, border_radius=10)
+                bk_s = self.fnt["bold"].render("Back", True, C["text"])
+                surface.blit(bk_s, bk_s.get_rect(center=back_r.center))
             self._adv_back_rect = back_r
             self._cancel_rect = pygame.Rect(0, 0, 1, 1)
 
-            title_s = self.fnt["title"].render("Advanced Settings", True, C["text"])
-            surface.blit(title_s, (back_r.right + int(16 * W / 1920),
+            title_s = self._fit_title("Advanced Settings",
+                                       controls_left_x - back_r.right - self._scw(24), C["text"])
+            surface.blit(title_s, (back_r.right + self._scw(16),
                                     top_h // 2 - title_s.get_height() // 2))
             if self.game_name:
-                gn_s = self.fnt["sub"].render(self.game_name, True, C["sub"])
-                surface.blit(gn_s, (back_r.right + int(16 * W / 1920) + title_s.get_width()
-                                     + int(14 * W / 1920),
-                                     top_h // 2 - gn_s.get_height() // 2))
+                gn_avail = controls_left_x - (back_r.right + self._scw(16) + title_s.get_width()
+                                               + self._scw(14)) - self._scw(10)
+                if gn_avail > self._scw(40):
+                    # Width-aware fit, not just a show/hide gate -- the toggle
+                    # is drawn later in this same header row, so a subtitle
+                    # left un-clamped here can run under it once the game
+                    # name is long (e.g. "Steady Aim").
+                    gn_s = self._fit_text(self._sub_font_path, self._sc(27), self.game_name,
+                                           gn_avail, C["sub"], self._sc(16))
+                    surface.blit(gn_s, (back_r.right + self._scw(16) + title_s.get_width()
+                                         + self._scw(14),
+                                         top_h // 2 - gn_s.get_height() // 2))
         else:
-            title_s = self.fnt["title"].render(
-                f"Sensor Calibration — {self.cfg['sensor_name']}", True, C["text"])
-            surface.blit(title_s, (int(32 * W / 1920),
+            title_txt = f"Sensor Calibration — {self.cfg['sensor_name']}"
+            if len(self.game_types) > 1:
+                title_txt += f"  ({self.sensor_idx + 1} of {len(self.game_types)})"
+            title_s = self._fit_title(title_txt, controls_left_x - self._scw(32) - self._scw(16), C["text"])
+            surface.blit(title_s, (self._scw(32),
                                     top_h // 2 - title_s.get_height() // 2))
 
-            cx_s  = self.fnt["sym25"].render("✕", True, C["sub"])
-            cx_r  = pygame.Rect(W - int(100 * W / 1920), top_h // 2 - _bh // 2, _bw, _bh)
-            pygame.draw.rect(surface, C["panel2"], cx_r, border_radius=8)
-            pygame.draw.rect(surface, C["border"], cx_r, 1, border_radius=8)
-            surface.blit(cx_s, cx_s.get_rect(center=cx_r.center))
-            self._cancel_rect = cx_r
+        # ── Light/Dark toggle + Close button -- the EXACT same sliding
+        # track+knob component and close_button.png asset as
+        # therapist_dashboard.py's own top-right bar (see
+        # _draw_top_right_bar there), not a separate implementation.
+        if close_r is not None:
+            close_img = _img("close_button.png", row_h)
+            if close_img is not None:
+                surface.blit(close_img, close_img.get_rect(center=close_r.center))
+            else:
+                pygame.draw.circle(surface, C["red"], close_r.center, row_h // 2)
+            self._cancel_rect = close_r
 
-        tog_s = self.fnt["sym25"].render("☀" if self.dark_mode else "☽", True, C["text"])
-        tg_r  = pygame.Rect(W - int(52 * W / 1920), top_h // 2 - _bh // 2, _bw, _bh)
-        pygame.draw.rect(surface, C["panel2"], tg_r, border_radius=8)
-        pygame.draw.rect(surface, C["border"], tg_r, 1, border_radius=8)
-        surface.blit(tog_s, tog_s.get_rect(center=tg_r.center))
-        self._toggle_rect = tg_r
+        tr = pygame.Rect(controls_left_x, top_h // 2 - row_h // 2, tog_w, row_h)
+        track_col = (34, 46, 66) if self.dark_mode else (210, 222, 240)
+        pygame.draw.rect(surface, track_col, tr, border_radius=row_h // 2)
+        pygame.draw.rect(surface, C["border"], tr, max(1, int(2 * self._FS)), border_radius=row_h // 2)
+        knob_d  = row_h - self._sc(6)
+        knob_cx = (tr.right - row_h // 2) if self.dark_mode else (tr.left + row_h // 2)
+        knob_img = _img("dark_mode.png" if self.dark_mode else "light_mode.png", knob_d)
+        if knob_img is not None:
+            surface.blit(knob_img, knob_img.get_rect(center=(knob_cx, tr.centery)))
+        else:
+            pygame.draw.circle(surface, (255, 255, 255), (knob_cx, tr.centery), knob_d // 2)
+        self._toggle_rect = tr
 
         # ── content ───────────────────────────────────────────────────
-        content = pygame.Rect(0, top_h + int(14 * H / 1080),
-                              W, H - top_h - int(14 * H / 1080))
+        content = pygame.Rect(0, top_h + self._sc(14),
+                              W, H - top_h - self._sc(14))
         {
             "sensitivity":  self._draw_sensitivity,
             "countdown":    self._draw_countdown,
@@ -644,58 +1056,50 @@ class CalibrationWindow:
     def _draw_trial_done(self, surface, area, C):
         self._draw_live_monitor(surface, area, C, "Completed")
 
-    # Fixed design-space (1080-reference) offset of each row from the top of
-    # `area`, measured with the Begin-Calibration button included -- the
-    # tallest variant. Every phase uses these SAME offsets (not individually
-    # re-centered) so the layout never jumps as the screen auto-advances
-    # through Waiting -> Recording -> Completed; only the button row at the
-    # bottom appears/disappears. Live Reading / Peak Reading always stack
-    # vertically (full width, compact height) for every sensor type.
-    _LM_NATURAL_H = 586
-
     def _draw_live_monitor(self, surface, area, C, status, show_begin=False):
+        """Flow layout (each row positioned from the actual rendered height
+        of the row above it, not a fixed design-space offset table) so this
+        never depends on hand-tuned constants staying in sync with the
+        current font/card sizes -- it was exactly that kind of drift (fixed
+        offsets calibrated for a smaller scale) that caused content to
+        overflow the bottom of the 800x480 panel before. Live Reading /
+        Peak Reading sit side by side (not stacked) specifically to use
+        this screen's generous WIDTH and ease the tight HEIGHT budget."""
         W, H = self.W, self.H
         cx   = area.centerx
-        lx   = int(40 * W / 1920)
+        lx   = self._scw(40)
         rw   = W - lx * 2
         is_wrist = self.game_type == "Wrist Rotation"
         status_col = {"Waiting": C["sub"], "Recording": C["yellow"],
                       "Completed": C["green"]}[status]
 
-        # Vertically center the (fixed-height) block in whatever room `area`
-        # actually has -- compact on a roomy desktop window, snug on the
-        # 800x480 touch panel -- instead of hugging the top with dead space
-        # below it.
-        ref_avail = area.height * 1080 / H
-        base = max(14, (ref_avail - self._LM_NATURAL_H) / 2)
-
-        def off(units):
-            return area.y + int((base + units) * H / 1080)
+        cy = area.y + self._sc(6)
 
         # row 1 -- trial progress + status
-        row1_y = off(0)
         tl_s = self.fnt["head2"].render(f"Trial {self.current_trial + 1} of 3", True, C["text"])
-        surface.blit(tl_s, (lx, row1_y))
+        surface.blit(tl_s, (lx, cy))
         st_s = self.fnt["head2"].render(status, True, status_col)
-        surface.blit(st_s, st_s.get_rect(topright=(lx + rw, row1_y)))
+        surface.blit(st_s, st_s.get_rect(topright=(lx + rw, cy)))
+        cy += tl_s.get_height() + self._sc(5)
 
-        # row 2 -- Live Reading / Peak Reading cards, stacked vertically
-        # (full width, compact height) for every sensor. Grip/Flex show the
-        # raw 0-1 sensor scale (no invented unit, no misleading "%" -- same
-        # 3dp formatting the Results screen already uses). Wrist Rotation
-        # shows the real calculated wrist angle in degrees instead -- the
-        # SAME formula games/key_lock.py already uses to turn tilt_x into an
-        # on-screen angle (tilt mapped linearly over its -1..1 range to
-        # -90..+90 degrees), not a new/invented conversion -- plus which
-        # direction (Left/Right) the wrist is currently rotated toward. The
-        # existing abs()-based live_value/peak_value that actually drive
-        # calibration (trial_results, threshold calc) are untouched; this
-        # only changes how that same data is labeled on screen.
-        cards_y  = off(58)
-        card_h   = int(145 * H / 1080)
-        card_gap = int(14 * H / 1080)
-        live_r = pygame.Rect(lx, cards_y, rw, card_h)
-        peak_r = pygame.Rect(lx, cards_y + card_h + card_gap, rw, card_h)
+        # row 2 -- Live Reading / Peak Reading cards, SIDE BY SIDE. Grip/Flex
+        # show the raw 0-1 sensor scale (no invented unit, no misleading
+        # "%" -- same 3dp formatting the Results screen already uses).
+        # Wrist Rotation shows the real calculated wrist angle in degrees
+        # instead -- the SAME formula games/key_lock.py already uses to
+        # turn tilt_x into an on-screen angle (tilt mapped linearly over
+        # its -1..1 range to -90..+90 degrees), not a new/invented
+        # conversion -- plus which direction (Left/Right) the wrist is
+        # currently rotated toward. The existing abs()-based
+        # live_value/peak_value that actually drive calibration
+        # (trial_results, threshold calc) are untouched; this only changes
+        # how that same data is laid out on screen.
+        card_h   = self._sc(112)
+        card_gap = self._scw(16)
+        card_w   = (rw - card_gap) // 2
+        live_r = pygame.Rect(lx, cy, card_w, card_h)
+        peak_r = pygame.Rect(lx + card_w + card_gap, cy, card_w, card_h)
+        cy += card_h + self._sc(5)
 
         if is_wrist:
             if status == "Recording":
@@ -731,43 +1135,46 @@ class CalibrationWindow:
 
         # row 3 -- recording countdown (existing RECORD_DURATION/record_t
         # timing, shown as real remaining seconds -- not a sensor percentage)
-        timer_y = off(378)
+        row3_h = self._sc(22)
         if status == "Recording":
             remaining = max(0.0, RECORD_DURATION - self.record_t)
             frac = 1.0 - (remaining / RECORD_DURATION if RECORD_DURATION else 0.0)
-            bar_w = rw - int(90 * W / 1920)
-            self._draw_bar(surface, lx, timer_y, bar_w, int(16 * H / 1080), frac, C)
+            bar_w = rw - self._scw(90)
+            bar_h = self._sc(18)
+            self._draw_bar(surface, lx, cy + (row3_h - bar_h) // 2, bar_w, bar_h, frac, C)
             tm_s = self.fnt["bold"].render(f"{remaining:.1f}s", True, C["text"])
-            surface.blit(tm_s, (lx + bar_w + int(14 * W / 1920), timer_y - int(5 * H / 1080)))
+            surface.blit(tm_s, (lx + bar_w + self._scw(14), cy + (row3_h - tm_s.get_height()) // 2))
         elif status == "Waiting" and self.phase == "countdown":
             surface.blit(self.fnt["bold"].render(
-                f"Starts in {self.countdown}s", True, C["sub"]), (lx, timer_y))
+                f"Starts in {self.countdown}s", True, C["sub"]), (lx, cy))
         elif status == "Completed":
             surface.blit(self.fnt["bold"].render(
-                "Trial saved", True, C["green"]), (lx, timer_y))
+                "Trial saved", True, C["green"]), (lx, cy))
+        cy += row3_h + self._sc(5)
 
         # row 4 -- controller status (simulation mode only shown when the
         # keyboard fallback -- the app's existing simulated-input path -- is
         # actually what's driving the reading)
-        ctrl_y = off(428)
         if input_handler.connected:
             ctrl_txt, ctrl_col = "Controller Connected", C["green"]
         else:
             ctrl_txt, ctrl_col = f"Simulation Mode — {self.cfg['key_hint']}", C["orange"]
-        ctrl_s = self.fnt["small"].render(ctrl_txt, True, ctrl_col)
-        surface.blit(ctrl_s, (lx, ctrl_y))
+        ctrl_s = self._fit_text(self._small_font_path, self._sc(21), ctrl_txt, rw, ctrl_col, self._sc(14))
+        surface.blit(ctrl_s, (lx, cy))
+        cy += ctrl_s.get_height() + self._sc(5)
 
         # row 5 -- trial indicators (completed / active / pending)
-        dots_y = off(482)
-        self._draw_trial_dots(surface, cx, dots_y, C, current=self.current_trial)
+        dot_r = self._sc(10)   # must match _draw_trial_dots' own internal dot_r
+        label_h = self.fnt["small"].get_height()
+        self._draw_trial_dots(surface, cx, cy + dot_r, C, current=self.current_trial)
+        cy += dot_r * 2 + self._sc(4) + label_h + self._sc(5)
 
-        # row 6 -- Begin Calibration (pre-trial-1 only)
+        # row 6 -- Begin Calibration (pre-trial-1 only), touch-friendly size
         if show_begin:
-            btn_y = off(532)
-            begin_r = pygame.Rect(cx - int(170 * W / 1920), btn_y,
-                                  int(340 * W / 1920), int(54 * H / 1080))
+            begin_h = self._tt(40)   # _tt floors to a 50px touch target regardless
+            begin_r = pygame.Rect(cx - self._scw(190), cy, self._scw(380), begin_h)
             pygame.draw.rect(surface, C["accent"], begin_r, border_radius=14)
-            b_s = self.fnt["sym25"].render("Begin Calibration  →", True, C["white"])
+            b_s = self.fnt["bold"].render("Begin Calibration", True, C["white"])
             surface.blit(b_s, b_s.get_rect(center=begin_r.center))
             self._begin_rect = begin_r
         else:
@@ -778,17 +1185,17 @@ class CalibrationWindow:
         W, H = self.W, self.H
         pygame.draw.rect(surface, C["panel"],  r, border_radius=14)
         pygame.draw.rect(surface, C["border"], r, 1, border_radius=14)
-        pad = int(18 * W / 1920)
+        pad = self._scw(14)
         lbl_s = self.fnt["bold"].render(label, True, C["sub"])
-        surface.blit(lbl_s, (r.x + pad, r.y + int(14 * H / 1080)))
+        surface.blit(lbl_s, (r.x + pad, r.y + self._sc(7)))
         val_font = font or self.fnt["big"]
         val_col  = accent if text != "—" else C["sub"]
         val_s = val_font.render(text, True, val_col)
-        val_y = r.y + int(14 * H / 1080) + lbl_s.get_height() + int(12 * H / 1080)
+        val_y = r.y + self._sc(7) + lbl_s.get_height() + self._sc(4)
         surface.blit(val_s, (r.x + pad, val_y))
         if tag:
             tag_s = self.fnt["bold"].render(tag, True, tag_col or C["sub"])
-            surface.blit(tag_s, (r.x + pad + val_s.get_width() + int(18 * W / 1920),
+            surface.blit(tag_s, (r.x + pad + val_s.get_width() + self._scw(18),
                                  val_y + val_s.get_height() - tag_s.get_height()))
 
     # ── phase: results ────────────────────────────────────────────────────────
@@ -806,26 +1213,39 @@ class CalibrationWindow:
         W, H = self.W, self.H
         avg  = (sum(self.trial_results) / len(self.trial_results)
                 if self.trial_results else 0.0)
-        lx = int(36 * W / 1920)
+        lx = self._scw(36)
         rw = W - lx * 2
 
-        def u(n): return int(n * H / 1080)
+        def u(n): return self._sc(n)
+
+        # The bottom actions (Retry / Advanced Settings / Accept & Continue)
+        # are fixed -- reachable even when the content above is scrolled --
+        # so their footer strip is reserved FIRST, and the scrollable
+        # viewport is sized from whatever room is actually left.
+        btn_h    = self._tt(54)
+        footer_h = btn_h + u(22)
+        viewport = pygame.Rect(area.x, area.y, area.width, area.height - footer_h)
+        self._results_viewport = viewport
+
+        max_scroll = max(0, self._results_content_h - viewport.height)
+        self._results_scroll_y = max(0, min(self._results_scroll_y, max_scroll))
+
+        prev_clip = surface.get_clip()
+        surface.set_clip(viewport)
 
         # ── A. completion banner ───────────────────────────────────────
-        y = area.y + u(14)
+        content_top = viewport.y + u(14) - self._results_scroll_y
+        y = content_top
         ban_h = u(100)
         ban_r = pygame.Rect(lx, y, rw, ban_h)
         pygame.draw.rect(surface, C["panel"], ban_r, border_radius=12)
         pygame.draw.rect(surface, C["green"], ban_r, 2, border_radius=12)
-        ck_s = self.fnt["sym44"].render("✓", True, C["green"])
-        surface.blit(ck_s, (ban_r.x + u(16), ban_r.centery - ck_s.get_height() // 2))
         hd_s = self.fnt["head2"].render("Calibration Complete!", True, C["green"])
-        surface.blit(hd_s, (ban_r.x + u(16) + ck_s.get_width() + int(12 * W / 1920),
-                             ban_r.y + u(12)))
+        surface.blit(hd_s, (ban_r.x + u(16), ban_r.y + u(12)))
         sub_s = self.fnt["small"].render(
             "All required sensors have been successfully calibrated.",
             True, C["sub"])
-        surface.blit(sub_s, (ban_r.x + u(16) + ck_s.get_width() + int(12 * W / 1920),
+        surface.blit(sub_s, (ban_r.x + u(16),
                               ban_r.y + u(12) + hd_s.get_height() + u(2)))
         y += ban_h + u(16)
 
@@ -836,15 +1256,16 @@ class CalibrationWindow:
         pygame.draw.rect(surface, C["border"], res_r, 1, border_radius=12)
 
         rh_s = self.fnt["bold"].render("Calibration Results", True, C["text"])
-        surface.blit(rh_s, (res_r.x + u(14), res_r.y + u(10)))
-        sn_s = self.fnt["small"].render(f"Sensor: {self.cfg['sensor_name']} ({self.game_type})",
-                                        True, C["sub"])
-        surface.blit(sn_s, sn_s.get_rect(topright=(res_r.right - u(14), res_r.y + u(12))))
+        surface.blit(rh_s, (res_r.x + u(14), res_r.y + u(8)))
+        sn_s = self._fit_text(self._small_font_path, self._sc(18),
+                               f"Sensor: {self.cfg['sensor_name']} ({self.game_type})",
+                               res_r.width - u(28), C["sub"], self._sc(12))
+        surface.blit(sn_s, (res_r.x + u(14), res_r.y + u(8) + rh_s.get_height() + u(2)))
 
         bar_x  = res_r.x + u(100)
         bar_w  = res_r.width - u(100) - u(100)
         bar_h  = u(18)
-        by_cur = res_r.y + u(46)
+        by_cur = res_r.y + u(8) + rh_s.get_height() + u(2) + sn_s.get_height() + u(10)
         trial_count = max(3, len(self.trial_results))
         for i in range(trial_count):
             val = self.trial_results[i] if i < len(self.trial_results) else 0.0
@@ -885,39 +1306,55 @@ class CalibrationWindow:
         self._draw_preset_summary(surface, pygame.Rect(lx, y, rw, sum_h), C)
         y += sum_h + u(16)
 
-        # ── E. bottom actions ────────────────────────────────────────
-        # sit right after the content, like the rest of this app's cards --
-        # any true leftover room becomes trailing margin below, not a gap
-        # pushing these actions down to the bottom.
-        btn_y = min(y, area.bottom - u(60))
-        btn_h = u(54)
-        gap   = int(14 * W / 1920)
+        # Real content height (independent of this frame's scroll offset,
+        # so next frame's clamping/scrollbar math is correct), then restore
+        # the surface's own clip and draw the fixed footer below it.
+        # content_top already has -self._results_scroll_y baked in, so
+        # y - content_top is already scroll-independent on its own; adding
+        # scroll_y again here (an earlier bug) made content_h grow by
+        # whatever it was just scrolled by, compounding on every frame the
+        # view wasn't at the very top.
+        self._results_content_h = y - content_top
+        surface.set_clip(prev_clip)
+
+        if max_scroll > 0:
+            self._draw_scrollbar(surface, viewport, C, max_scroll)
+
+        # ── E. bottom actions -- fixed below the viewport, never scrolls ──
+        btn_y = viewport.bottom + u(12)
+        gap   = self._scw(14)
         bw    = (rw - gap * 2) // 3
         retry_r = pygame.Rect(lx, btn_y, bw, btn_h)
         adv_r   = pygame.Rect(lx + bw + gap, btn_y, bw, btn_h)
         acc_r   = pygame.Rect(lx + 2 * (bw + gap), btn_y, bw, btn_h)
 
+        btn_font_size = self._sc(25)
+        btn_max_w     = bw - u(16)
+
         pygame.draw.rect(surface, C["panel2"], retry_r, border_radius=12)
         pygame.draw.rect(surface, C["border"], retry_r, 1, border_radius=12)
-        rt_s = self.fnt["sym25"].render("↺  Retry Calibration", True, C["sub"])
+        rt_s = self._fit_text(self._bold_font_path, btn_font_size, "Retry Calibration",
+                               btn_max_w, C["sub"], self._sc(16))
         surface.blit(rt_s, rt_s.get_rect(center=retry_r.center))
         self._retry_rect = retry_r
 
         pygame.draw.rect(surface, C["panel2"], adv_r, border_radius=12)
         pygame.draw.rect(surface, C["border"], adv_r, 1, border_radius=12)
-        av2_s = self.fnt["sym25"].render("⚙  Advanced Settings", True, C["text"])
+        av2_s = self._fit_text(self._bold_font_path, btn_font_size, "Advanced Settings",
+                                btn_max_w, C["text"], self._sc(16))
         surface.blit(av2_s, av2_s.get_rect(center=adv_r.center))
         self._adv_open_rect = adv_r
 
         pygame.draw.rect(surface, C["green"], acc_r, border_radius=12)
-        ac_s = self.fnt["sym25"].render("✓  Accept & Continue", True, C["white"])
+        ac_s = self._fit_text(self._bold_font_path, btn_font_size, "Accept & Continue",
+                               btn_max_w, C["white"], self._sc(16))
         surface.blit(ac_s, ac_s.get_rect(center=acc_r.center))
         self._accept_rect = acc_r
 
     def _draw_difficulty_cards(self, surface, lx, ry, rw, ch, C):
         W, H  = self.W, self.H
         n     = len(PRESET_ORDER)
-        gap   = int(12 * W / 1920)
+        gap   = self._scw(12)
         cw    = (rw - gap * (n - 1)) // n
 
         self._preset_card_rects = {}
@@ -935,32 +1372,39 @@ class CalibrationWindow:
 
             nm_s = self.fnt["bold"].render(name.upper(), True,
                                            base_col if sel else C["text"])
-            surface.blit(nm_s, (cr.x + int(10 * W / 1920), cr.y + int(8 * H / 1080)))
+            surface.blit(nm_s, (cr.x + self._scw(10), cr.y + self._sc(8)))
+            next_y = cr.y + self._sc(8) + nm_s.get_height() + self._sc(4)
 
             if rec:
-                rc_s = self.fnt["tag"].render("RECOMMENDED", True, C["white"])
-                rc_r = pygame.Rect(0, 0, rc_s.get_width() + int(10 * W / 1920),
-                                   rc_s.get_height() + int(4 * H / 1080))
-                rc_r.topright = (cr.right - int(8 * W / 1920), cr.y + int(8 * H / 1080))
-                pygame.draw.rect(surface, C["green"], rc_r, border_radius=int(6 * H / 1080))
+                # Its own row below the name, not overlapping it -- "RECOMMENDED"
+                # is wide enough at this font size to cover a short name label
+                # like "HARD" entirely if placed top-right beside it, and still
+                # shrinks to fit this narrow a card as a last resort.
+                rc_s = self._fit_text(self._bold_font_path, self._sc(20), "RECOMMENDED",
+                                       cw - self._scw(16), C["white"], self._sc(12))
+                rc_r = pygame.Rect(0, 0, rc_s.get_width() + self._scw(10),
+                                   rc_s.get_height() + self._sc(4))
+                rc_r.topleft = (cr.x + self._scw(10), next_y)
+                pygame.draw.rect(surface, C["green"], rc_r, border_radius=self._sc(6))
                 surface.blit(rc_s, rc_s.get_rect(center=rc_r.center))
+                next_y = rc_r.bottom + self._sc(4)
 
             thr_val = round(DIFFICULTY_PRESETS[name]["threshold_pct"], 0)
             dt = f"Threshold {int(thr_val)}%  ·  {p['desc'].split('—')[0].strip()}"
             words, lines, cur = dt.split(), [], ""
             for w in words:
                 test = (cur + " " + w).strip()
-                if self.fnt["small"].size(test)[0] > cw - int(20 * W / 1920):
+                if self.fnt["small"].size(test)[0] > cw - self._scw(20):
                     if cur: lines.append(cur)
                     cur = w
                 else:
                     cur = test
             if cur: lines.append(cur)
-            ty = cr.y + int(8 * H / 1080) + nm_s.get_height() + int(6 * H / 1080)
+            ty = next_y + self._sc(2)
             for ln in lines[:2]:
                 ls = self.fnt["small"].render(ln, True, C["sub"])
-                surface.blit(ls, (cr.x + int(10 * W / 1920), ty))
-                ty += ls.get_height() + int(2 * H / 1080)
+                surface.blit(ls, (cr.x + self._scw(10), ty))
+                ty += ls.get_height() + self._sc(2)
 
             self._preset_card_rects[name] = cr
 
@@ -970,7 +1414,7 @@ class CalibrationWindow:
         -- customized values if the therapist edited any in Advanced
         Settings, the preset's own defaults otherwise."""
         W, H = self.W, self.H
-        def u(n): return int(n * H / 1080)
+        def u(n): return self._sc(n)
         pygame.draw.rect(surface, C["panel"],  r, border_radius=12)
         pygame.draw.rect(surface, C["border"], r, 1, border_radius=12)
 
@@ -987,7 +1431,6 @@ class CalibrationWindow:
         surface.blit(bd_s, bd_s.get_rect(center=bd_r.center))
 
         chips = [(spec["label"], self._fmt_chip(spec)) for spec in self.param_schema]
-        chips.append(("Session Duration", self.adv_duration))
         if self.game_name in GAMES_USING_SPEED:
             chips.append(("Speed", self.adv_speed))
 
@@ -1002,7 +1445,7 @@ class CalibrationWindow:
                 cx = r.x + u(14)
                 cy += row_h
             surface.blit(ts, (cx, cy))
-            cx += ts.get_width() + int(22 * W / 1920)
+            cx += ts.get_width() + self._scw(22)
 
     @staticmethod
     def _fmt_unit(shown, unit):
@@ -1025,8 +1468,8 @@ class CalibrationWindow:
 
     def _draw_advanced_settings(self, surface, area, C):
         W, H = self.W, self.H
-        def u(n): return int(n * H / 1080)
-        lx = int(36 * W / 1920)
+        def u(n): return self._sc(n)
+        lx = self._scw(36)
         rw = W - lx * 2
 
         if self.game_name:
@@ -1041,17 +1484,17 @@ class CalibrationWindow:
         self._adv_param_rects = []
         self._adv_speed_rects = []
         row_h   = u(46)
-        col_val = int(260 * W / 1920)     # stepper column width
+        col_val = self._scw(260)     # stepper column width
         cy      = rows_r.y + u(10)
         max_rows_y = rows_r.bottom - u(8)
 
         def stepper(y, value_text, key_for_rect=None, spec=None, kind=None):
-            bw = int(34 * W / 1920)
-            vw = col_val - bw * 2 - int(8 * W / 1920)
-            x  = rows_r.right - int(14 * W / 1920) - col_val
+            bw = self._scw(34)
+            vw = col_val - bw * 2 - self._scw(8)
+            x  = rows_r.right - self._scw(14) - col_val
             minus_r = pygame.Rect(x, y, bw, row_h - u(10))
-            val_r   = pygame.Rect(x + bw + int(4 * W / 1920), y, vw, row_h - u(10))
-            plus_r  = pygame.Rect(x + bw + vw + int(8 * W / 1920), y, bw, row_h - u(10))
+            val_r   = pygame.Rect(x + bw + self._scw(4), y, vw, row_h - u(10))
+            plus_r  = pygame.Rect(x + bw + vw + self._scw(8), y, bw, row_h - u(10))
             for rct, lbl in ((minus_r, "–"), (plus_r, "+")):
                 pygame.draw.rect(surface, C["panel2"], rct, border_radius=8)
                 pygame.draw.rect(surface, C["border"], rct, 1, border_radius=8)
@@ -1063,8 +1506,6 @@ class CalibrationWindow:
             surface.blit(vs, vs.get_rect(center=val_r.center))
             if kind == "threshold":
                 self._adv_threshold_minus, self._adv_threshold_plus = minus_r, plus_r
-            elif kind == "duration":
-                self._adv_dur_minus, self._adv_dur_plus = minus_r, plus_r
             elif spec is not None:
                 self._adv_param_rects.append((minus_r, plus_r, spec))
 
@@ -1092,8 +1533,8 @@ class CalibrationWindow:
         # generic: Speed (only for games that actually use it)
         if self.game_name in GAMES_USING_SPEED and cy + row_h <= max_rows_y:
             row_label("Speed", cy)
-            bw = int(74 * W / 1920)
-            x  = rows_r.right - int(14 * W / 1920) - (bw * 3 + int(16 * W / 1920))
+            bw = self._scw(74)
+            x  = rows_r.right - self._scw(14) - (bw * 3 + self._scw(16))
             self._adv_speed_rects = []
             for opt in SPEED_OPTS:
                 br = pygame.Rect(x, cy, bw, row_h - u(10))
@@ -1103,7 +1544,7 @@ class CalibrationWindow:
                 os_ = self.fnt["tag"].render(opt, True, C["white"] if sel else C["sub"])
                 surface.blit(os_, os_.get_rect(center=br.center))
                 self._adv_speed_rects.append((opt, br))
-                x += bw + int(8 * W / 1920)
+                x += bw + self._scw(8)
             pygame.draw.line(surface, C["border"], (rows_r.x + u(10), cy + row_h),
                              (rows_r.right - u(10), cy + row_h), 1)
             cy += row_h
@@ -1118,33 +1559,22 @@ class CalibrationWindow:
                              (rows_r.right - u(10), cy + row_h), 1)
             cy += row_h
 
-        # generic: Session Duration
-        if cy + row_h <= max_rows_y:
-            row_label("Session Duration", cy)
-            try:
-                dur_val = int(self.adv_duration.split()[0]) if self.adv_duration != "Custom" \
-                    else int(self.adv_custom_dur or 120)
-            except (ValueError, IndexError):
-                dur_val = 120
-            stepper(cy, f"{dur_val} s", kind="duration")
-            cy += row_h
-
         # ── bottom actions ──────────────────────────────────────────
         btn_y = area.bottom - u(56)
         btn_h = u(46)
-        gap   = int(16 * W / 1920)
+        gap   = self._scw(16)
         bw    = (rw - gap) // 2
         reset_r = pygame.Rect(lx, btn_y, bw, btn_h)
         apply_r = pygame.Rect(lx + bw + gap, btn_y, bw, btn_h)
 
         pygame.draw.rect(surface, C["panel2"], reset_r, border_radius=12)
         pygame.draw.rect(surface, C["border"], reset_r, 1, border_radius=12)
-        rs_s = self.fnt["sym25"].render("↺  Reset to Preset", True, C["sub"])
+        rs_s = self.fnt["bold"].render("Reset to Preset", True, C["sub"])
         surface.blit(rs_s, rs_s.get_rect(center=reset_r.center))
         self._adv_reset_rect = reset_r
 
         pygame.draw.rect(surface, C["accent"], apply_r, border_radius=12)
-        ap2_s = self.fnt["sym25"].render("✓  Apply Changes  →", True, C["white"])
+        ap2_s = self.fnt["bold"].render("Apply Changes", True, C["white"])
         surface.blit(ap2_s, ap2_s.get_rect(center=apply_r.center))
         self._adv_apply_rect = apply_r
 
@@ -1163,12 +1593,12 @@ class CalibrationWindow:
         pygame.draw.rect(surface, C["border"], (x, y, w, h), 1, border_radius=h // 2)
         if label:
             ls = self.fnt["small"].render(label, True, C["text"])
-            surface.blit(ls, (x + w + int(14 * self.W / 1920),
+            surface.blit(ls, (x + w + self._scw(14),
                                y + h // 2 - ls.get_height() // 2))
 
     def _draw_trial_dots(self, surface, cx, y, C, current=0):
-        dot_r = int(10 * self.H / 1080)
-        gap   = int(56 * self.W / 1920)
+        dot_r = self._sc(10)
+        gap   = self._scw(56)
         total = 3 * dot_r * 2 + 2 * gap
         sx    = cx - total // 2
         for i in range(3):
@@ -1181,4 +1611,18 @@ class CalibrationWindow:
             lbl = (f"{self.trial_results[i]:.2f}" if i < len(self.trial_results)
                    else f"Trial {i + 1}")
             ls = self.fnt["small"].render(lbl, True, C["sub"])
-            surface.blit(ls, ls.get_rect(midtop=(dx, y + dot_r + int(4 * self.H / 1080))))
+            surface.blit(ls, ls.get_rect(midtop=(dx, y + dot_r + self._sc(4))))
+
+    def _draw_scrollbar(self, surface, viewport, C, max_scroll):
+        """A thin, simple scroll-position indicator on the viewport's right
+        edge -- only drawn when the results content is actually taller than
+        the viewport, as a visual cue that more content is reachable by
+        dragging."""
+        w = self._scw(5)
+        track = pygame.Rect(viewport.right - w - self._scw(4), viewport.y, w, viewport.height)
+        pygame.draw.rect(surface, C["panel2"], track, border_radius=w // 2)
+        frac = min(1.0, viewport.height / (self._results_content_h or viewport.height))
+        thumb_h = max(self._sc(30), int(viewport.height * frac))
+        thumb_y = viewport.y + int((viewport.height - thumb_h) *
+                                    (self._results_scroll_y / max_scroll))
+        pygame.draw.rect(surface, C["accent"], (track.x, thumb_y, w, thumb_h), border_radius=w // 2)

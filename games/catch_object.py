@@ -1,5 +1,5 @@
 """
-Catch the Falling Object — Dual Skill (Grip + Wrist) game (1920x1080)
+Catch 'n Grab — Dual Skill (Grip + Wrist) game (1920x1080)
 
 Mechanic:
   - Objects fall from the top
@@ -13,6 +13,7 @@ import random
 import math
 from screens.base import BaseScreen
 from games.fatigue import FatigueMixin
+from games.session_mode import SessionModeMixin
 from sensors.input_handler import input_handler
 from audio import play_success, start_music, stop_music, play_completion, play_click
 from constants import get_theme, GAME_W, GAME_H
@@ -21,7 +22,8 @@ from games.game_header import draw_game_header, HEADER_BOTTOM
 THRESHOLDS   = {"Easy": 0.30, "Medium": 0.45, "Hard": 0.60}
 FALL_SPEEDS  = {"Easy": 100, "Medium": 180, "Hard": 280}
 SPAWN_RATES  = {"Easy": 2.8, "Medium": 2.0, "Hard": 1.2}
-DURATION     = {"Easy": 60,  "Medium": 50,  "Hard": 40}
+OBJECT_GOAL  = {"Easy": 15,  "Medium": 25,  "Hard": 35}   # Target Mode: valid objects to catch to complete
+DURATION     = {"Easy": 60,  "Medium": 50,  "Hard": 40}   # Timed Mode: session length in seconds
 MOVE_SPEED   = {"Easy": 600, "Medium": 750, "Hard": 900}
 
 CATCHER_Y = GAME_H - 120
@@ -67,7 +69,7 @@ class FallingObj:
             pygame.draw.line(surface, (255,255,255), (cx+12,cy-12),(cx-12,cy+12), 3)
 
 
-class CatchObjectGame(FatigueMixin, BaseScreen):
+class CatchObjectGame(SessionModeMixin, FatigueMixin, BaseScreen):
     def on_enter(self, data):
         self.account_id = data.get("account_id")
         self.account    = data.get("account")
@@ -81,8 +83,7 @@ class CatchObjectGame(FatigueMixin, BaseScreen):
         self.spawn_rate = SPAWN_RATES[self.difficulty]
         self.move_speed = MOVE_SPEED[self.difficulty]
 
-        dur = data.get("duration_sec")
-        self.duration = int(dur) if dur else DURATION[self.difficulty]
+        self._session_init(data, OBJECT_GOAL, DURATION, self.difficulty, cal_goal_key="cg_goal")
 
         self.vol_active = False
         try:
@@ -114,7 +115,7 @@ class CatchObjectGame(FatigueMixin, BaseScreen):
         self.misses      = 0
         self.reps        = 0
         self.spawn_timer = 0.0
-        self.time_left   = float(self.duration)
+        self._session_reset()
         self.start_time  = pygame.time.get_ticks()
         self.catcher_x   = float(GAME_W // 2)
         self.feedback    = None
@@ -210,9 +211,9 @@ class CatchObjectGame(FatigueMixin, BaseScreen):
         if self.fatigue_paused or self.paused:
             return
 
-        self.time_left -= dt
-        if self.time_left <= 0:
-            self._end_game(); return
+        if self._session_tick(dt):
+            self._end_game()
+            return
 
         grip = self._normalize_grip(self._state["grip"])
 
@@ -245,6 +246,9 @@ class CatchObjectGame(FatigueMixin, BaseScreen):
                     self.score_flash  = 0.4
                     self.feedback     = ("SCORED!", (0,255,160), 0.8)
                     play_success()
+                    if self._session_target_reached():
+                        self._end_game()
+                        return
                     break
 
         # Count misses
@@ -261,32 +265,38 @@ class CatchObjectGame(FatigueMixin, BaseScreen):
     def _exit_to_game_config(self):
         import builtins
         stop_music()
+        if not self.game_over and not self._show_instructions:
+            self._save_session(status="stopped")
         builtins.pending_panel   = 4
         builtins.pending_patient = self._patient
         builtins.pending_account = self.account
         self.manager.go_to("therapist_dashboard")
+
+    def _save_session(self, status):
+        try:
+            from database import Database
+            db = Database()
+            patient_id = self._patient.get("id") if self._patient else None
+            db.save_session(
+                patient_id     = patient_id,
+                therapist_id   = self.account_id,
+                game           = "Catch 'n Grab",
+                score          = self.score,
+                difficulty     = self.difficulty,
+                status         = status,
+                **self._session_result_fields(),
+            )
+        except Exception:
+            pass
 
     def _end_game(self):
         if self.game_over:
             return
         stop_music()
         play_completion()
-        self.game_over_duration = (pygame.time.get_ticks() - self.start_time) // 1000
+        self.game_over_duration = int(round(self.elapsed))
         self.game_over_score    = self.score
-        try:
-            from database import Database
-            db = Database()
-            patient_id = self._patient.get("id") if self._patient else None
-            db.save_session(
-                patient_id   = patient_id,
-                therapist_id = self.account_id,
-                game         = "Catch the Falling Object",
-                score        = self.score,
-                duration_sec = self.game_over_duration,
-                difficulty   = self.difficulty,
-            )
-        except Exception:
-            pass
+        self._save_session(status="completed")
         self.game_over = True
 
     def _draw_instructions(self, surface):
@@ -305,7 +315,6 @@ class CatchObjectGame(FatigueMixin, BaseScreen):
         f_title = pygame.font.SysFont("monospace", 36, bold=True)
         f_head  = pygame.font.SysFont("monospace", 22, bold=True)
         f_body  = pygame.font.SysFont("monospace", 19)
-        f_hint  = pygame.font.SysFont("monospace", 21, bold=True)
 
         diff_col = {"Easy": T["GREEN"], "Medium": T["YELLOW"], "Hard": T["RED"]}[self.difficulty]
         title = f_title.render("How to Play", True, diff_col)
@@ -324,7 +333,8 @@ class CatchObjectGame(FatigueMixin, BaseScreen):
                 "Grip (squeeze) while a valid object is over the catcher to catch it.",
             ]),
             ("THIS SESSION", [
-                f"Duration:   {self.duration} seconds",
+                (f"Goal:       Catch {self.goal} objects" if self.session_mode == "target" else
+                 f"Duration:   {int(self.timed_duration)} seconds — catch as many as you can"),
                 f"Difficulty: {self.difficulty}",
             ]),
         ]:
@@ -334,10 +344,8 @@ class CatchObjectGame(FatigueMixin, BaseScreen):
                 surface.blit(f_body.render(line, True, T["TEXT"]), (px + 64, y))
                 y += 26
             y += 14
-
-        blink_col = T["YELLOW"] if (pygame.time.get_ticks() // 600) % 2 == 0 else T["GRAY"]
-        hint = f_hint.render("Press any key or click to begin", True, blink_col)
-        surface.blit(hint, hint.get_rect(centerx=GAME_W // 2, bottom=py + ph - 20))
+        # No "press any key" prompt -- the patient never starts the game
+        # themselves, only the therapist's own START control does.
 
     def draw(self, surface):
         T = get_theme()
@@ -398,8 +406,11 @@ class CatchObjectGame(FatigueMixin, BaseScreen):
         pygame.draw.circle(surface, T["ACCENT"], (ind_x, iby + 6), 10)
 
         # Top HUD
-        draw_game_header(surface, "Catch the Falling Object", self.difficulty,
-                          self.time_left, self.score, GAME_W, GAME_H)
+        draw_game_header(surface, "Catch 'n Grab", self.difficulty,
+                          self._session_header_time(), self.score, GAME_W, GAME_H)
+
+        prog_s = font_sm.render(self._session_progress_text("caught"), True, T["TEXT"])
+        surface.blit(prog_s, (int(40 * GAME_W / 1920), HEADER_BOTTOM + int(20 * GAME_H / 1080)))
 
         surface.blit(font_sm.render(
             f"Missed {self.misses}", True, T["RED"]),
@@ -456,15 +467,15 @@ class CatchObjectGame(FatigueMixin, BaseScreen):
         title = f_big.render("Session Complete!", True, T["YELLOW"])
         surface.blit(title, title.get_rect(center=(mr.centerx, my + 60)))
 
-        sc_s = f_mid.render(f"Score:    {self.game_over_score}", True, T["TEXT"])
+        sc_s = f_mid.render(f"Caught: {self._session_count_text()}", True, T["TEXT"])
         surface.blit(sc_s, sc_s.get_rect(midleft=(mx + 80, my + 140)))
 
         mins, secs = divmod(self.game_over_duration, 60)
-        dur_str = f"{mins}:{secs:02d}" if mins else f"{secs}s"
-        du_s = f_mid.render(f"Duration: {dur_str}", True, T["TEXT"])
+        du_s = f_mid.render(f"Elapsed Time: {mins:02d}:{secs:02d}", True, T["TEXT"])
         surface.blit(du_s, du_s.get_rect(midleft=(mx + 80, my + 190)))
 
-        dif_s = f_sm.render(f"Difficulty: {self.difficulty}", True, T["GRAY"])
+        mode_lbl = "Target Mode" if self.session_mode == "target" else "Timed Mode"
+        dif_s = f_sm.render(f"Difficulty: {self.difficulty}  ·  {mode_lbl}", True, T["GRAY"])
         surface.blit(dif_s, dif_s.get_rect(midleft=(mx + 80, my + 238)))
 
         mp  = pygame.mouse.get_pos()
