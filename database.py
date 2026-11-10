@@ -12,6 +12,11 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recovr.db")
 MAX_PIN_ATTEMPTS = 5
 LOCK_DURATION_HOURS = 1
 
+# Separate from LOCK_DURATION_HOURS (how long a *triggered* lock lasts): this
+# is how long a sub-five attempt count is allowed to sit idle before it
+# decays back to zero, timed from the MOST RECENT incorrect attempt.
+ATTEMPT_RESET_HOURS = 1
+
 # Username rules shared by every entry point that creates or edits a
 # therapist username (registration, account editing, and the patient-share
 # search field) -- defined once here so the rules can never drift apart
@@ -240,6 +245,18 @@ class Database:
             except Exception:
                 pass
 
+        # Timestamp of the most recent incorrect PIN attempt -- needed to
+        # decay the attempt counter after ATTEMPT_RESET_HOURS of inactivity,
+        # independent of locked_until (which only exists once a lock has
+        # actually triggered). Existing rows get NULL, which _expire_stale_
+        # attempts() treats as "nothing to expire" rather than as due.
+        try:
+            self.conn.execute(
+                "ALTER TABLE account_locks ADD COLUMN last_attempt_at DATETIME")
+            self.conn.commit()
+        except Exception:
+            pass
+
         self.conn.commit()
 
     # ── CALIBRATION RECORDS ───────────────────────────────────────────
@@ -429,8 +446,31 @@ class Database:
 
     # ── PIN VERIFICATION WITH LOCKOUT ────────────────────────────────
 
+    def _expire_stale_attempts(self, therapist_id):
+        """An account that is NOT currently locked but whose most recent
+        incorrect PIN attempt is older than ATTEMPT_RESET_HOURS has its
+        attempt counter decay back to zero, timed from that latest attempt
+        (not the first). A real lock (locked_until set) is a separate timer
+        with its own expiry in is_locked()/_clear_lock() -- this never fires
+        while locked_until is set, so the two durations can't interfere even
+        though they currently share the same length."""
+        c = self.conn.execute(
+            "SELECT locked_until, last_attempt_at FROM account_locks WHERE therapist_id=?",
+            (therapist_id,)
+        )
+        r = c.fetchone()
+        if not r or r["locked_until"] or not r["last_attempt_at"]:
+            return
+        try:
+            last = datetime.datetime.fromisoformat(r["last_attempt_at"])
+        except Exception:
+            return
+        if datetime.datetime.now() - last >= datetime.timedelta(hours=ATTEMPT_RESET_HOURS):
+            self._clear_lock(therapist_id)
+
     def get_lock_info(self, therapist_id):
         """Returns (attempts, locked_until_datetime_or_None)."""
+        self._expire_stale_attempts(therapist_id)
         c = self.conn.execute(
             "SELECT attempts, locked_until FROM account_locks WHERE therapist_id=?",
             (therapist_id,)
@@ -478,9 +518,11 @@ class Database:
         Returns (new_attempt_count, locked_until_or_None).
         """
         self._ensure_lock_row(therapist_id)
+        self._expire_stale_attempts(therapist_id)  # may delete the row
+        self._ensure_lock_row(therapist_id)         # re-create if it just expired
         self.conn.execute(
-            "UPDATE account_locks SET attempts = attempts + 1 WHERE therapist_id=?",
-            (therapist_id,)
+            "UPDATE account_locks SET attempts = attempts + 1, last_attempt_at=? WHERE therapist_id=?",
+            (datetime.datetime.now().isoformat(), therapist_id)
         )
         self.conn.commit()
         attempts, _ = self.get_lock_info(therapist_id)

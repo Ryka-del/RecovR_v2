@@ -95,8 +95,17 @@ class TherapistLink:
         self._enqueue(protocol.EP_CONFIG, {"selected_game": game_type or ""})
         self._enqueue(protocol.EP_COMMAND, {"command": cmd.CALIBRATE})
 
+    def set_calibration_progress(self, data: dict):
+        """Live trial-level detail for the patient's own Calibration screen --
+        which sensor, which step/attempt, and (while actively recording) a
+        live 0..1 reading for its progress bar. See
+        CalibrationWindow._cal_progress_payload() in scenes/therapist_dashboard.py
+        for the exact shape; this is just a thin forwarder."""
+        self._enqueue(protocol.EP_THERAPIST, {"calibration_progress": dict(data or {})})
+
     def calibrate_end(self):
         """Clear the calibration state once the therapist's CalibrationWindow closes."""
+        self._enqueue(protocol.EP_THERAPIST, {"calibration_progress": {}})
         self._enqueue(protocol.EP_ACK, {"pending_action": cmd.CALIBRATE})
 
     def _enqueue(self, path: str, data: dict):

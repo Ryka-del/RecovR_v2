@@ -113,6 +113,15 @@ class SessionState:
                                                      # state preserved) while the therapist chooses
                                                      # CONTINUE (resume) or BACK (end session).
                                                      # Both monitors show the "Game Stopped" screen.
+    calibration_progress: dict = field(default_factory=dict)
+                                                     # Live trial-level detail for the patient's own
+                                                     # Calibration screen, pushed by the therapist's
+                                                     # CalibrationWindow while status == CALIBRATING:
+                                                     # {"sensor": "grip"/"flex"/"wrist", "step_index",
+                                                     # "step_count", "attempt_index", "attempt_count",
+                                                     # "phase", "live_frac"}. {} => nothing pushed yet
+                                                     # (patient shows a neutral "please wait" state).
+                                                     # Cleared back to {} when calibration ends.
     dark_mode: bool = False                          # THE single source of truth for the RecovR
                                                      # light/dark theme. Therapist toggles it; the
                                                      # patient applies it live on every screen.
@@ -270,6 +279,13 @@ class SessionStore:
     def set_stop_pending(self, value) -> dict:
         with self._lock:
             self._state.stop_pending = bool(value)
+            self._touch()
+            return self._state.snapshot()
+
+    # -- live calibration-trial detail (therapist's CalibrationWindow) -----
+    def set_calibration_progress(self, data) -> dict:
+        with self._lock:
+            self._state.calibration_progress = dict(data) if isinstance(data, dict) else {}
             self._touch()
             return self._state.snapshot()
 

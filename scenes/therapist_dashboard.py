@@ -41,7 +41,7 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import Database, validate_username, username_char_allowed, MAX_USERNAME_LEN
 from scenes.icon_renderer import draw_icon, ICONS
-from scenes.calibration_window import CalibrationWindow, GAME_PARAM_SCHEMA
+from scenes.calibration_window import CalibrationWindow, GAME_PARAM_SCHEMA, SENSOR_CFG
 from audio import play_confirm_alert, play_start_session, play_click
 from sensors.input_handler import input_handler
 try:
@@ -205,14 +205,56 @@ SKILL_GAMES = {
     "Multi-skill":    ["Plant the Garden"],
 }
 
+# Fixed sensor calibration order for every multi-sensor game: FSR402 ->
+# Flex Sensors -> MPU6050. Only the sensors a given game actually needs are
+# included (see MULTI_SENSOR_CALIBRATION/_required_sensors_for_game) -- this
+# list is just the canonical ORDER those sensors are calibrated in whenever
+# more than one is required.
+SENSOR_ORDER = ["Grip Strength", "Finger Flexion", "Wrist Rotation"]
+
 # Games whose calibration needs more than one sensor pass, in the exact
 # sequence CalibrationWindow should calibrate them -- see
 # CalibrationWindow.__init__'s game_types list param. Every game NOT listed
 # here calibrates exactly as before (a single sensor pass); this is
 # deliberately opt-in per game rather than derived from GAME_SENSOR_SPEC, so
-# existing Dual Skill games' calibration behaviour is unchanged.
+# games not yet audited for a real multi-sensor calibration pass are
+# unaffected. Every entry here is written in SENSOR_ORDER already (FSR402 ->
+# Flex -> MPU6050), since CalibrationWindow walks this list in the order
+# given.
+#
+# Feed the Cat and Catch 'n Grab are "Dual Skill" in SKILL_GAMES/
+# GAME_SENSOR_SPEC (grip + wrist telemetry) but, before this entry existed,
+# were never actually calibrated for both: "Dual Skill" isn't a SENSOR_CFG
+# key, so CalibrationWindow silently fell back to a single Grip-Strength-only
+# pass and the MPU6050 pass never ran. Listing them here is a real-logic fix,
+# not a cosmetic one -- their gameplay wrist thresholds were previously left
+# at CalibrationWindow's unset defaults.
 MULTI_SENSOR_CALIBRATION = {
-    "Plant the Garden": ["Wrist Rotation", "Finger Flexion", "Grip Strength"],
+    "Plant the Garden": ["Grip Strength", "Finger Flexion", "Wrist Rotation"],
+    "Feed the Cat":      ["Grip Strength", "Wrist Rotation"],
+    "Catch 'n Grab":     ["Grip Strength", "Wrist Rotation"],
+}
+
+
+def _required_sensors_for_game(game_name, game_type):
+    """Canonical (FSR402 -> Flex -> MPU6050), always-correctly-ordered list
+    of sensor types `game_name` needs calibrated, whether it's a single- or
+    multi-sensor game -- the one place calibration-reuse logic should ask
+    "what does this game need", instead of each call site re-deriving it
+    from MULTI_SENSOR_CALIBRATION/game_type separately."""
+    multi = MULTI_SENSOR_CALIBRATION.get(game_name)
+    if multi:
+        return list(multi)
+    return [game_type] if game_type in SENSOR_CFG else []
+
+# CalibrationWindow's game_type strings -> the patient Calibration screen's
+# asset/content key (see recovr/patient_app/scenes/calibrating.py). Dual
+# monitor only -- pushed to the patient via therapist_link so its screen
+# always mirrors whichever sensor CalibrationWindow is actually on.
+_CAL_SENSOR_KEY = {
+    "Grip Strength":  "grip",
+    "Finger Flexion": "flex",
+    "Wrist Rotation": "wrist",
 }
 
 # Timed Mode's per-game, per-difficulty default session length (seconds) --
@@ -484,6 +526,24 @@ def _wrap_text(text, font, max_w):
     return lines or [""]
 
 
+def _truncate_text(text, font, max_w):
+    """`text`, or the longest prefix of it (+ "…") that still fits max_w --
+    for a single-line label (e.g. a patient-name subtitle) that must stay
+    exactly one line regardless of how long the real name is, where
+    wrapping would blow a tight modal's height budget and shrinking the
+    font is explicitly off the table. A no-op whenever text already fits."""
+    if font.size(text)[0] <= max_w:
+        return text
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if font.size(text[:mid] + "…")[0] <= max_w:
+            lo = mid
+        else:
+            hi = mid - 1
+    return (text[:lo] + "…") if lo > 0 else "…"
+
+
 def _draw_dialog_icon(surface, center, r, icon, accent, dark):
     """The circular action icon near the dialog's top. Real project assets
     (patient.png + a plus/minus badge, the existing game_stop.png /
@@ -568,7 +628,7 @@ def draw_confirm_dialog(surface, W, H, *, tt, sc, fonts, icon, accent,
                          title, body=None, confirm_label="Confirm",
                          cancel_label="Cancel", single_button=False,
                          confirm_hov=False, cancel_hov=False,
-                         countdown=None):
+                         countdown=None, max_w_frac=0.82, show_icon=True):
     """Draws the full dialog (dim overlay + card + icon + title/body +
     button(s)) and returns (confirm_rect, cancel_rect) for hit-testing --
     cancel_rect is a dead 1x1 rect in single_button mode, where
@@ -579,7 +639,12 @@ def draw_confirm_dialog(surface, W, H, *, tt, sc, fonts, icon, accent,
     renders disabled (grey, hover ignored) with "<label> (Ns)" while
     countdown > 0, then switches to its normal enabled appearance showing
     just `confirm_label`. The caller is responsible for actually refusing
-    the click while countdown > 0 -- this function only draws the state."""
+    the click while countdown > 0 -- this function only draws the state.
+
+    `show_icon=False` skips the icon circle and reclaims its vertical room
+    for an unusually content-dense popup (e.g. a confirmation with several
+    labeled detail lines below its body) that would otherwise not fit
+    800x480 -- the top accent wave still shows, just shorter."""
     from constants import is_dark_mode
     dark = is_dark_mode()
 
@@ -611,7 +676,7 @@ def draw_confirm_dialog(surface, W, H, *, tt, sc, fonts, icon, accent,
     f_sym = fonts.get("sym", f_btn)
     glyph_gap = sc(8)
 
-    max_w = int(W * 0.82)
+    max_w = int(W * max_w_frac)
     max_content_w = max_w - pad * 2
 
     title_font = f_title
@@ -657,7 +722,7 @@ def draw_confirm_dialog(surface, W, H, *, tt, sc, fonts, icon, accent,
                     [f_body.size(ln)[0] for ln in body_lines])
     mw = min(max(content_w + pad * 2, sc(340)), max_w)
 
-    icon_block_h = icon_r * 2 + sc(14)
+    icon_block_h = (icon_r * 2 + sc(14)) if show_icon else sc(16)
     title_block_h = len(title_lines) * title_line_h
     body_block_h = (sc(10) + len(body_lines) * body_line_h) if body_lines else 0
     mh = (pad + icon_block_h + title_block_h + body_block_h + sc(22) + btn_h + pad)
@@ -684,11 +749,14 @@ def draw_confirm_dialog(surface, W, H, *, tt, sc, fonts, icon, accent,
     pygame.draw.rect(surface, card_bdr, mr, 2, border_radius=18)
 
     # ── icon ──
-    icon_cy = my + pad + icon_r
-    _draw_dialog_icon(surface, (mr.centerx, icon_cy), icon_r, icon, accent, dark)
+    if show_icon:
+        icon_cy = my + pad + icon_r
+        _draw_dialog_icon(surface, (mr.centerx, icon_cy), icon_r, icon, accent, dark)
+        ty = icon_cy + icon_r + sc(14)
+    else:
+        ty = my + pad + icon_block_h
 
     # ── title ──
-    ty = icon_cy + icon_r + sc(14)
     for ln in title_lines:
         s = title_font.render(ln, True, title_col)
         surface.blit(s, s.get_rect(midtop=(mr.centerx, ty)))
@@ -733,6 +801,103 @@ def draw_confirm_dialog(surface, W, H, *, tt, sc, fonts, icon, accent,
     _draw_btn_content(confirm_r, "✓", confirm_label_disp)
 
     return confirm_r, cancel_r
+
+
+def draw_dialog_chrome(surface, W, H, *, tt, sc, fonts, icon, accent, title,
+                       body=None, extra_content_h=0, min_content_w=0,
+                       max_w_frac=0.82, max_h_frac=0.92):
+    """The shared visual shell (dim overlay, drop shadow, rounded card with
+    a tinted top accent, icon circle, title, optional body paragraph) that
+    draw_confirm_dialog itself draws before adding its own 1-2 buttons --
+    extracted here, as a pure ADDITION (draw_confirm_dialog's own code is
+    untouched), for popups that need the exact same look but a different
+    button layout than draw_confirm_dialog supports (e.g. three buttons, or
+    an interactive form instead of buttons at all). `extra_content_h`
+    reserves vertical room below the title/body for the caller's own
+    content; the caller draws into that space itself. Returns
+    (card_rect, content_y, theme) where theme = (card_bg, card_bdr,
+    title_col, body_col, dark) for the caller's own additional styling."""
+    from constants import is_dark_mode
+    dark = is_dark_mode()
+
+    if dark:
+        card_bg, card_bdr = (28, 36, 52), (58, 72, 96)
+        title_col, body_col = (232, 238, 248), (168, 182, 204)
+        wave_alpha, shadow_alpha = 55, 150
+    else:
+        card_bg, card_bdr = (250, 252, 255), (205, 218, 236)
+        title_col, body_col = (34, 48, 72), (100, 116, 142)
+        wave_alpha, shadow_alpha = 40, 70
+
+    ov = pygame.Surface((W, H), pygame.SRCALPHA)
+    ov.fill((8, 12, 20, 165))
+    surface.blit(ov, (0, 0))
+
+    pad    = sc(24)
+    icon_r = sc(32)
+    f_title, f_body = fonts["title"], fonts["body"]
+    max_w = int(W * max_w_frac)
+    max_content_w = max_w - pad * 2
+
+    title_font = f_title
+    title_lines = _wrap_text(title, title_font, max_content_w)
+    if len(title_lines) > 2 and fonts.get("title_small") is not None:
+        title_font = fonts["title_small"]
+        title_lines = _wrap_text(title, title_font, max_content_w)
+    title_line_h = title_font.get_linesize()
+
+    body_lines, body_line_h = [], 0
+    if body:
+        for raw in body.split("\n"):
+            body_lines.extend(_wrap_text(raw, f_body, max_content_w))
+        body_line_h = f_body.get_linesize()
+
+    content_w = max([min_content_w] +
+                    [title_font.size(ln)[0] for ln in title_lines] +
+                    [f_body.size(ln)[0] for ln in body_lines])
+    mw = min(max(content_w + pad * 2, sc(340)), max_w)
+
+    icon_block_h = icon_r * 2 + sc(14)
+    title_block_h = len(title_lines) * title_line_h
+    body_block_h = (sc(10) + len(body_lines) * body_line_h) if body_lines else 0
+    mh = pad + icon_block_h + title_block_h + body_block_h + extra_content_h + pad
+    mh = min(mh, int(H * max_h_frac))
+
+    mx, my = (W - mw) // 2, (H - mh) // 2
+    mr = pygame.Rect(mx, my, mw, mh)
+
+    shadow = pygame.Surface((mw + sc(16), mh + sc(16)), pygame.SRCALPHA)
+    pygame.draw.rect(shadow, (0, 0, 0, shadow_alpha), (0, 0, mw + sc(16), mh + sc(16)),
+                     border_radius=20)
+    surface.blit(shadow, (mx - sc(8), my - sc(4) + sc(6)))
+
+    ms = pygame.Surface((mw, mh), pygame.SRCALPHA)
+    pygame.draw.rect(ms, (*card_bg, 255), (0, 0, mw, mh), border_radius=18)
+    wave_h = min(mh, icon_block_h + sc(18))
+    wave = pygame.Surface((mw, wave_h), pygame.SRCALPHA)
+    pygame.draw.rect(wave, (*accent, wave_alpha), (0, 0, mw, wave_h),
+                     border_top_left_radius=18, border_top_right_radius=18)
+    ms.blit(wave, (0, 0))
+    surface.blit(ms, mr.topleft)
+    pygame.draw.rect(surface, card_bdr, mr, 2, border_radius=18)
+
+    icon_cy = my + pad + icon_r
+    _draw_dialog_icon(surface, (mr.centerx, icon_cy), icon_r, icon, accent, dark)
+
+    ty = icon_cy + icon_r + sc(14)
+    for ln in title_lines:
+        s = title_font.render(ln, True, title_col)
+        surface.blit(s, s.get_rect(midtop=(mr.centerx, ty)))
+        ty += title_line_h
+
+    if body_lines:
+        ty += sc(10)
+        for ln in body_lines:
+            s = f_body.render(ln, True, body_col)
+            surface.blit(s, s.get_rect(midtop=(mr.centerx, ty)))
+            ty += body_line_h
+
+    return mr, ty, (card_bg, card_bdr, title_col, body_col, dark)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -939,7 +1104,7 @@ class TherapistDashboardScene:
         self._crumb_rects      = []                       # [(Rect, target)] clickable breadcrumbs
 
         # ── Modal state ──
-        self.modal           = None            # Current modal: "edit_profile", "logout_confirm", "delete_confirm", "register_success", None
+        self.modal           = None            # Current modal: "edit_profile", "logout_confirm", "delete_confirm", "register_success", "transfer_success", None
         self.confirm_yes_hov = False           # Is "Yes" button hovered in confirmation modal?
         self.confirm_no_hov  = False           # Is "No" button hovered in confirmation modal?
         # Shared 5-second safety-delay timer for the 3 destructive-action
@@ -999,6 +1164,32 @@ class TherapistDashboardScene:
         self._cal_win             = None        # active CalibrationWindow instance (or None)
         self._calibrate_btn_rect  = pygame.Rect(0, 0, 1, 1)
         self._calibrate_hov       = False
+        self._cal_progress_push_t = 0.0         # throttle timer for the patient-screen sync push
+        self._cal_progress_last   = None        # last payload actually sent (skip duplicate posts)
+
+        # ── Session-scoped calibration reuse cache ───────────────────────
+        # sensor_type -> {"sensor_name","trials","average"} (the exact shape
+        # CalibrationWindow.sensor_results already uses) for every sensor
+        # successfully calibrated for the CURRENTLY SELECTED patient during
+        # this continuous therapy session -- lets a later game that needs
+        # the same sensor offer "Use Previous Calibration" instead of
+        # forcing recalibration. Cleared whenever the selected patient
+        # actually changes (see _set_selected_patient()); a fresh scene
+        # instance (new login, app restart) starts with an empty cache for
+        # free, since nothing persists it beyond this attribute.
+        self._calibrated_sensors = {}
+        # Pending launch info while the "Use Previous Calibration?" chooser
+        # (self.modal == "reuse_calibration_choice") is up -- which game and
+        # which of its required sensors are reusable right now.
+        self._reuse_game_name       = None
+        self._reuse_game_type       = None
+        self._reuse_cal_types       = None     # str | list[str], as passed to CalibrationWindow
+        self._reuse_available       = []       # sensor types with a valid cache hit, in SENSOR_ORDER
+        self._reuse_needed          = []       # sensor types that still need live calibration
+        self._reuse_use_rect        = pygame.Rect(0, 0, 1, 1)
+        self._reuse_recal_rect      = pygame.Rect(0, 0, 1, 1)
+        self._reuse_use_hov         = False
+        self._reuse_recal_hov       = False
 
         # ── Dev/testing-only bypass (OFF by default; toggled by hand) ───
         self._test_mode_bypass   = False        # toggled on Start Session
@@ -1054,6 +1245,9 @@ class TherapistDashboardScene:
         self._ep_delete_hov   = False
         self._ep_section      = None   # which Info group the edit modal is scoped to
         self._db_blocked_ok_rect = pygame.Rect(0, 0, 1, 1)   # "delete_blocked" dismiss
+        self._transfer_ok_rect   = pygame.Rect(0, 0, 1, 1)   # "transfer_success" dismiss
+        self._transfer_ok_hov    = False
+        self._transfer_success_msg = ""
 
         # ── Share patient modal state ─────────────────────────────────
         # Allows therapists to share a patient with other therapists
@@ -1731,11 +1925,11 @@ class TherapistDashboardScene:
             self._ep_handle_click(pos); return None
 
         # ── Share modal (checked before everything else - highest priority) ──
+        # Each stage draws its own single dismiss button (Cancel on choice/
+        # confirm, Close on the picker) -- checked per-stage below, not as
+        # one extra blanket "Close" check on top of it, so there's never a
+        # redundant second dismiss control active at once.
         if self._share_modal_open:
-            if self._share_close_rect.collidepoint(pos):
-                play_click()
-                self._share_modal_open = False; return None
-
             # Final confirmation (worded for whichever action was chosen)
             if self._share_stage == "confirm":
                 if self._share_yes_rect.collidepoint(pos):
@@ -1773,6 +1967,11 @@ class TherapistDashboardScene:
                     return None
                 return None
 
+            # "pick" stage -- the therapist username search form.
+            if self._share_close_rect.collidepoint(pos):
+                play_click()
+                self._share_modal_open = False; return None
+
             # Live suggestion item clicks -> SHARE|TRANSFER choice (not straight to confirm)
             for (sr, therapist) in self._share_sugg_rects:
                 if sr.collidepoint(pos):
@@ -1792,6 +1991,25 @@ class TherapistDashboardScene:
 
             return None  # absorb all other clicks
 
+        # ── "Use Previous Calibration?" reuse chooser ───────────────────
+        if self.modal == "reuse_calibration_choice":
+            if self._reuse_use_rect.collidepoint(pos):
+                play_click()
+                reused = {s: self._calibrated_sensors[s] for s in self._reuse_available}
+                game_name, game_type, cal_types = (self._reuse_game_name,
+                                                   self._reuse_game_type, self._reuse_cal_types)
+                self.modal = None
+                self._open_calibration_window(game_name, game_type, cal_types, reused=reused)
+                return None
+            if self._reuse_recal_rect.collidepoint(pos):
+                play_click()
+                game_name, game_type, cal_types = (self._reuse_game_name,
+                                                   self._reuse_game_type, self._reuse_cal_types)
+                self.modal = None
+                self._open_calibration_window(game_name, game_type, cal_types, reused=None)
+                return None
+            return None  # absorb all other clicks
+
         # ── Calibration mismatch modal ────────────────────────────────
         if self.modal == "calibration_mismatch":
             if self._mismatch_cal_rect.collidepoint(pos):
@@ -1799,12 +2017,7 @@ class TherapistDashboardScene:
                 self.modal = None
                 game_name, game_type = self.gc.get("selected_game") or (None, "Grip Strength")
                 game_type  = game_type or "Grip Strength"
-                cal_types  = MULTI_SENSOR_CALIBRATION.get(game_name, game_type)
-                self._cal_win = CalibrationWindow(self.WIDTH, self.HEIGHT, cal_types,
-                                                  game_name=game_name, dark_mode=self._applied_theme_dark)
-                if _DUAL_MONITOR:
-                    therapist_link.calibrate_begin(game_name or game_type)
-                self._sync_dur_to_cal()
+                self._launch_calibration(game_name, game_type)
                 return None
             if self._mismatch_cancel_rect.collidepoint(pos):
                 play_click()
@@ -1881,6 +2094,12 @@ class TherapistDashboardScene:
                 play_click()
                 self.modal = None
                 self._open_panel(0)
+            return None
+
+        if self.modal == "transfer_success":
+            if self._transfer_ok_rect.collidepoint(pos):
+                play_click()
+                self.modal = None
             return None
 
         if self.modal == "logout_confirm":
@@ -2204,12 +2423,7 @@ class TherapistDashboardScene:
                 play_click()
                 game_name, game_type = self.gc.get("selected_game") or (None, "Grip Strength")
                 game_type = game_type or "Grip Strength"
-                cal_types = MULTI_SENSOR_CALIBRATION.get(game_name, game_type)
-                self._cal_win = CalibrationWindow(self.WIDTH, self.HEIGHT, cal_types,
-                                                  game_name=game_name, dark_mode=self._applied_theme_dark)
-                if _DUAL_MONITOR:
-                    therapist_link.calibrate_begin(game_name or game_type)
-                self._sync_dur_to_cal()
+                self._launch_calibration(game_name, game_type)
                 return None
 
             if self._start_btn_rect.collidepoint(pos):
@@ -2366,7 +2580,19 @@ class TherapistDashboardScene:
         while this is set, and returns to the Waiting Screen when it is cleared.
 
         Selecting also restores that patient's saved theme; deselecting returns
-        the interface to the Light default."""
+        the interface to the Light default.
+
+        The session-scoped calibration reuse cache (_calibrated_sensors)
+        lives and dies with a single patient staying selected -- it's
+        cleared here whenever the patient actually CHANGES (including to
+        None), but survives re-confirming the SAME already-selected patient
+        (e.g. navigating away and back), matching "the patient must be able
+        to play multiple games consecutively... never allow calibration
+        results from one patient to be reused for another"."""
+        old_id = (self.selected_patient or {}).get("id")
+        new_id = (patient or {}).get("id")
+        if old_id != new_id:
+            self._calibrated_sensors = {}
         self.selected_patient = patient or None
         self._push_selected_patient()
         if patient:
@@ -2431,19 +2657,121 @@ class TherapistDashboardScene:
         Speed row) actually reach the launched game."""
         self.gc["speed"] = cal_win.adv_speed
 
+    def _cal_progress_payload(self):
+        """The live sensor/step/attempt/reading snapshot pushed to the
+        patient's own Calibration screen -- read-only, straight off
+        CalibrationWindow's own public state, never a second calculation of
+        it. Returns {} while on the "results"/"advanced" phase (nothing is
+        actively being measured then; the patient screen shows its own
+        "reviewing results" message for those) or for a sensor this screen
+        doesn't have art for (never true today, but a safe fallback)."""
+        win = self._cal_win
+        if win is None:
+            return {}
+        phase = win.phase
+        if phase in ("results", "advanced"):
+            return {"phase": phase}
+        sensor = _CAL_SENSOR_KEY.get(win.game_type, "")
+        if not sensor:
+            return {}
+        live_frac = None
+        if phase == "recording":
+            live_frac = round(win.live_value, 3)
+        elif phase == "trial_done":
+            live_frac = round(win.peak_value, 3)
+        # Reused sensors never run a live trial, so the patient should never
+        # see them counted as a step -- "Step X of Y" reflects only the
+        # sensors actually being calibrated THIS window (spec: "show only
+        # the remaining calibration steps"), not the game's full sensor
+        # list. win.game_type is always one of these by construction (the
+        # window auto-skips any pre-seeded/reused sensor -- see
+        # CalibrationWindow._advance_sensor_idx), so .index() always finds it.
+        remaining = [s for s in win.game_types if s not in win._initially_reused_sensors]
+        if win.game_type not in remaining:
+            remaining = [win.game_type]   # defensive fallback, not expected to trigger
+        return {
+            "sensor":        sensor,
+            "step_index":    remaining.index(win.game_type) + 1,
+            "step_count":    len(remaining),
+            "attempt_index": min(win.current_trial + 1, 3),
+            "attempt_count": 3,
+            "phase":         phase,
+            "live_frac":     live_frac,
+        }
+
     def _session_ready(self):
         return (self.selected_patient is not None and
                 self.gc["selected_game"] is not None and
                 (self.calibration_done or self.calibration_bypassed))
 
     def _calibration_mismatched(self):
-        """True when calibration_done but the calibrated sensor type doesn't match
-        the currently selected game's exercise type."""
+        """True when calibration_done but what was actually calibrated
+        doesn't cover every sensor the currently selected game needs.
+
+        A straight game_type string match (the original implementation)
+        breaks the moment a multi-sensor result can come from a game whose
+        own SKILL_GAMES category isn't literally "Multi-skill" (e.g. Feed
+        the Cat / Catch 'n Grab are "Dual Skill", but
+        CalibrationWindow._accept_multi_sensor() always stamps
+        game_type="Multi-skill") -- that would flag every one of their own
+        calibrations as mismatched against themselves. Comparing sensor SETS
+        instead is correct for both single- and multi-sensor results, and
+        for free also recognizes a multi-sensor calibration that happens to
+        already cover a simpler game's single required sensor (e.g. Grip
+        Strength, calibrated as part of Plant the Garden, satisfies
+        Basketball too) instead of forcing a pointless recalibration."""
         if not self.calibration_done or self.calibration_bypassed:
             return False
-        cal_type  = (self.calibration_result or {}).get("game_type", "")
-        game_type = (self.gc.get("selected_game") or (None, ""))[1] or ""
-        return bool(cal_type) and cal_type != game_type
+        game_name, game_type = self.gc.get("selected_game") or (None, "")
+        game_type = game_type or ""
+        required = set(_required_sensors_for_game(game_name, game_type))
+        if not required:
+            return False
+        res = self.calibration_result or {}
+        calibrated = set(res["sensors"].keys()) if "sensors" in res else {res.get("game_type", "")}
+        return not required.issubset(calibrated)
+
+    # ── Calibration launch (shared by the Calibrate button and the
+    #    mismatch modal's "Recalibrate") ─────────────────────────────────
+
+    def _launch_calibration(self, game_name, game_type):
+        """Single entry point for opening calibration. If any sensor this
+        game needs already has a valid, reusable result for the currently
+        selected patient from earlier in this same therapy session
+        (self._calibrated_sensors), pause on the "Use Previous Calibration?"
+        chooser instead of jumping straight into live trials -- see
+        _draw_reuse_calibration_modal() / the "reuse_calibration_choice"
+        click handler. With nothing reusable, behaves exactly as before."""
+        cal_types = MULTI_SENSOR_CALIBRATION.get(game_name, game_type)
+        required  = _required_sensors_for_game(game_name, game_type)
+        available = [s for s in required if s in self._calibrated_sensors]
+        if available:
+            self._reuse_game_name = game_name
+            self._reuse_game_type = game_type
+            self._reuse_cal_types = cal_types
+            self._reuse_available = available
+            self._reuse_needed    = [s for s in required if s not in available]
+            self.modal = "reuse_calibration_choice"
+            return
+        self._open_calibration_window(game_name, game_type, cal_types, reused=None)
+
+    def _open_calibration_window(self, game_name, game_type, cal_types, reused):
+        self._cal_win = CalibrationWindow(self.WIDTH, self.HEIGHT, cal_types,
+                                          game_name=game_name, dark_mode=self._applied_theme_dark,
+                                          reused_sensors=reused)
+        if _DUAL_MONITOR:
+            # Push the just-resolved sensor/phase BEFORE the CALIBRATE
+            # command itself (not after, on the next throttled per-frame
+            # tick) -- a fully-reused window already starts on "results", so
+            # without this the patient screen could flash into Calibration
+            # for a frame before flipping back to the Dashboard. See
+            # patient_main.py's actively_calibrating gating, which requires
+            # a real sensor to already be present before ever showing it.
+            payload = self._cal_progress_payload()
+            self._cal_progress_last = payload
+            therapist_link.set_calibration_progress(payload)
+            therapist_link.calibrate_begin(game_name or game_type)
+        self._sync_dur_to_cal()
 
     # Maps the specific game name chosen in Game Config to a scene key in main.py
     _GAME_SCENE_MAP = {
@@ -3688,8 +4016,6 @@ class TherapistDashboardScene:
             ok = self.db.transfer_patient(patient["id"], target["id"],
                                           acting_therapist_id=self.account["id"])
             if ok:
-                self._share_success = (f"{patient['full_name']} transferred to "
-                                       f"{target['full_name']}. You are no longer the owner.")
                 patient["therapist_id"] = target["id"]      # keep the in-memory row in step
                 if self.selected_patient and self.selected_patient.get("id") == patient["id"]:
                     self._set_selected_patient(None)          # no longer ours to run sessions with
@@ -3712,12 +4038,17 @@ class TherapistDashboardScene:
         if ok:
             self._share_error = ""
             # A successful TRANSFER ends this therapist's access to the
-            # patient outright -- auto-close the window instead of leaving
-            # it open on a picker that (for a non-owner) can no longer do
-            # anything useful. A successful SHARE doesn't change ownership,
-            # so that window intentionally stays open for further sharing.
+            # patient outright -- close the picker (it can no longer do
+            # anything useful for a non-owner) and hand off to a dedicated
+            # success acknowledgment instead of a message that would be
+            # drawn on a window already closing. A successful SHARE doesn't
+            # change ownership, so that window intentionally stays open
+            # (with its own inline success text) for further sharing.
             if is_transfer:
-                self._share_modal_open = False
+                self._share_modal_open     = False
+                self._transfer_success_msg = ("The patient has been successfully "
+                                              "transferred to the selected therapist.")
+                self.modal = "transfer_success"
 
     # ──────────────────────────────────────────────────────────────────
     #  EDIT PROFILE EVENTS
@@ -4050,11 +4381,14 @@ class TherapistDashboardScene:
 
         Args:
             mouse_pos: (x, y) tuple of current mouse position in pixels
-            dt: delta time since last frame (in seconds)
+            dt: delta time since last frame, in MILLISECONDS (main.py passes
+                pygame.time.Clock.tick()'s return value straight through --
+                see self._cal_win.update(dt) below, which already divides by
+                1000 itself)
         """
         # ── Destructive-action safety-delay countdown ──
         if self._danger_countdown > 0:
-            self._danger_countdown = max(0.0, self._danger_countdown - dt)
+            self._danger_countdown = max(0.0, self._danger_countdown - dt / 1000.0)
 
         # ── "Session in Progress" screen (panel 7) ──
         if self.active_panel == 7:
@@ -4105,10 +4439,40 @@ class TherapistDashboardScene:
             # Light/dark toggle inside the calibration window -> sync BOTH
             # interfaces immediately (no reload / new session / navigation).
             self._apply_theme(bool(self._cal_win.dark_mode))
+
+            # Mirror the live sensor/step/attempt/reading onto the patient's
+            # own Calibration screen. Throttled (10 Hz is plenty smooth for a
+            # progress bar) and skipped entirely when nothing actually
+            # changed, so a steady phase doesn't spam the broker with
+            # identical POSTs every frame.
+            if _DUAL_MONITOR:
+                self._cal_progress_push_t += dt / 1000.0
+                if self._cal_progress_push_t >= 0.1:
+                    self._cal_progress_push_t = 0.0
+                    payload = self._cal_progress_payload()
+                    if payload != self._cal_progress_last:
+                        self._cal_progress_last = payload
+                        therapist_link.set_calibration_progress(payload)
+
             if self._cal_win.done:
                 self.calibration_done   = True
                 self.calibration_result = self._cal_win.calibration_result
                 multi_sensor_rows        = list(self._cal_win.multi_sensor_results)
+                reused_this_run          = set(self._cal_win._initially_reused_sensors)
+                single_sensor_reused     = (len(self._cal_win.game_types) == 1
+                                            and self._cal_win.game_type in reused_this_run)
+                # Cache every sensor this window ends with (freshly-run AND
+                # reused-passthrough alike) for later games in the same
+                # session -- see _launch_calibration()/_set_selected_patient.
+                if self._cal_win.sensor_results:
+                    for sensor_type, data in self._cal_win.sensor_results.items():
+                        self._calibrated_sensors[sensor_type] = dict(data)
+                else:
+                    self._calibrated_sensors[self._cal_win.game_type] = {
+                        "sensor_name": self.calibration_result.get("sensor", ""),
+                        "trials":      list(self.calibration_result.get("trials", [])),
+                        "average":     self.calibration_result.get("average", 0.0),
+                    }
                 self._sync_dur_from_cal(self._cal_win)
                 self._cal_win           = None
                 if _DUAL_MONITOR:
@@ -4120,11 +4484,16 @@ class TherapistDashboardScene:
                         # One sensor calibrated at a time (see
                         # MULTI_SENSOR_CALIBRATION) -> one DB row per sensor,
                         # same shape/call as a normal single-sensor pass.
+                        # Skip any sensor that was reused rather than
+                        # actually just measured, so reusing a calibration
+                        # doesn't fabricate a duplicate history record.
                         for row in multi_sensor_rows:
+                            if row.get("game_type") in reused_this_run:
+                                continue
                             self.db.save_calibration(
                                 pt_id, self.account["id"], row, game_name=game_name,
                             )
-                    else:
+                    elif not single_sensor_reused:
                         self.db.save_calibration(
                             pt_id, self.account["id"],
                             self.calibration_result,
@@ -4160,6 +4529,10 @@ class TherapistDashboardScene:
         if self.modal == "register_success":
             self._rp_ok_hov = self._rp_ok_rect.collidepoint(mouse_pos)
 
+        # ── Transfer success popup hover ──
+        if self.modal == "transfer_success":
+            self._transfer_ok_hov = self._transfer_ok_rect.collidepoint(mouse_pos)
+
         # ── Confirmation modal hover ──
         if self.modal in ("logout_confirm","delete_confirm","delete_patient_confirm",
                           "select_patient_confirm","deselect_patient_confirm",
@@ -4172,6 +4545,11 @@ class TherapistDashboardScene:
         if self.modal == "calibration_mismatch":
             self._mismatch_cal_hov    = self._mismatch_cal_rect.collidepoint(mouse_pos)
             self._mismatch_cancel_hov = self._mismatch_cancel_rect.collidepoint(mouse_pos)
+
+        # ── Reuse calibration chooser hover ──
+        if self.modal == "reuse_calibration_choice":
+            self._reuse_use_hov   = self._reuse_use_rect.collidepoint(mouse_pos)
+            self._reuse_recal_hov = self._reuse_recal_rect.collidepoint(mouse_pos)
 
         # ── Home card hover ──
         for i, cr in enumerate(self.card_rects):
@@ -4260,6 +4638,10 @@ class TherapistDashboardScene:
             self._draw_deselect_confirm_modal(surface)
         elif self.modal == "register_success":
             self._draw_register_success_modal(surface)
+        elif self.modal == "transfer_success":
+            self._draw_transfer_success_modal(surface)
+        elif self.modal == "reuse_calibration_choice":
+            self._draw_reuse_calibration_modal(surface)
         elif self.modal == "calibration_mismatch":
             self._draw_calibration_mismatch_modal(surface)
         elif self.modal == "delete_blocked":
@@ -5314,274 +5696,256 @@ class TherapistDashboardScene:
     # ──────────────────────────────────────────────────────────────────
 
     def _draw_share_modal(self, surface):
-        # Sized from _fs/_tt and laid out by flowing from the top, instead of the
-        # old fixed H/1080 offsets which produced 12-18px controls at 800x480.
-        W, H = self.WIDTH, self.HEIGHT
-        pad   = self._sc(18)
-        fh    = self._tt(46)
-        btn_h = self._tt(46)
-        lbl_h = self.fnt["small"].get_height()
+        """Dispatches to whichever of the three Patient Sharing/Transferring
+        popups the current stage needs. All three (and the Share/Transfer
+        confirmations, drawn via draw_confirm_dialog) share the same
+        draw_dialog_chrome look as every other standardized RecovR
+        confirmation popup in this file -- rounded card, dim overlay,
+        shadow, icon circle, Poppins type, theme-aware colors -- instead of
+        the old hand-rolled flat box this modal used to draw."""
+        if self._share_stage == "choice" and self._share_confirm_therapist:
+            self._draw_share_select_modal(surface)
+        elif self._share_stage == "confirm" and self._share_confirm_therapist:
+            self._draw_share_or_transfer_confirm_modal(surface)
+        else:
+            self._draw_share_search_modal(surface)
 
-        # Wide enough that the TRANSFER confirm step's longer text (detail
-        # paragraph + Patient/Current/Receiving Therapist lines) wraps to
-        # fewer lines and actually fits in 480px of height -- the old 640
-        # cap was narrower than it needed to be and this box never needs to
-        # compete with anything else on screen for width.
-        mw = min(int(W * 0.86), self._sc(760))
+    def _draw_share_select_modal(self, surface):
+        """"Share Patient" selection popup: Patient / Therapist / "What
+        would you like to do?" + SHARE | TRANSFER side by side + one
+        centered Cancel underneath. Three buttons don't fit
+        draw_confirm_dialog's 1-or-2-button layout, so this uses the shared
+        draw_dialog_chrome for the identical card/overlay/icon/title look
+        and lays out its own button row."""
+        W, H = self.WIDTH, self.HEIGHT
+        pt_name = (self.share_modal_patient or {}).get("full_name", "Patient")
+        t_name  = (self._share_confirm_therapist or {}).get("full_name", "Therapist")
+        body = f"Patient: {pt_name}\nTherapist: {t_name}\nWhat would you like to do?"
+
+        pad      = self._sc(24)
+        btn_h    = self._tt(50)
+        cancel_h = self._tt(44)
+        gap      = self._sc(14)
+        extra_h  = gap + btn_h + gap + cancel_h
+
+        mr, content_y, _theme = draw_dialog_chrome(
+            surface, W, H, tt=self._tt, sc=self._sc, fonts=self._dialog_fonts(),
+            icon="info", accent=(60, 140, 220), title="Share Patient", body=body,
+            extra_content_h=extra_h, min_content_w=self._sc(380))
+
+        content_y += gap
+        bw2 = (mr.width - pad * 2 - self._sc(12)) // 2
+        self._share_choice_share_rect    = pygame.Rect(mr.x + pad, content_y, bw2, btn_h)
+        self._share_choice_transfer_rect = pygame.Rect(
+            mr.x + pad + bw2 + self._sc(12), content_y, bw2, btn_h)
+        _btn(surface, self._share_choice_share_rect, "SHARE", self.fnt["btn"],
+             (40, 160, 90), (28, 130, 70), self._share_choice_share_hov, radius=12)
+        _btn(surface, self._share_choice_transfer_rect, "TRANSFER", self.fnt["btn"],
+             (215, 140, 30), (180, 112, 15), self._share_choice_transfer_hov, radius=12)
+        content_y += btn_h + gap
+
+        cancel_w = self._sc(180)
+        self._share_no_rect = pygame.Rect(mr.centerx - cancel_w // 2, content_y,
+                                          cancel_w, cancel_h)
+        _btn(surface, self._share_no_rect, "Cancel", self.fnt["btn"],
+             (160, 175, 195), (130, 148, 168), self._share_no_hov, radius=10)
+
+        # Dead rects for the stages this popup doesn't draw.
+        self._share_close_rect = pygame.Rect(0, 0, 1, 1)
+        self._share_yes_rect   = pygame.Rect(0, 0, 1, 1)
+        self._share_field_rect = pygame.Rect(0, 0, 1, 1)
+
+    def _draw_share_or_transfer_confirm_modal(self, surface):
+        """Share Confirmation / Transfer Patient Confirmation -- both are a
+        plain title + description (+ detail lines, for Transfer) + two
+        buttons, so both go straight through the existing, already-
+        standardized draw_confirm_dialog rather than a bespoke layout.
+
+        Both bodies are long enough (a full permissions/consequences
+        paragraph, plus three labeled detail lines for Transfer) that even
+        at a realistic name length, the text alone needs more lines than
+        draw_confirm_dialog's standard body font (modal_lbl, the same size
+        used for short one- or two-line confirmations elsewhere) leaves
+        room for at 800x480 -- it only clamps the card height, it doesn't
+        shrink content to fit, so unbounded content would silently overflow
+        past the buttons. Three things keep this one popup type inside
+        budget without touching draw_confirm_dialog's behavior for every
+        OTHER caller: a wider max_w_frac (more room to wrap into), the
+        smaller `tag` body font already used for exactly this kind of
+        dense, multi-line confirmation text elsewhere in this file (passed
+        via a plain dict override -- draw_confirm_dialog already reads
+        fonts["body"] generically, no signature change needed), and capping
+        each inserted name to a single line's width (never shrinking the
+        font further, per spec -- an ellipsis instead)."""
+        pt_name = (self.share_modal_patient or {}).get("full_name", "Patient")
+        t_name  = (self._share_confirm_therapist or {}).get("full_name", "Therapist")
+        cur_name = self.account.get("full_name", "—")
+        is_transfer = (self._share_pending_action == "transfer")
+
+        max_w_frac = 0.92
+        pad = self._sc(24)
+        max_content_w = int(self.WIDTH * max_w_frac) - pad * 2
+        body_font = self.fnt["tag"]
+        dlg_fonts = dict(self._dialog_fonts())
+        dlg_fonts["body"] = body_font
+
+        if is_transfer:
+            title = "Transfer Patient?"
+            detail = ("You are about to transfer this patient to another therapist. "
+                     "After the transfer, you may lose access to the patient's "
+                     "account and rehabilitation records. Please verify the "
+                     "information below before proceeding.")
+            # Each detail line is capped to one line: the widest label
+            # ("Receiving Therapist: ") sets how much width is left for the
+            # name that follows it.
+            label_w = body_font.size("Receiving Therapist: ")[0]
+            name_budget = max(self._sc(100), max_content_w - label_w)
+            details = (
+                f"Patient Name: {_truncate_text(pt_name, body_font, name_budget)}\n"
+                f"Current Therapist: {_truncate_text(cur_name, body_font, name_budget)}\n"
+                f"Receiving Therapist: {_truncate_text(t_name, body_font, name_budget)}")
+            body = f"{detail}\n\n{details}"
+            confirm_label = "Transfer Patient"
+            icon, accent = "warning", (215, 140, 30)
+            countdown = self._danger_countdown if self._danger_countdown > 0 else None
+            # Consequences paragraph + three detail lines is simply more
+            # text than fits alongside an icon circle at 800x480 -- drop
+            # the icon for this one (still keeps the tinted top accent,
+            # card, overlay, shadow, and everything else) rather than
+            # crowd/clip the detail lines it's specifically there so the
+            # therapist can double-check before a destructive action.
+            show_icon = False
+        else:
+            show_icon = True
+            # The title itself repeats both names ("Share X with Y?") in the
+            # larger title font -- bound each to roughly half the available
+            # width so the title can never need more than its normal 1-2
+            # wrapped lines regardless of real name length.
+            title_font = self.fnt["modal_head"]
+            boilerplate_w = title_font.size("Share  with ?")[0]
+            title_name_budget = max(self._sc(80), (max_content_w - boilerplate_w) // 2)
+            title = (f"Share {_truncate_text(pt_name, title_font, title_name_budget)} "
+                    f"with {_truncate_text(t_name, title_font, title_name_budget)}?")
+            body = ("The receiving therapist will be able to access the patient's "
+                    "information and assist with therapy sessions according to their "
+                    "shared-patient permissions. They will not become the owner and "
+                    "cannot edit the patient's information.")
+            confirm_label = "Yes, Share"
+            icon, accent = "check", (40, 160, 90)
+            countdown = None
+
+        cr, xr = draw_confirm_dialog(
+            surface, self.WIDTH, self.HEIGHT, tt=self._tt, sc=self._sc,
+            fonts=dlg_fonts, icon=icon, accent=accent,
+            title=title, body=body, confirm_label=confirm_label, cancel_label="Cancel",
+            confirm_hov=self._share_yes_hov, cancel_hov=self._share_no_hov,
+            countdown=countdown, max_w_frac=max_w_frac, show_icon=show_icon)
+        self._share_yes_rect, self._share_no_rect = cr, xr
+
+        # Dead rects for the stages this popup doesn't draw.
+        self._share_close_rect           = pygame.Rect(0, 0, 1, 1)
+        self._share_choice_share_rect    = pygame.Rect(0, 0, 1, 1)
+        self._share_choice_transfer_rect = pygame.Rect(0, 0, 1, 1)
+        self._share_field_rect           = pygame.Rect(0, 0, 1, 1)
+
+    def _draw_share_search_modal(self, surface):
+        """Therapist username search popup (the "pick" stage): title +
+        patient name/ID, a "Share with:" input, live suggestions (or an
+        empty-state hint), the "currently shared with" list, and a single
+        Close button -- all via the same draw_dialog_chrome header the
+        other three popups use."""
+        W, H = self.WIDTH, self.HEIGHT
+        pad   = self._sc(24)
+        fh    = self._tt(46)
+        btn_h = self._tt(50)
+        lbl_h = self.fnt["small"].get_height()
 
         from constants import is_dark_mode
         dark = is_dark_mode()
         if dark:
-            card_bg, card_bdr = (28, 36, 52, 252), (58, 72, 96)
-            title_col, sub_col, divider_col = (232, 238, 248), (170, 184, 206), (58, 72, 96)
             label_col, muted_col = (180, 194, 216), (150, 164, 188)
             input_bg, input_bdr = (36, 46, 66), (70, 86, 112)
             input_text_col, input_ph_col = (225, 232, 244), (120, 134, 156)
-            detail_col, info_col = (178, 190, 210), (205, 215, 232)
             sugg_bg, sugg_bg_hov, sugg_bdr = (36, 46, 66), (48, 62, 90), (70, 86, 112)
             sugg_text_col = (140, 180, 255)
             shared_label_col, shared_text_col = (160, 174, 198), (205, 215, 232)
         else:
-            card_bg, card_bdr = (228, 238, 252, 252), (175, 205, 235)
-            title_col, sub_col, divider_col = (38, 52, 78), (100, 120, 155), (200, 218, 240)
             label_col, muted_col = (80, 95, 115), (155, 168, 188)
             input_bg, input_bdr = (248, 252, 255), (40, 160, 220)
             input_text_col, input_ph_col = (40, 50, 65), (175, 188, 205)
-            detail_col, info_col = (95, 108, 128), (50, 65, 90)
             sugg_bg, sugg_bg_hov, sugg_bdr = (248, 252, 255), (206, 228, 255), (190, 212, 238)
             sugg_text_col = (40, 75, 140)
             shared_label_col, shared_text_col = (85, 105, 135), (50, 65, 90)
 
-        # ── Height adapts to whatever this stage actually needs to show --
-        # a bare username picker with no suggestions yet needs far less
-        # room than the SHARE/TRANSFER confirmation text, so a single fixed
-        # near-fullscreen height left a large empty gap under the Close
-        # button most of the time. This mirrors the real draw pass below
-        # closely enough to size correctly without duplicating its blits.
         pt_name = (self.share_modal_patient or {}).get("full_name", "Patient")
         pt_id   = (self.share_modal_patient or {}).get("patient_id_str", "")
-        # The picker screen (stage "pick") shows the full "Share Patient" /
-        # patient-name header with its divider; the choice/confirm steps
-        # below it are already scoped to one target, so they get a single
-        # compact title line instead (needed to fit the confirm step's
-        # longer text in 480px of height) -- that title line doubles as the
-        # stage's own heading ("Transfer Patient?" / "Share X with Y?"), so
-        # the body below never repeats it.
-        compact_header = (self._share_stage != "pick")
-        title_h = self.fnt["panel_title"].get_height()
-        if compact_header:
-            if self._share_stage == "confirm" and self._share_confirm_therapist:
-                t = self._share_confirm_therapist
-                header_title = ("Transfer Patient?" if self._share_pending_action == "transfer"
-                               else f"Share {pt_name} with {t['full_name']}?")
-            else:
-                header_title = "Share Patient"
-            header_lines = self._wrap(header_title, self.fnt["panel_title"], mw - pad * 2)
-            header_h = len(header_lines) * title_h + self._sc(10)
-        else:
-            hs_w    = self.fnt["panel_title"].size("Share Patient")[0]
-            sub_w   = self.fnt["small"].size(f"{pt_name} · {pt_id}")[0]
-            same_line = (pad + hs_w + self._sc(10) + sub_w) <= (mw - pad)
-            header_h = (title_h + self._sc(6)) if same_line else \
-                       (title_h + self._sc(2) + self.fnt["small"].get_height() + self._sc(6))
-            header_h += 1 + self._sc(10)                   # divider + gap
+        disp    = self._share_input
 
-        # The "Share with:" input is only relevant on the picker screen --
-        # the SHARE/TRANSFER choice and final confirm steps already have a
-        # target picked, and at 800x480 there isn't room to keep a now-inert
-        # input field on screen as well as the confirmation content.
-        show_core = (self._share_stage == "pick")
-        core_h = (lbl_h + self._sc(4) + fh + self._sc(10)) if show_core else 0
-
-        if self._share_stage == "choice" and self._share_confirm_therapist:
-            body_h = (3 * self.fnt["body_b"].get_linesize() + self._sc(6)
-                      + btn_h + self._sc(8) + self._tt(40) + self._sc(8))
-        elif self._share_stage == "confirm" and self._share_confirm_therapist:
-            t = self._share_confirm_therapist
-            if self._share_pending_action == "transfer":
-                detail = ("You are about to transfer this patient to another therapist. "
-                          "After the transfer, you may lose access to the patient's "
-                          "account and rehabilitation records. Please verify the "
-                          "information below before proceeding.")
-                n_detail = len(self._wrap(detail, self.fnt["tag"], mw - pad * 2))
-                body_h = (n_detail * self.fnt["tag"].get_linesize() + self._sc(8)
-                          + 3 * self.fnt["tag"].get_linesize() + self._sc(8)
-                          + btn_h + self._sc(10))
-            else:
-                detail = ("They will be able to access the patient's information and "
-                          "assist with therapy sessions according to their shared-patient "
-                          "permissions. They will not become the owner and cannot edit "
-                          "the patient's information.")
-                n_detail = len(self._wrap(detail, self.fnt["tag"], mw - pad * 2))
-                body_h = (n_detail * self.fnt["tag"].get_linesize() + self._sc(8)
-                          + btn_h + self._sc(10))
-        elif self._share_suggestions:
+        core_h = lbl_h + self._sc(4) + fh + self._sc(10)
+        if self._share_suggestions:
             n = min(len(self._share_suggestions), 5)
             body_h = n * (self._tt(44) + self._sc(4)) + self._sc(6)
         else:
             body_h = self.fnt["small"].get_height() + self._sc(8)
 
-        # Likewise, the "currently shared with" list is picker-only content
-        # -- the choice/confirm steps need their own room instead.
-        show_shared = (self._share_stage == "pick")
         try:
-            shared_n = (len(self.db.get_shared_therapists(self.share_modal_patient["id"]))
-                        if self.share_modal_patient else 0)
+            shared = (self.db.get_shared_therapists(self.share_modal_patient["id"])
+                      if self.share_modal_patient else [])
         except Exception:
-            shared_n = 0
-        shared_n = min(shared_n, 4)   # a longer list still degrades gracefully below
-        if not show_shared:
-            shared_h = 0
-        else:
-            shared_h = (lbl_h + self._sc(4) + shared_n * (self._tt(40) + self._sc(4))
-                        if shared_n else lbl_h)
+            shared = []
+        shared_n = min(len(shared), 4)   # a longer list still degrades gracefully below
+        shared_h = (lbl_h + self._sc(4) + shared_n * (self._tt(40) + self._sc(4))
+                    if shared_n else lbl_h + self._sc(4) + self.fnt["small"].get_height())
 
-        mh = min(int(H * 0.94),
-                 pad + header_h + core_h + body_h + shared_h + self._sc(10) + btn_h + pad)
-        mh = max(mh, self._tt(300))
-        mx = (W - mw) // 2
-        my = (H - mh) // 2
-        mr = pygame.Rect(mx, my, mw, mh)
+        extra_h = core_h + body_h + shared_h + self._sc(10) + btn_h
 
-        ms = pygame.Surface((mw, mh), pygame.SRCALPHA)
-        pygame.draw.rect(ms, card_bg, (0, 0, mw, mh), border_radius=14)
-        surface.blit(ms, mr.topleft)
-        pygame.draw.rect(surface, card_bdr, mr, 1, border_radius=14)
+        # Wider than the other three popups (0.92 vs the default 0.82) --
+        # this one packs a label, input, suggestions AND a shared-with list
+        # into one screen, so it needs the extra horizontal room. The
+        # patient name/ID subtitle is still forced to a single line (see
+        # _truncate_text) regardless of how long the real name is --
+        # wrapping it to 2+ lines is exactly what blew this popup's height
+        # budget on a long name before (the live suggestion row silently
+        # had no room left to draw at all).
+        max_w_frac = 0.92
+        max_content_w_est = int(W * max_w_frac) - pad * 2
+        # Truncate the NAME, never the ID -- RCVR-#### is short, fixed-width,
+        # and the more reliable identifier when a name is this long anyway.
+        id_suffix = f" · {pt_id}" if pt_id else ""
+        name_budget = max_content_w_est - self.fnt["modal_lbl"].size(id_suffix)[0]
+        subtitle = _truncate_text(pt_name, self.fnt["modal_lbl"], name_budget) + id_suffix
 
-        pt_name = (self.share_modal_patient or {}).get("full_name", "Patient")
-        pt_id   = (self.share_modal_patient or {}).get("patient_id_str", "")
+        mr, content_y, _theme = draw_dialog_chrome(
+            surface, W, H, tt=self._tt, sc=self._sc, fonts=self._dialog_fonts(),
+            icon="info", accent=(60, 140, 220), title="Share Patient",
+            body=subtitle, extra_content_h=extra_h,
+            min_content_w=self._sc(420), max_w_frac=max_w_frac)
 
-        y = mr.y + self._sc(10)
-        if compact_header:
-            # The choice/confirm steps' own heading replaces "Share Patient"
-            # entirely (no patient subtitle / divider) -- reclaims the room
-            # those steps need for their confirmation text at 800x480.
-            for ln in header_lines:
-                hs = self.fnt["panel_title"].render(ln, True, title_col)
-                surface.blit(hs, (mr.x + pad, y))
-                y += title_h
-            y += self._sc(10)
-        else:
-            # Title line: heading + patient on the same row to save vertical space.
-            hs = self.fnt["panel_title"].render("Share Patient", True, title_col)
-            surface.blit(hs, (mr.x + pad, y))
-            sub = self.fnt["small"].render(f"{pt_name} · {pt_id}", True, sub_col)
-            if mr.x + pad + hs.get_width() + self._sc(10) + sub.get_width() <= mr.right - pad:
-                surface.blit(sub, (mr.x + pad + hs.get_width() + self._sc(10),
-                                   y + hs.get_height() - sub.get_height() - self._sc(2)))
-                y += hs.get_height() + self._sc(6)
-            else:
-                y += hs.get_height() + self._sc(2)
-                surface.blit(sub, (mr.x + pad, y)); y += sub.get_height() + self._sc(6)
-            pygame.draw.line(surface, divider_col,
-                             (mr.x + pad, y), (mr.right - pad, y), 1)
-            y += self._sc(10)
+        content_y += self._sc(6)
 
-        # "Share with:" label + input field -- picker screen only; the
-        # choice/confirm steps already have a target and need the room.
-        if show_core:
-            surface.blit(self.fnt["small"].render("Share with:", True, label_col),
-                         (mr.x + pad, y))
-            y += lbl_h + self._sc(4)
-            sf_r = pygame.Rect(mr.x + pad, y, mw - pad * 2, fh)
-            pygame.draw.rect(surface, input_bg, sf_r, border_radius=10)
-            pygame.draw.rect(surface, input_bdr, sf_r, 2, border_radius=10)
-            disp = self._share_input
-            ts_inp = (self.fnt["input"].render(disp, True, input_text_col) if disp
-                      else self.fnt["input"].render("Enter username", True, input_ph_col))
-            surface.blit(ts_inp, ts_inp.get_rect(midleft=(sf_r.x + self._sc(12), sf_r.centery)))
-            if disp:
-                curs_x = sf_r.x + self._sc(12) + ts_inp.get_width() + 2
-                pygame.draw.line(surface, input_bdr,
-                                 (curs_x, sf_r.centery - self._sc(10)),
-                                 (curs_x, sf_r.centery + self._sc(10)), 2)
-            self._share_field_rect = sf_r
-            content_y = sf_r.bottom + self._sc(10)
-        else:
-            self._share_field_rect = pygame.Rect(0, 0, 1, 1)
-            content_y = y
+        # "Share with:" label + input field.
+        surface.blit(self.fnt["small"].render("Share with:", True, label_col),
+                     (mr.x + pad, content_y))
+        content_y += lbl_h + self._sc(4)
+        sf_r = pygame.Rect(mr.x + pad, content_y, mr.width - pad * 2, fh)
+        pygame.draw.rect(surface, input_bg, sf_r, border_radius=12)
+        pygame.draw.rect(surface, input_bdr, sf_r, 2, border_radius=12)
+        ts_inp = (self.fnt["input"].render(disp, True, input_text_col) if disp
+                  else self.fnt["input"].render("Enter username", True, input_ph_col))
+        surface.blit(ts_inp, ts_inp.get_rect(midleft=(sf_r.x + self._sc(12), sf_r.centery)))
+        if disp:
+            curs_x = sf_r.x + self._sc(12) + ts_inp.get_width() + 2
+            pygame.draw.line(surface, input_bdr,
+                             (curs_x, sf_r.centery - self._sc(10)),
+                             (curs_x, sf_r.centery + self._sc(10)), 2)
+        self._share_field_rect = sf_r
+        content_y = sf_r.bottom + self._sc(10)
 
         close_top = mr.bottom - btn_h - pad          # everything must stay above this
 
-        # ── SHARE | TRANSFER choice ────────────────────────────────────
-        if self._share_stage == "choice" and self._share_confirm_therapist:
-            t = self._share_confirm_therapist
-            for ln in (f"Patient: {pt_name}", f"Therapist: {t['full_name']}",
-                      "What would you like to do?"):
-                ls = self.fnt["body_b"].render(ln, True, info_col)
-                surface.blit(ls, (mr.x + pad, content_y))
-                content_y += self.fnt["body_b"].get_linesize()
-            content_y += self._sc(6)
-            bw2 = (mw - pad * 2 - self._sc(12)) // 2
-            self._share_choice_share_rect    = pygame.Rect(mr.x + pad, content_y, bw2, btn_h)
-            self._share_choice_transfer_rect = pygame.Rect(
-                mr.x + pad + bw2 + self._sc(12), content_y, bw2, btn_h)
-            _btn(surface, self._share_choice_share_rect, "SHARE", self.fnt["btn"],
-                 (40,160,90),(28,130,70), self._share_choice_share_hov, radius=10)
-            _btn(surface, self._share_choice_transfer_rect, "TRANSFER", self.fnt["btn"],
-                 (215,140,30),(180,112,15), self._share_choice_transfer_hov, radius=10)
-            content_y += btn_h + self._sc(8)
-            bw3 = self.fnt["small"].size("Cancel")[0] + self._sc(24)
-            self._share_no_rect = pygame.Rect(mr.x + pad, content_y, bw3, self._tt(40))
-            _btn(surface, self._share_no_rect, "Cancel", self.fnt["small"],
-                 (160,175,195),(130,148,168), self._share_no_hov, radius=8)
-            content_y += self._share_no_rect.height + self._sc(8)
-
-        # ── Final confirmation (worded for the chosen action) ──────────
-        elif self._share_stage == "confirm" and self._share_confirm_therapist:
-            t = self._share_confirm_therapist
-            is_transfer = (self._share_pending_action == "transfer")
-            # The "Transfer Patient?" / "Share X with Y?" heading itself is
-            # drawn as this modal's compact header above -- only the detail
-            # paragraph belongs in the body.
-            if is_transfer:
-                detail = ("You are about to transfer this patient to another therapist. "
-                         "After the transfer, you may lose access to the patient's "
-                         "account and rehabilitation records. Please verify the "
-                         "information below before proceeding.")
-            else:
-                detail = ("They will be able to access the patient's information and "
-                         "assist with therapy sessions according to their shared-patient "
-                         "permissions. They will not become the owner and cannot edit "
-                         "the patient's information.")
-            for ln in self._wrap(detail, self.fnt["tag"], mw - pad * 2):
-                surface.blit(self.fnt["tag"].render(ln, True, detail_col),
-                             (mr.x + pad, content_y))
-                content_y += self.fnt["tag"].get_linesize()
-            content_y += self._sc(8)
-            if is_transfer:
-                for ln in (f"Patient Name: {pt_name}",
-                          f"Current Therapist: {self.account.get('full_name','—')}",
-                          f"Receiving Therapist: {t['full_name']}"):
-                    surface.blit(self.fnt["tag"].render(ln, True, info_col),
-                                 (mr.x + pad, content_y))
-                    content_y += self.fnt["tag"].get_linesize()
-                content_y += self._sc(8)
-            bw2 = (mw - pad * 2 - self._sc(12)) // 2
-            self._share_yes_rect = pygame.Rect(mr.x + pad, content_y, bw2, btn_h)
-            self._share_no_rect  = pygame.Rect(mr.x + pad + bw2 + self._sc(12),
-                                               content_y, bw2, btn_h)
-            if is_transfer:
-                cd_active = self._danger_countdown > 0
-                cd_i = max(1, int(math.ceil(self._danger_countdown))) if cd_active else 0
-                yes_lbl = f"Transfer Patient ({cd_i}s)" if cd_active else "Transfer Patient"
-                if cd_active:
-                    yes_col = yes_hi = (175, 183, 196)
-                    yes_hov = False
-                else:
-                    yes_col, yes_hi, yes_hov = (215,140,30), (180,112,15), self._share_yes_hov
-            else:
-                yes_lbl, yes_col, yes_hi, yes_hov = ("Yes, Share", (40,160,90),
-                                                     (28,130,70), self._share_yes_hov)
-            _btn(surface, self._share_yes_rect, yes_lbl, self.fnt["btn"],
-                 yes_col, yes_hi, yes_hov, radius=10)
-            _btn(surface, self._share_no_rect, "Cancel", self.fnt["btn"],
-                 (160,175,195),(130,148,168), self._share_no_hov, radius=10)
-            content_y += btn_h + self._sc(10)
-
-        # ── Live suggestions ─────────────────────────────────────────
-        elif self._share_suggestions:
-            self._share_sugg_rects = []
+        # ── Live suggestions, or an error/success/empty-state hint ──────
+        self._share_sugg_rects = []
+        if self._share_suggestions:
             opt_h = self._tt(44)
             for i, t in enumerate(self._share_suggestions):
                 sr = pygame.Rect(sf_r.x, content_y + i * (opt_h + self._sc(4)),
@@ -5589,17 +5953,15 @@ class TherapistDashboardScene:
                 if sr.bottom > close_top:
                     break
                 if sr.collidepoint(pygame.mouse.get_pos()):
-                    pygame.draw.rect(surface, sugg_bg_hov, sr, border_radius=8)
+                    pygame.draw.rect(surface, sugg_bg_hov, sr, border_radius=10)
                 else:
-                    pygame.draw.rect(surface, sugg_bg, sr, border_radius=8)
-                pygame.draw.rect(surface, sugg_bdr, sr, 1, border_radius=8)
+                    pygame.draw.rect(surface, sugg_bg, sr, border_radius=10)
+                pygame.draw.rect(surface, sugg_bdr, sr, 1, border_radius=10)
                 row_lbl = f"@{t['username']}  ·  {t['full_name']}"
                 rs = self.fnt["body"].render(row_lbl, True, sugg_text_col)
                 surface.blit(rs, rs.get_rect(midleft=(sr.x + self._sc(12), sr.centery)))
                 self._share_sugg_rects.append((sr, t))
             content_y += len(self._share_sugg_rects) * (opt_h + self._sc(4)) + self._sc(6)
-
-        # ── Error / success / hint ───────────────────────────────────
         else:
             if self._share_error:
                 msg, mc = self._share_error, (210, 50, 50)
@@ -5610,23 +5972,12 @@ class TherapistDashboardScene:
             else:
                 msg, mc = "", None
             if msg:
-                # Was fnt["small_i"] (Sora) -- the "Currently shared with:"
-                # label right below this in the same modal already uses
-                # fnt["small"] (Lexend) for the same kind of muted helper
-                # text; match that instead of switching families mid-modal.
                 surface.blit(self.fnt["small"].render(msg, True, mc),
                              (mr.x + pad, content_y))
                 content_y += self.fnt["small"].get_height() + self._sc(8)
 
         # ── Currently shared-with (flows under the content, never fixed) ──
         self._unshare_rects = []
-        shared = []
-        if show_shared and self.share_modal_patient:
-            try:
-                shared = self.db.get_shared_therapists(self.share_modal_patient["id"])
-            except Exception:
-                shared = []
-
         row_h = self._tt(40)
         if shared:
             if content_y + lbl_h + row_h <= close_top:
@@ -5646,20 +5997,21 @@ class TherapistDashboardScene:
                     surface.blit(rev_s, rev_s.get_rect(center=rev_r.center))
                     self._unshare_rects.append((rev_r, t["id"]))
                     content_y += row_h + self._sc(4)
-        elif show_shared and content_y + lbl_h <= close_top:
-            # Was fnt["small_i"] (Sora) -- matches fnt["small"] (Lexend),
-            # the same muted-helper-text font used elsewhere in this modal.
+        elif content_y + lbl_h <= close_top:
             surface.blit(self.fnt["small"].render(
                 "Not shared with anyone yet.", True, muted_col), (mr.x + pad, content_y))
 
-        # ── Close button ─────────────────────────────────────────────
-        bw_c = self._sc(140)
+        # ── Single Close button ──────────────────────────────────────
+        bw_c = self._sc(160)
         clos_r = pygame.Rect(mr.centerx - bw_c // 2, close_top, bw_c, btn_h)
         _btn(surface, clos_r, "Close", self.fnt["btn"],
-             (160,175,195),(130,148,168), self._share_close_hov, radius=10)
-        self._share_close_rect   = clos_r
-        self._share_search_rect  = pygame.Rect(0, 0, 1, 1)
-        self._share_confirm_rect = pygame.Rect(0, 0, 1, 1)
+             (160, 175, 195), (130, 148, 168), self._share_close_hov, radius=12)
+        self._share_close_rect = clos_r
+
+        # Dead rects for the stages this popup doesn't draw.
+        self._share_yes_rect             = pygame.Rect(0, 0, 1, 1)
+        self._share_choice_share_rect    = pygame.Rect(0, 0, 1, 1)
+        self._share_choice_transfer_rect = pygame.Rect(0, 0, 1, 1)
 
     # ──────────────────────────────────────────────────────────────────
     #  PANEL 6: REGISTER PATIENT
@@ -7885,6 +8237,31 @@ class TherapistDashboardScene:
             title="Registration Successful", body=self._rp_success_msg,
             confirm_label="OK", single_button=True, confirm_hov=self._rp_ok_hov)
         self._rp_ok_rect = cr
+
+    def _draw_transfer_success_modal(self, surface):
+        cr, _ = draw_confirm_dialog(
+            surface, self.WIDTH, self.HEIGHT, tt=self._tt, sc=self._sc,
+            fonts=self._dialog_fonts(), icon="check", accent=(60, 185, 100),
+            title="Patient Successfully Transferred!", body=self._transfer_success_msg,
+            confirm_label="Okay", single_button=True, confirm_hov=self._transfer_ok_hov)
+        self._transfer_ok_rect = cr
+
+    def _draw_reuse_calibration_modal(self, surface):
+        avail_names  = [SENSOR_CFG.get(s, {}).get("sensor_name", s) for s in self._reuse_available]
+        needed_names = [SENSOR_CFG.get(s, {}).get("sensor_name", s) for s in self._reuse_needed]
+        lines = [f"Reusable: {', '.join(avail_names)}"]
+        if needed_names:
+            lines.append(f"Still needs calibration: {', '.join(needed_names)}")
+        else:
+            lines.append("All required sensors are already calibrated.")
+        body = "\n".join(lines)
+        cr, xr = draw_confirm_dialog(
+            surface, self.WIDTH, self.HEIGHT, tt=self._tt, sc=self._sc,
+            fonts=self._dialog_fonts(), icon="check", accent=(60, 160, 220),
+            title="Use Previous Calibration?", body=body,
+            confirm_label="Use Previous Calibration", cancel_label="Recalibrate",
+            confirm_hov=self._reuse_use_hov, cancel_hov=self._reuse_recal_hov)
+        self._reuse_use_rect, self._reuse_recal_rect = cr, xr
 
     def _draw_calibration_mismatch_modal(self, surface):
         res       = self.calibration_result or {}

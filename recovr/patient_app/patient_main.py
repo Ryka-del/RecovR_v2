@@ -313,11 +313,31 @@ class PatientApp:
             self._set_mode(self._resting_mode(snap))
             return
 
-        # 2. Calibration (therapist-driven; patient just waits).
-        if pending == cmd.CALIBRATE or status == cmd.CALIBRATING:
+        # 2. Calibration (therapist-driven; patient just waits). The patient
+        #    screen only ever shows the Calibration screen while a sensor is
+        #    ACTIVELY being measured -- never as a bare "please wait" state.
+        #    That means staying on (or returning to) the Patient Dashboard:
+        #      - the instant CALIBRATE fires, until the first real sensor/
+        #        step is actually pushed (closes the gap the old "Getting
+        #        Ready to Calibrate" screen used to fill);
+        #      - while the therapist is reviewing/adjusting results
+        #        (calibration_progress.phase in results/advanced) -- the
+        #        window is still open, but nothing is being measured;
+        #      - for any sensor the session already has a valid reused
+        #        result for, since CalibrationWindow auto-skips its live
+        #        trial and calibration_progress never names it as "sensor".
+        #    See CalibratingScreen.draw_live()'s matching safety net.
+        cal_progress = snap.get("calibration_progress") or {}
+        actively_calibrating = ((pending == cmd.CALIBRATE or status == cmd.CALIBRATING)
+                                and cal_progress.get("phase") not in ("results", "advanced")
+                                and bool(cal_progress.get("sensor")))
+        if actively_calibrating:
             if self.mode != CALIBRATING:
                 self._teardown_runner()
                 self._set_mode(CALIBRATING)
+            return
+        if self.mode == CALIBRATING:
+            self._set_mode(self._resting_mode(snap))
             return
 
         # 3. START SESSION -> build the game and show its OWN How-to-Play / first
@@ -513,8 +533,8 @@ class PatientApp:
             self.s_end.draw(self.screen, self.runner.result() if self.runner else {})
         elif self.mode == CALIBRATING:
             if DUAL:
-                self.s_calibrating.draw(self.screen, frac=None,
-                                        message="Follow the guidance on the therapist station.")
+                progress = (snap or {}).get("calibration_progress") or {}
+                self.s_calibrating.draw_live(self.screen, progress)
             else:
                 self.s_calibrating.draw(self.screen, min(1.0, self.mode_t / CALIBRATION_SECONDS))
         else:

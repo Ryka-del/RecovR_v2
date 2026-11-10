@@ -84,6 +84,9 @@ def therapist_present():
                                          set -> Patient Dashboard)
         {"stop_pending": true|false}  -> red STOP pressed (game held) / decision made
         {"dark_mode": true|false}    -> light/dark theme (patient applies it live)
+        {"calibration_progress": {..}} -> live sensor/step/attempt detail for the
+                                        patient's own Calibration screen (see
+                                        SessionState.calibration_progress)
     """
     data = request.get_json(silent=True) or {}
     store = _store()
@@ -96,6 +99,8 @@ def therapist_present():
         snap = store.set_stop_pending(data.get("stop_pending", False))
     if "dark_mode" in data:
         snap = store.set_dark_mode(data.get("dark_mode", False))
+    if "calibration_progress" in data:
+        snap = store.set_calibration_progress(data.get("calibration_progress") or {})
     if "present" in data:
         snap = store.set_therapist_present(data.get("present", False))
     return jsonify(snap)

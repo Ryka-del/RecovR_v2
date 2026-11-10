@@ -270,7 +270,8 @@ GAMES_USING_SPEED = {"Basketball", "Piano Tiles"}
 
 class CalibrationWindow:
 
-    def __init__(self, width, height, game_type, game_name=None, dark_mode=True):
+    def __init__(self, width, height, game_type, game_name=None, dark_mode=True,
+                 reused_sensors=None):
         self.W         = width
         self.H         = height
         # game_type is normally a single sensor-type string (unchanged,
@@ -293,8 +294,23 @@ class CalibrationWindow:
         # Multi-sensor only: each finished sensor's own trial bucket, and the
         # flat per-sensor rows _accept_multi_sensor() builds for saving one DB
         # row per sensor. Both stay empty for every single-sensor game.
-        self.sensor_results      = {}
+        #
+        # reused_sensors (therapist_dashboard.py's session-scoped calibration
+        # cache -- see _launch_calibration()) pre-seeds sensor_results with
+        # sensor types the therapist chose NOT to recalibrate this time, in
+        # the exact {"sensor_name","trials","average"} shape _finish_sensor()
+        # itself produces. Nothing below the constructor needs to know
+        # whether a sensor_results entry came from a live trial just now or
+        # a reused one from earlier in the same therapy session -- _accept()/
+        # _accept_multi_sensor() already read every sensor from this one
+        # dict regardless.
+        self.sensor_results      = dict(reused_sensors) if reused_sensors else {}
         self.multi_sensor_results = []
+        # Which sensors were pre-seeded (never actually run live this
+        # window) -- therapist_dashboard.py uses this to avoid writing a
+        # fresh calibrations DB row for a sensor nothing was just measured
+        # for (see its win.done handling).
+        self._initially_reused_sensors = set(self.sensor_results.keys())
 
         # ── phase state ───────────────────────────────────────────────
         self.phase         = "sensitivity"
@@ -413,6 +429,13 @@ class CalibrationWindow:
         # so Cancel/Back can discard unapplied edits (spec 6: "when returning
         # without applying, discard only unapplied edits")
         self._adv_snapshot      = None
+
+        # If every sensor (or a leading run of them) was pre-seeded via
+        # reused_sensors, skip straight past their live trials -- lands on
+        # the first sensor that still needs calibrating, or straight into
+        # Results if the whole game_types list was reused.
+        if self.sensor_results:
+            self._advance_sensor_idx(0)
 
     # ── colour palette ────────────────────────────────────────────────────────
 
@@ -690,24 +713,49 @@ class CalibrationWindow:
 
     def _finish_sensor(self):
         """Multi-sensor calibration only. Store the sensor just finished,
-        then either move on to the NEXT sensor's own Begin-Calibration
-        screen (fresh countdown/trials) or, once every sensor in
-        self.game_types is done, enter the one combined Results screen."""
+        then either move on to the next sensor that still needs calibrating
+        (skipping any already reused -- see _advance_sensor_idx) or, once
+        every sensor in self.game_types is accounted for, enter the one
+        combined Results screen."""
         avg = sum(self.trial_results) / len(self.trial_results) if self.trial_results else 0.0
         self.sensor_results[self.game_type] = {
             "sensor_name": self.cfg["sensor_name"],
             "trials":      list(self.trial_results),
             "average":     round(avg, 4),
         }
-        if self.sensor_idx + 1 < len(self.game_types):
-            self.sensor_idx    += 1
-            self.game_type      = self.game_types[self.sensor_idx]
-            self.cfg             = SENSOR_CFG.get(self.game_type, SENSOR_CFG["Grip Strength"])
-            self.current_trial   = 0
-            self.trial_results   = []
-            self.phase            = "sensitivity"
-        else:
-            self._enter_results()
+        self._advance_sensor_idx(self.sensor_idx + 1)
+
+    def _advance_sensor_idx(self, start_idx):
+        """Move to the next sensor in game_types (from start_idx onward)
+        that still needs live trials, skipping any sensor already present
+        in self.sensor_results -- whether pre-seeded via reused_sensors at
+        construction or just finished live in this same multi-sensor run.
+        Lands that sensor on its own fresh "sensitivity" screen. Once every
+        sensor is accounted for, enters the combined Results screen, first
+        restoring self.trial_results from the LAST sensor in game_types
+        order -- the same sensor whose trial_results _enter_results() would
+        already be looking at right after a normal (fully live) run, so a
+        partially- or fully-reused run drives _recommend_difficulty() / the
+        Results screen's own trial display identically."""
+        idx = start_idx
+        while idx < len(self.game_types) and self.game_types[idx] in self.sensor_results:
+            idx += 1
+        if idx < len(self.game_types):
+            self.sensor_idx     = idx
+            self.game_type       = self.game_types[idx]
+            self.cfg              = SENSOR_CFG.get(self.game_type, SENSOR_CFG["Grip Strength"])
+            self.current_trial    = 0
+            self.trial_results    = []
+            self.phase             = "sensitivity"
+            return
+        last_sensor = self.game_types[-1]
+        cached = self.sensor_results.get(last_sensor)
+        if cached is not None:
+            self.trial_results = list(cached["trials"])
+        self.sensor_idx = len(self.game_types) - 1
+        self.game_type   = last_sensor
+        self.cfg          = SENSOR_CFG.get(self.game_type, SENSOR_CFG["Grip Strength"])
+        self._enter_results()
 
     def _start_countdown(self):
         self.phase       = "countdown"
