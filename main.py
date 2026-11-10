@@ -313,9 +313,24 @@ while True:
             continue   # don't pass events to the scene while dialog is open
 
         # --- Close button (opens the confirm dialog) ---
+        # Also blocked for the whole lifetime of a Patient Sharing/Transferring
+        # popup (search -> SHARE|TRANSFER choice -> confirm, including the
+        # mandatory transfer countdown -- all covered by _share_modal_open)
+        # and its Transfer Success acknowledgment (a separate self.modal
+        # state that fires once _share_modal_open has already gone False --
+        # see TherapistDashboardScene._do_share_or_transfer_confirm). Those
+        # modals already swallow every click/touch themselves while open
+        # (TherapistDashboardScene.handle_event checks them first), so this
+        # only needed to stop the APPLICATION's own Close button, which lives
+        # outside the scene entirely.
+        _share_blocking = (
+            bool(getattr(current_scene, "_share_modal_open", False)) or
+            getattr(current_scene, "modal", None) == "transfer_success"
+        )
         _btn_active = (
             _current_scene_name not in _game_scene_names and
-            getattr(current_scene, "_cal_win", None) is None
+            getattr(current_scene, "_cal_win", None) is None and
+            not _share_blocking
         )
         if _btn_active:
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -367,10 +382,16 @@ while True:
         _close_rect      = _DEFAULT_CLOSE_RECT
         _use_close_asset = False
 
-    # Draw close button — hidden during games and calibration
+    # Draw close button — hidden during games, calibration, and a Patient
+    # Sharing/Transferring popup (see _share_blocking above; recomputed here
+    # since this runs after the scene's own draw() may have changed state).
     _in_game        = _current_scene_name in _game_scene_names
     _in_calibration = getattr(current_scene, "_cal_win", None) is not None
-    if not _in_game and not _in_calibration:
+    _in_share_modal = (
+        bool(getattr(current_scene, "_share_modal_open", False)) or
+        getattr(current_scene, "modal", None) == "transfer_success"
+    )
+    if not _in_game and not _in_calibration and not _in_share_modal:
         _close_hover = _close_rect.collidepoint(mouse_pos)
         if _use_close_asset:
             _draw_close_icon(_close_rect)

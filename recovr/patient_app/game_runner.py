@@ -26,6 +26,7 @@ import pygame
 
 from constants import GAME_W, GAME_H
 from recovr.shared import protocol
+from recovr.patient_app.scenes.countdown import CountdownScreen, TOTAL_SEC as COUNTDOWN_TOTAL_SEC
 
 
 # ---------------------------------------------------------------------------
@@ -92,8 +93,11 @@ class GameRunner:
         self.finished = False
         self._started = False
 
+        self.counting_down = False     # pre-gameplay "Get Ready / 3-2-1 / START!"
+        self._countdown_t = 0.0
+        self._countdown_screen = CountdownScreen()
+
         self._tele_accum = 0.0
-        self._f_overlay = pygame.font.SysFont("consolas", 72, bold=True)
 
         # --- sensor bridge pump -------------------------------------------
         # Lives in the runner (not the game) so every game reuses it.
@@ -126,11 +130,24 @@ class GameRunner:
         """Dismiss the game's own instruction screen NOW (no patient input).
         Called by the patient loop after the How-to-Play display time so the
         game starts on its own -- the therapist's START is the only trigger."""
+        self.counting_down = False
         self._started = True
         self.set_paused(False)
         fn = getattr(self.game, "force_begin", None)
         if callable(fn):
             fn()
+
+    def begin_countdown(self):
+        """Therapist-triggered START (dual-monitor production): show the
+        "Get Ready! / 3 / 2 / 1 / START!" sequence while the underlying game
+        stays completely frozen (update() below skips sensor pump, game
+        update, AND the telemetry accumulator while counting_down -- not just
+        drawing a countdown on top of a timer that's already running), then
+        call force_begin() automatically once it's done. One shared
+        implementation for every wrapped game (see games/*.py + the generic
+        adapter) instead of each game drawing its own countdown."""
+        self.counting_down = True
+        self._countdown_t = 0.0
 
     def set_paused(self, value: bool):
         self.paused = bool(value)
@@ -141,17 +158,27 @@ class GameRunner:
 
     def stop(self):
         self.stopped = True
+        # A countdown that gets cancelled must never reach force_begin() on a
+        # later update() -- clearing it here (not just leaving self.stopped
+        # to short-circuit update()) is what guarantees that.
+        self.counting_down = False
         hook = getattr(self.game, "external_stop", None)
         if callable(hook):
             hook()
 
     # -- per-frame ---------------------------------------------------
     def handle_event(self, event):
-        if self.paused or self.stopped or self.finished:
+        if self.counting_down or self.paused or self.stopped or self.finished:
             return
         self.game.handle_event(event)
 
     def update(self, dt: float):
+        if self.counting_down:
+            self._countdown_t += dt
+            if self._countdown_t >= COUNTDOWN_TOTAL_SEC:
+                self.counting_down = False
+                self.force_begin()
+            return
         if self.stopped or self.finished or self.paused:
             return
 
@@ -207,7 +234,9 @@ class GameRunner:
                 target.fill((0, 0, 0))
             target.blit(scaled, ((tw - sw) // 2, (th - sh) // 2))
 
-        if self.paused:
+        if self.counting_down:
+            self._countdown_screen.draw(target, self._countdown_t)
+        elif self.paused:
             self._draw_pause_overlay(target)
 
     # -- internals -------------------------------------------------
@@ -227,12 +256,12 @@ class GameRunner:
         return snap
 
     def _draw_pause_overlay(self, target: pygame.Surface):
-        w, h = target.get_size()
-        dim = pygame.Surface((w, h), pygame.SRCALPHA)
-        dim.fill((6, 10, 18, 180))
-        target.blit(dim, (0, 0))
-        label = self._f_overlay.render("PAUSED", True, (240, 180, 41))
-        target.blit(label, label.get_rect(center=(w // 2, h // 2 - 20)))
-        sub = pygame.font.SysFont("consolas", 26).render(
-            "held by therapist", True, (133, 149, 176))
-        target.blit(sub, sub.get_rect(center=(w // 2, h // 2 + 40)))
+        from ui_cards import draw_state_card, PAUSE_ACCENT
+        draw_state_card(
+            target,
+            title="Game Paused",
+            subtitle="Your therapist has paused the game. Please wait.",
+            accent=PAUSE_ACCENT,
+            kind="pause",
+            dim=True,
+        )

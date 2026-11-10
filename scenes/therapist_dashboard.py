@@ -628,7 +628,8 @@ def draw_confirm_dialog(surface, W, H, *, tt, sc, fonts, icon, accent,
                          title, body=None, confirm_label="Confirm",
                          cancel_label="Cancel", single_button=False,
                          confirm_hov=False, cancel_hov=False,
-                         countdown=None, max_w_frac=0.82, show_icon=True):
+                         countdown=None, max_w_frac=0.82, show_icon=True,
+                         fixed_size=None, pad_px=24, icon_r_px=32):
     """Draws the full dialog (dim overlay + card + icon + title/body +
     button(s)) and returns (confirm_rect, cancel_rect) for hit-testing --
     cancel_rect is a dead 1x1 rect in single_button mode, where
@@ -644,7 +645,18 @@ def draw_confirm_dialog(surface, W, H, *, tt, sc, fonts, icon, accent,
     `show_icon=False` skips the icon circle and reclaims its vertical room
     for an unusually content-dense popup (e.g. a confirmation with several
     labeled detail lines below its body) that would otherwise not fit
-    800x480 -- the top accent wave still shows, just shorter."""
+    800x480 -- the top accent wave still shows, just shorter.
+
+    `fixed_size=(mw, mh)`, when given, uses that exact outer card size
+    instead of computing one from content -- for a family of popups that
+    must all share identical outer dimensions regardless of how much each
+    one has to show. The caller is responsible for making its title/body/
+    buttons actually fit within it (font choice, truncation, wrapping).
+
+    `pad_px`/`icon_r_px` default to this function's original padding/icon
+    size; pass smaller values (matching draw_dialog_chrome's own for the
+    same family of popups) to reclaim header height -- every caller in
+    that family must pass the SAME values so their header heights match."""
     from constants import is_dark_mode
     dark = is_dark_mode()
 
@@ -664,8 +676,8 @@ def draw_confirm_dialog(surface, W, H, *, tt, sc, fonts, icon, accent,
     ov.fill((8, 12, 20, 165))
     surface.blit(ov, (0, 0))
 
-    pad       = sc(24)
-    icon_r    = sc(32)
+    pad       = sc(pad_px)
+    icon_r    = sc(icon_r_px)
     btn_h     = tt(50)
     btn_gap   = sc(16)
     f_title, f_body, f_btn = fonts["title"], fonts["body"], fonts["btn"]
@@ -676,8 +688,12 @@ def draw_confirm_dialog(surface, W, H, *, tt, sc, fonts, icon, accent,
     f_sym = fonts.get("sym", f_btn)
     glyph_gap = sc(8)
 
-    max_w = int(W * max_w_frac)
-    max_content_w = max_w - pad * 2
+    if fixed_size is not None:
+        mw, mh = fixed_size
+        max_content_w = mw - pad * 2
+    else:
+        max_w = int(W * max_w_frac)
+        max_content_w = max_w - pad * 2
 
     title_font = f_title
     title_lines = _wrap_text(title, title_font, max_content_w)
@@ -717,16 +733,20 @@ def draw_confirm_dialog(surface, W, H, *, tt, sc, fonts, icon, accent,
         bw = max(max(confirm_w_needed, cancel_w_needed) + sc(40), sc(130))
     btn_row_w = bw if single_button else (bw * 2 + btn_gap)
 
-    content_w = max([btn_row_w] +
-                    [title_font.size(ln)[0] for ln in title_lines] +
-                    [f_body.size(ln)[0] for ln in body_lines])
-    mw = min(max(content_w + pad * 2, sc(340)), max_w)
-
     icon_block_h = (icon_r * 2 + sc(14)) if show_icon else sc(16)
     title_block_h = len(title_lines) * title_line_h
     body_block_h = (sc(10) + len(body_lines) * body_line_h) if body_lines else 0
-    mh = (pad + icon_block_h + title_block_h + body_block_h + sc(22) + btn_h + pad)
-    mh = min(mh, int(H * 0.92))
+
+    if fixed_size is not None:
+        mw, mh = fixed_size
+        mw = max(mw, btn_row_w + pad * 2)   # never let the button row itself overflow
+    else:
+        content_w = max([btn_row_w] +
+                        [title_font.size(ln)[0] for ln in title_lines] +
+                        [f_body.size(ln)[0] for ln in body_lines])
+        mw = min(max(content_w + pad * 2, sc(340)), max_w)
+        mh = (pad + icon_block_h + title_block_h + body_block_h + sc(22) + btn_h + pad)
+        mh = min(mh, int(H * 0.92))
 
     mx, my = (W - mw) // 2, (H - mh) // 2
     mr = pygame.Rect(mx, my, mw, mh)
@@ -805,7 +825,8 @@ def draw_confirm_dialog(surface, W, H, *, tt, sc, fonts, icon, accent,
 
 def draw_dialog_chrome(surface, W, H, *, tt, sc, fonts, icon, accent, title,
                        body=None, extra_content_h=0, min_content_w=0,
-                       max_w_frac=0.82, max_h_frac=0.92):
+                       max_w_frac=0.82, max_h_frac=0.92, fixed_size=None,
+                       pad_px=24, icon_r_px=32):
     """The shared visual shell (dim overlay, drop shadow, rounded card with
     a tinted top accent, icon circle, title, optional body paragraph) that
     draw_confirm_dialog itself draws before adding its own 1-2 buttons --
@@ -816,7 +837,17 @@ def draw_dialog_chrome(surface, W, H, *, tt, sc, fonts, icon, accent, title,
     reserves vertical room below the title/body for the caller's own
     content; the caller draws into that space itself. Returns
     (card_rect, content_y, theme) where theme = (card_bg, card_bdr,
-    title_col, body_col, dark) for the caller's own additional styling."""
+    title_col, body_col, dark) for the caller's own additional styling.
+
+    `fixed_size=(mw, mh)`, when given, uses that exact outer card size
+    instead of computing one from content -- see draw_confirm_dialog's own
+    fixed_size for the same idea; the caller must make its content fit.
+
+    `pad_px`/`icon_r_px` default to this function's original padding/icon
+    size; pass smaller values (matching draw_confirm_dialog's own
+    pad_px/icon_r_px for the same family of popups) to reclaim header
+    height for a content-dense, fixed-size popup -- every caller in that
+    family must pass the SAME values so their header heights stay equal."""
     from constants import is_dark_mode
     dark = is_dark_mode()
 
@@ -833,11 +864,16 @@ def draw_dialog_chrome(surface, W, H, *, tt, sc, fonts, icon, accent, title,
     ov.fill((8, 12, 20, 165))
     surface.blit(ov, (0, 0))
 
-    pad    = sc(24)
-    icon_r = sc(32)
+    pad    = sc(pad_px)
+    icon_r = sc(icon_r_px)
     f_title, f_body = fonts["title"], fonts["body"]
-    max_w = int(W * max_w_frac)
-    max_content_w = max_w - pad * 2
+
+    if fixed_size is not None:
+        mw, mh = fixed_size
+        max_content_w = mw - pad * 2
+    else:
+        max_w = int(W * max_w_frac)
+        max_content_w = max_w - pad * 2
 
     title_font = f_title
     title_lines = _wrap_text(title, title_font, max_content_w)
@@ -852,16 +888,17 @@ def draw_dialog_chrome(surface, W, H, *, tt, sc, fonts, icon, accent, title,
             body_lines.extend(_wrap_text(raw, f_body, max_content_w))
         body_line_h = f_body.get_linesize()
 
-    content_w = max([min_content_w] +
-                    [title_font.size(ln)[0] for ln in title_lines] +
-                    [f_body.size(ln)[0] for ln in body_lines])
-    mw = min(max(content_w + pad * 2, sc(340)), max_w)
-
     icon_block_h = icon_r * 2 + sc(14)
     title_block_h = len(title_lines) * title_line_h
     body_block_h = (sc(10) + len(body_lines) * body_line_h) if body_lines else 0
-    mh = pad + icon_block_h + title_block_h + body_block_h + extra_content_h + pad
-    mh = min(mh, int(H * max_h_frac))
+
+    if fixed_size is None:
+        content_w = max([min_content_w] +
+                        [title_font.size(ln)[0] for ln in title_lines] +
+                        [f_body.size(ln)[0] for ln in body_lines])
+        mw = min(max(content_w + pad * 2, sc(340)), max_w)
+        mh = pad + icon_block_h + title_block_h + body_block_h + extra_content_h + pad
+        mh = min(mh, int(H * max_h_frac))
 
     mx, my = (W - mw) // 2, (H - mh) // 2
     mr = pygame.Rect(mx, my, mw, mh)
@@ -1266,6 +1303,10 @@ class TherapistDashboardScene:
         self._share_close_hov        = False
         self._share_suggestions      = []          # live-search results (list of therapist dicts)
         self._share_sugg_rects       = []          # list of (rect, therapist) for click handling
+        self._share_shared_scroll     = 0          # "Currently shared with:" list scroll offset (px)
+        self._share_shared_scroll_max = 0
+        self._share_shared_viewport   = pygame.Rect(0, 0, 1, 1)
+        self._share_shared_drag_y     = None       # finger-drag scroll tracking (touch)
         self._share_confirm_therapist = None       # therapist chosen from suggestions, pending confirm/choice
         # Stage machine for the modal: "pick" (typing/suggestions) ->
         # "choice" (SHARE or TRANSFER?) -> "confirm" (final Yes/Cancel, worded
@@ -1669,6 +1710,38 @@ class TherapistDashboardScene:
         if self._cal_win is not None:
             self._cal_win.handle_event(event)
             return None
+
+        # ── Share search popup: "Currently shared with:" list scroll
+        #    (wheel + finger drag, same pattern as Register Patient below --
+        #    FINGERDOWN does not return, so a plain tap still reaches the
+        #    normal click dispatch later; only an actual drag's MOTION
+        #    consumes the event and adjusts scroll). Checked here, ahead of
+        #    the Patient List's own wheel handler below, because the share
+        #    modal is a full-screen overlay on top of panel 0 (Patient
+        #    List is always the active_panel underneath it) -- without this
+        #    priority, every wheel event while the modal is open would
+        #    scroll the hidden patient list instead of the popup on top of
+        #    it. ──────────────────────────────────────────────────────────
+        if self._share_modal_open and self._share_stage == "pick":
+            if event.type == pygame.MOUSEWHEEL:
+                if self._share_shared_viewport.collidepoint(pygame.mouse.get_pos()):
+                    self._share_shared_scroll = max(0, min(
+                        self._share_shared_scroll - event.y * self._tt(40),
+                        self._share_shared_scroll_max))
+                    return None
+            elif event.type == pygame.FINGERDOWN:
+                pos = (int(event.x * self.WIDTH), int(event.y * self.HEIGHT))
+                if self._share_shared_viewport.collidepoint(pos):
+                    self._share_shared_drag_y = event.y * self.HEIGHT
+            elif event.type == pygame.FINGERMOTION and self._share_shared_drag_y is not None:
+                cy = event.y * self.HEIGHT
+                self._share_shared_scroll = max(0, min(
+                    self._share_shared_scroll + (self._share_shared_drag_y - cy),
+                    self._share_shared_scroll_max))
+                self._share_shared_drag_y = cy
+                return None
+            elif event.type == pygame.FINGERUP:
+                self._share_shared_drag_y = None
 
         # ── Patient List scrolling (wheel + touch drag) ──────────────
         if self.active_panel == 0:
@@ -3640,6 +3713,8 @@ class TherapistDashboardScene:
         self._share_confirm_therapist = None
         self._share_stage             = "pick"
         self._share_pending_action    = None
+        self._share_shared_scroll     = 0
+        self._share_shared_drag_y     = None
 
     # ──────────────────────────────────────────────────────────────────
     #  EDIT PATIENT MODAL — helpers
@@ -5296,9 +5371,26 @@ class TherapistDashboardScene:
                     col_normal=(20,150,165), radius=int(reg_h*0.3))
             self._register_link_rect = reg_r
 
+            # ── Total Patients / Assigned to Me -- a single compact inline
+            # line (not the desktop stat cards, which this 7-inch panel
+            # can't spare the height for) so both counters are restored
+            # without taking back the vertical room freed up for the
+            # patient list rows. Real DB values, same ownership rule the
+            # desktop stat cards use below.
+            total_n    = len(self.patients)
+            assigned_n = sum(1 for p in self.patients
+                             if p.get("therapist_id") == self.account["id"])
+            f_stat   = self.fnt["eyebrow"]
+            stats_y  = title_top + header_row_h + self._sc(3)
+            stat_s   = f_stat.render(
+                f"Total Patients: {total_n}      Assigned to Me: {assigned_n}",
+                True, (105, 122, 148))
+            surface.blit(stat_s, (pa.x+pad, stats_y))
+            stats_h  = stat_s.get_height() + self._sc(5)
+
             # ── Compact search bar, immediately below the header row ────
             sb_h = self._sc(42)   # ~38-42px at the 7-inch panel's own scale
-            search_y = title_top + header_row_h + self._sc(8)
+            search_y = title_top + header_row_h + stats_h + self._sc(6)
             hint_r = pygame.Rect(pa.x+pad, search_y, pa.width - pad*2, sb_h)
             self._pt_search_rect = hint_r
             s_active = self._pt_search_active
@@ -5716,35 +5808,38 @@ class TherapistDashboardScene:
         centered Cancel underneath. Three buttons don't fit
         draw_confirm_dialog's 1-or-2-button layout, so this uses the shared
         draw_dialog_chrome for the identical card/overlay/icon/title look
-        and lays out its own button row."""
+        and lays out its own button row. Fixed-size, same as the other
+        three Patient Sharing/Transferring popups."""
         W, H = self.WIDTH, self.HEIGHT
         pt_name = (self.share_modal_patient or {}).get("full_name", "Patient")
         t_name  = (self._share_confirm_therapist or {}).get("full_name", "Therapist")
-        body = f"Patient: {pt_name}\nTherapist: {t_name}\nWhat would you like to do?"
+        body = f"Patient: {pt_name}\nTherapist: {t_name}\n\nWhat would you like to do?"
 
-        pad      = self._sc(24)
-        btn_h    = self._tt(50)
-        cancel_h = self._tt(44)
-        gap      = self._sc(14)
-        extra_h  = gap + btn_h + gap + cancel_h
+        pad_px, icon_r_px = self._share_header_metrics()
+        pad      = self._sc(pad_px)
+        btn_h    = self._tt(52)
+        cancel_h = self._tt(46)
+        gap      = self._sc(22)
+        extra_h  = gap + btn_h + gap + cancel_h + self._sc(6)
 
         mr, content_y, _theme = draw_dialog_chrome(
-            surface, W, H, tt=self._tt, sc=self._sc, fonts=self._dialog_fonts(),
+            surface, W, H, tt=self._tt, sc=self._sc, fonts=self._share_dialog_fonts(),
             icon="info", accent=(60, 140, 220), title="Share Patient", body=body,
-            extra_content_h=extra_h, min_content_w=self._sc(380))
+            extra_content_h=extra_h, fixed_size=self._share_popup_size(),
+            pad_px=pad_px, icon_r_px=icon_r_px)
 
         content_y += gap
-        bw2 = (mr.width - pad * 2 - self._sc(12)) // 2
+        bw2 = (mr.width - pad * 2 - self._sc(16)) // 2
         self._share_choice_share_rect    = pygame.Rect(mr.x + pad, content_y, bw2, btn_h)
         self._share_choice_transfer_rect = pygame.Rect(
-            mr.x + pad + bw2 + self._sc(12), content_y, bw2, btn_h)
+            mr.x + pad + bw2 + self._sc(16), content_y, bw2, btn_h)
         _btn(surface, self._share_choice_share_rect, "SHARE", self.fnt["btn"],
              (40, 160, 90), (28, 130, 70), self._share_choice_share_hov, radius=12)
         _btn(surface, self._share_choice_transfer_rect, "TRANSFER", self.fnt["btn"],
              (215, 140, 30), (180, 112, 15), self._share_choice_transfer_hov, radius=12)
         content_y += btn_h + gap
 
-        cancel_w = self._sc(180)
+        cancel_w = self._sc(200)
         self._share_no_rect = pygame.Rect(mr.centerx - cancel_w // 2, content_y,
                                           cancel_w, cancel_h)
         _btn(surface, self._share_no_rect, "Cancel", self.fnt["btn"],
@@ -5759,73 +5854,65 @@ class TherapistDashboardScene:
         """Share Confirmation / Transfer Patient Confirmation -- both are a
         plain title + description (+ detail lines, for Transfer) + two
         buttons, so both go straight through the existing, already-
-        standardized draw_confirm_dialog rather than a bespoke layout.
+        standardized draw_confirm_dialog, at the same fixed_size as the
+        other two Patient Sharing/Transferring popups, rather than a
+        bespoke layout.
 
-        Both bodies are long enough (a full permissions/consequences
-        paragraph, plus three labeled detail lines for Transfer) that even
-        at a realistic name length, the text alone needs more lines than
-        draw_confirm_dialog's standard body font (modal_lbl, the same size
-        used for short one- or two-line confirmations elsewhere) leaves
-        room for at 800x480 -- it only clamps the card height, it doesn't
-        shrink content to fit, so unbounded content would silently overflow
-        past the buttons. Three things keep this one popup type inside
-        budget without touching draw_confirm_dialog's behavior for every
-        OTHER caller: a wider max_w_frac (more room to wrap into), the
-        smaller `tag` body font already used for exactly this kind of
-        dense, multi-line confirmation text elsewhere in this file (passed
-        via a plain dict override -- draw_confirm_dialog already reads
-        fonts["body"] generically, no signature change needed), and capping
-        each inserted name to a single line's width (never shrinking the
-        font further, per spec -- an ellipsis instead)."""
+        Titles are never truncated -- both repeat the patient/therapist
+        names in full and let draw_confirm_dialog's own wrap-then-shrink-
+        to-title_small fallback handle an unusually long one (spec:
+        "titles should wrap... before considering a small font
+        reduction"). Transfer's three labeled detail lines ARE each capped
+        to one line (ellipsis, never a smaller font) since those are
+        fixed-width label: value rows, not a heading -- wrapping one would
+        misalign the whole block. Transfer additionally drops the icon
+        (the tinted top band still shows) -- a full warning paragraph plus
+        three detail lines under a two-line dynamic title is simply more
+        text than fits alongside one at this popup's shared fixed size;
+        Share keeps its icon since its body is a single short paragraph
+        with room to spare."""
         pt_name = (self.share_modal_patient or {}).get("full_name", "Patient")
         t_name  = (self._share_confirm_therapist or {}).get("full_name", "Therapist")
         cur_name = self.account.get("full_name", "—")
         is_transfer = (self._share_pending_action == "transfer")
 
-        max_w_frac = 0.92
-        pad = self._sc(24)
-        max_content_w = int(self.WIDTH * max_w_frac) - pad * 2
-        body_font = self.fnt["tag"]
-        dlg_fonts = dict(self._dialog_fonts())
-        dlg_fonts["body"] = body_font
+        mw, mh = self._share_popup_size()
+        pad_px, icon_r_px = self._share_header_metrics()
+        pad = self._sc(pad_px)
+        max_content_w = mw - pad * 2
+        dlg_fonts = self._share_dialog_fonts()
+        body_font = dlg_fonts["body"]
 
         if is_transfer:
-            title = "Transfer Patient?"
+            title = f"Transfer {pt_name} with {t_name}?"
             detail = ("You are about to transfer this patient to another therapist. "
                      "After the transfer, you may lose access to the patient's "
                      "account and rehabilitation records. Please verify the "
                      "information below before proceeding.")
             # Each detail line is capped to one line: the widest label
             # ("Receiving Therapist: ") sets how much width is left for the
-            # name that follows it.
+            # name that follows it. These are fixed label:value rows, not
+            # prose, so a truncated name here (not the title, which wraps
+            # instead) keeps the block legible rather than forcing a
+            # 2nd line that breaks the label/value alignment.
             label_w = body_font.size("Receiving Therapist: ")[0]
             name_budget = max(self._sc(100), max_content_w - label_w)
             details = (
                 f"Patient Name: {_truncate_text(pt_name, body_font, name_budget)}\n"
                 f"Current Therapist: {_truncate_text(cur_name, body_font, name_budget)}\n"
                 f"Receiving Therapist: {_truncate_text(t_name, body_font, name_budget)}")
-            body = f"{detail}\n\n{details}"
+            # A single newline (not a blank-line double newline) separates
+            # the warning paragraph from the detail block -- still a clear
+            # visual break (a fresh line of label:value rows right under a
+            # paragraph reads as its own group) without spending a full
+            # blank line's height this popup's fixed size doesn't have.
+            body = f"{detail}\n{details}"
             confirm_label = "Transfer Patient"
             icon, accent = "warning", (215, 140, 30)
             countdown = self._danger_countdown if self._danger_countdown > 0 else None
-            # Consequences paragraph + three detail lines is simply more
-            # text than fits alongside an icon circle at 800x480 -- drop
-            # the icon for this one (still keeps the tinted top accent,
-            # card, overlay, shadow, and everything else) rather than
-            # crowd/clip the detail lines it's specifically there so the
-            # therapist can double-check before a destructive action.
             show_icon = False
         else:
-            show_icon = True
-            # The title itself repeats both names ("Share X with Y?") in the
-            # larger title font -- bound each to roughly half the available
-            # width so the title can never need more than its normal 1-2
-            # wrapped lines regardless of real name length.
-            title_font = self.fnt["modal_head"]
-            boilerplate_w = title_font.size("Share  with ?")[0]
-            title_name_budget = max(self._sc(80), (max_content_w - boilerplate_w) // 2)
-            title = (f"Share {_truncate_text(pt_name, title_font, title_name_budget)} "
-                    f"with {_truncate_text(t_name, title_font, title_name_budget)}?")
+            title = f"Share {pt_name} with {t_name}?"
             body = ("The receiving therapist will be able to access the patient's "
                     "information and assist with therapy sessions according to their "
                     "shared-patient permissions. They will not become the owner and "
@@ -5833,13 +5920,15 @@ class TherapistDashboardScene:
             confirm_label = "Yes, Share"
             icon, accent = "check", (40, 160, 90)
             countdown = None
+            show_icon = True
 
         cr, xr = draw_confirm_dialog(
             surface, self.WIDTH, self.HEIGHT, tt=self._tt, sc=self._sc,
             fonts=dlg_fonts, icon=icon, accent=accent,
             title=title, body=body, confirm_label=confirm_label, cancel_label="Cancel",
             confirm_hov=self._share_yes_hov, cancel_hov=self._share_no_hov,
-            countdown=countdown, max_w_frac=max_w_frac, show_icon=show_icon)
+            countdown=countdown, show_icon=show_icon, fixed_size=(mw, mh),
+            pad_px=pad_px, icon_r_px=icon_r_px)
         self._share_yes_rect, self._share_no_rect = cr, xr
 
         # Dead rects for the stages this popup doesn't draw.
@@ -5850,12 +5939,15 @@ class TherapistDashboardScene:
 
     def _draw_share_search_modal(self, surface):
         """Therapist username search popup (the "pick" stage): title +
-        patient name/ID, a "Share with:" input, live suggestions (or an
-        empty-state hint), the "currently shared with" list, and a single
-        Close button -- all via the same draw_dialog_chrome header the
-        other three popups use."""
+        patient name/ID, a "Share with:" input filling the available
+        width, live suggestions (or an empty-state hint), a two-column
+        "currently shared with" list (name/username left, a fixed-width
+        Revoke column right, scrollable when it has more rows than fit),
+        and a single Close button -- all at this family's shared fixed
+        outer size."""
         W, H = self.WIDTH, self.HEIGHT
-        pad   = self._sc(24)
+        pad_px, icon_r_px = self._share_header_metrics()
+        pad   = self._sc(pad_px)
         fh    = self._tt(46)
         btn_h = self._tt(50)
         lbl_h = self.fnt["small"].get_height()
@@ -5881,53 +5973,32 @@ class TherapistDashboardScene:
         pt_id   = (self.share_modal_patient or {}).get("patient_id_str", "")
         disp    = self._share_input
 
-        core_h = lbl_h + self._sc(4) + fh + self._sc(10)
-        if self._share_suggestions:
-            n = min(len(self._share_suggestions), 5)
-            body_h = n * (self._tt(44) + self._sc(4)) + self._sc(6)
-        else:
-            body_h = self.fnt["small"].get_height() + self._sc(8)
+        mw, mh = self._share_popup_size()
+        dlg_fonts = self._share_dialog_fonts()
+        max_content_w = mw - pad * 2
 
-        try:
-            shared = (self.db.get_shared_therapists(self.share_modal_patient["id"])
-                      if self.share_modal_patient else [])
-        except Exception:
-            shared = []
-        shared_n = min(len(shared), 4)   # a longer list still degrades gracefully below
-        shared_h = (lbl_h + self._sc(4) + shared_n * (self._tt(40) + self._sc(4))
-                    if shared_n else lbl_h + self._sc(4) + self.fnt["small"].get_height())
-
-        extra_h = core_h + body_h + shared_h + self._sc(10) + btn_h
-
-        # Wider than the other three popups (0.92 vs the default 0.82) --
-        # this one packs a label, input, suggestions AND a shared-with list
-        # into one screen, so it needs the extra horizontal room. The
-        # patient name/ID subtitle is still forced to a single line (see
-        # _truncate_text) regardless of how long the real name is --
-        # wrapping it to 2+ lines is exactly what blew this popup's height
-        # budget on a long name before (the live suggestion row silently
-        # had no room left to draw at all).
-        max_w_frac = 0.92
-        max_content_w_est = int(W * max_w_frac) - pad * 2
         # Truncate the NAME, never the ID -- RCVR-#### is short, fixed-width,
         # and the more reliable identifier when a name is this long anyway.
         id_suffix = f" · {pt_id}" if pt_id else ""
-        name_budget = max_content_w_est - self.fnt["modal_lbl"].size(id_suffix)[0]
-        subtitle = _truncate_text(pt_name, self.fnt["modal_lbl"], name_budget) + id_suffix
+        name_budget = max_content_w - dlg_fonts["body"].size(id_suffix)[0]
+        subtitle = _truncate_text(pt_name, dlg_fonts["body"], name_budget) + id_suffix
 
         mr, content_y, _theme = draw_dialog_chrome(
-            surface, W, H, tt=self._tt, sc=self._sc, fonts=self._dialog_fonts(),
+            surface, W, H, tt=self._tt, sc=self._sc, fonts=dlg_fonts,
             icon="info", accent=(60, 140, 220), title="Share Patient",
-            body=subtitle, extra_content_h=extra_h,
-            min_content_w=self._sc(420), max_w_frac=max_w_frac)
+            body=subtitle, fixed_size=(mw, mh), pad_px=pad_px, icon_r_px=icon_r_px)
 
-        content_y += self._sc(6)
+        content_y += self._sc(8)
 
-        # "Share with:" label + input field.
-        surface.blit(self.fnt["small"].render("Share with:", True, label_col),
-                     (mr.x + pad, content_y))
-        content_y += lbl_h + self._sc(4)
-        sf_r = pygame.Rect(mr.x + pad, content_y, mr.width - pad * 2, fh)
+        # "Share with:" label sits INLINE to the left of the input (one row,
+        # not two) -- this popup already has a label, an input, live
+        # suggestions AND a shared-with list to fit in a fixed-height card;
+        # a label row of its own was the single biggest reclaimable chunk.
+        lbl_s = self.fnt["small"].render("Share with:", True, label_col)
+        lbl_w = lbl_s.get_width() + self._sc(10)
+        row_r = pygame.Rect(mr.x + pad, content_y, mr.width - pad * 2, fh)
+        surface.blit(lbl_s, lbl_s.get_rect(midleft=(row_r.x, row_r.centery)))
+        sf_r = pygame.Rect(row_r.x + lbl_w, row_r.y, row_r.width - lbl_w, fh)
         pygame.draw.rect(surface, input_bg, sf_r, border_radius=12)
         pygame.draw.rect(surface, input_bdr, sf_r, 2, border_radius=12)
         ts_inp = (self.fnt["input"].render(disp, True, input_text_col) if disp
@@ -5939,17 +6010,29 @@ class TherapistDashboardScene:
                              (curs_x, sf_r.centery - self._sc(10)),
                              (curs_x, sf_r.centery + self._sc(10)), 2)
         self._share_field_rect = sf_r
-        content_y = sf_r.bottom + self._sc(10)
+        content_y = row_r.bottom + self._sc(8)
 
         close_top = mr.bottom - btn_h - pad          # everything must stay above this
 
-        # ── Live suggestions, or an error/success/empty-state hint ──────
+        # ── Live suggestions take over the rest of the card while active --
+        # an autocomplete list and the persistent "currently shared with"
+        # list both wanting room at once is exactly what squeezed the
+        # shared-with viewport down to nothing (or a row clipped mid-
+        # height) before: while the therapist is actively typing a new
+        # username, seeing who the patient is ALREADY shared with isn't
+        # the priority, so suggestions get the full remaining height and
+        # the shared-with section simply isn't drawn for that one frame
+        # (it reappears the moment the input is cleared or a suggestion is
+        # picked -- nothing about the list itself changes). ──────────────
         self._share_sugg_rects = []
+        self._unshare_rects = []
         if self._share_suggestions:
+            self._share_shared_viewport = pygame.Rect(0, 0, 1, 1)
             opt_h = self._tt(44)
-            for i, t in enumerate(self._share_suggestions):
-                sr = pygame.Rect(sf_r.x, content_y + i * (opt_h + self._sc(4)),
-                                 sf_r.width, opt_h)
+            max_sugg_rows = 4
+            for i, t in enumerate(self._share_suggestions[:max_sugg_rows]):
+                sr = pygame.Rect(mr.x + pad, content_y + i * (opt_h + self._sc(6)),
+                                 mr.width - pad * 2, opt_h)
                 if sr.bottom > close_top:
                     break
                 if sr.collidepoint(pygame.mouse.get_pos()):
@@ -5957,49 +6040,110 @@ class TherapistDashboardScene:
                 else:
                     pygame.draw.rect(surface, sugg_bg, sr, border_radius=10)
                 pygame.draw.rect(surface, sugg_bdr, sr, 1, border_radius=10)
-                row_lbl = f"@{t['username']}  ·  {t['full_name']}"
+                row_lbl = _truncate_text(f"@{t['username']}  ·  {t['full_name']}",
+                                         self.fnt["body"], sr.width - self._sc(24))
                 rs = self.fnt["body"].render(row_lbl, True, sugg_text_col)
                 surface.blit(rs, rs.get_rect(midleft=(sr.x + self._sc(12), sr.centery)))
                 self._share_sugg_rects.append((sr, t))
-            content_y += len(self._share_sugg_rects) * (opt_h + self._sc(4)) + self._sc(6)
-        else:
-            if self._share_error:
-                msg, mc = self._share_error, (210, 50, 50)
-            elif self._share_success:
-                msg, mc = self._share_success, (50, 175, 75)
-            elif not disp:
-                msg, mc = "Type a username to see suggestions.", muted_col
-            else:
-                msg, mc = "", None
-            if msg:
-                surface.blit(self.fnt["small"].render(msg, True, mc),
-                             (mr.x + pad, content_y))
-                content_y += self.fnt["small"].get_height() + self._sc(8)
+            # ── Single Close button (suggestions branch ends here) ──────
+            bw_c = self._sc(160)
+            clos_r = pygame.Rect(mr.centerx - bw_c // 2, close_top, bw_c, btn_h)
+            _btn(surface, clos_r, "Close", self.fnt["btn"],
+                 (160, 175, 195), (130, 148, 168), self._share_close_hov, radius=12)
+            self._share_close_rect = clos_r
+            self._share_yes_rect             = pygame.Rect(0, 0, 1, 1)
+            self._share_choice_share_rect    = pygame.Rect(0, 0, 1, 1)
+            self._share_choice_transfer_rect = pygame.Rect(0, 0, 1, 1)
+            return
 
-        # ── Currently shared-with (flows under the content, never fixed) ──
-        self._unshare_rects = []
-        row_h = self._tt(40)
-        if shared:
-            if content_y + lbl_h + row_h <= close_top:
-                surface.blit(self.fnt["small"].render(
-                    "Currently shared with:", True, shared_label_col), (mr.x + pad, content_y))
-                content_y += lbl_h + self._sc(4)
-                rev_w = self.fnt["tag"].size("Revoke")[0] + self._sc(20)
-                for t in shared:
-                    if content_y + row_h > close_top:
-                        break
-                    ts_l = self.fnt["small"].render(
-                        f"{t['full_name']} (@{t['username']})", True, shared_text_col)
-                    surface.blit(ts_l, (mr.x + pad, content_y + (row_h - ts_l.get_height()) // 2))
-                    rev_r = pygame.Rect(mr.right - pad - rev_w, content_y, rev_w, row_h)
-                    pygame.draw.rect(surface, (210, 60, 60), rev_r, border_radius=8)
+        # Only error/success feedback reserves its own line here -- the
+        # generic "type a username..." hint was redundant with the input's
+        # own "Enter username" placeholder, and removing it hands that
+        # room straight to the shared-with list below, which needs it far
+        # more (it's the persistent content; the hint was only ever filler
+        # for an otherwise-empty moment).
+        if self._share_error:
+            msg, mc = self._share_error, (210, 50, 50)
+        elif self._share_success:
+            msg, mc = self._share_success, (50, 175, 75)
+        else:
+            msg, mc = "", None
+        if msg:
+            for ln in self._wrap(msg, self.fnt["small"], mr.width - pad * 2):
+                surface.blit(self.fnt["small"].render(ln, True, mc),
+                             (mr.x + pad, content_y))
+                content_y += self.fnt["small"].get_height() + self._sc(2)
+            content_y += self._sc(4)
+
+        # ── Currently shared-with: two columns (name/username left, a
+        #    fixed-width Revoke column right, with a clear gap between
+        #    them), in a scrollable viewport so an arbitrarily long list
+        #    degrades to scrolling instead of overflowing or getting cut
+        #    off mid-row. ──────────────────────────────────────────────
+        try:
+            shared = (self.db.get_shared_therapists(self.share_modal_patient["id"])
+                      if self.share_modal_patient else [])
+        except Exception:
+            shared = []
+
+        surface.blit(self.fnt["tag"].render(
+            "Currently shared with:", True, shared_label_col), (mr.x + pad, content_y))
+        content_y += self.fnt["tag"].get_height() + self._sc(3)
+
+        viewport = pygame.Rect(mr.x + pad, content_y, mr.width - pad * 2,
+                               max(0, close_top - content_y))
+        self._share_shared_viewport = viewport
+
+        if not shared:
+            self._share_shared_scroll = self._share_shared_scroll_max = 0
+            surface.blit(self.fnt["small"].render(
+                "Not shared with anyone yet.", True, muted_col), (viewport.x, viewport.y))
+        else:
+            row_h    = self._tt(46)
+            row_gap  = self._sc(8)
+            rev_w    = max(self.fnt["tag"].size("Revoke")[0] + self._sc(28), self._sc(96))
+            col_gap  = self._sc(16)
+            name_col_w = max(self._sc(80), viewport.width - rev_w - col_gap)
+
+            total_h = len(shared) * (row_h + row_gap) - row_gap
+            self._share_shared_scroll_max = max(0, total_h - viewport.height)
+            self._share_shared_scroll = max(0, min(self._share_shared_scroll,
+                                                    self._share_shared_scroll_max))
+
+            prev_clip = surface.get_clip()
+            surface.set_clip(viewport)
+            y = viewport.y - self._share_shared_scroll
+            for t in shared:
+                row_top = y
+                visible = (row_top + row_h >= viewport.top) and (row_top <= viewport.bottom)
+                if visible:
+                    name_txt = _truncate_text(f"{t['full_name']} (@{t['username']})",
+                                              self.fnt["small"], name_col_w)
+                    ts_l = self.fnt["small"].render(name_txt, True, shared_text_col)
+                    surface.blit(ts_l, (viewport.x, row_top + (row_h - ts_l.get_height()) // 2))
+
+                    rev_r = pygame.Rect(viewport.x + name_col_w + col_gap, row_top, rev_w, row_h)
+                    pygame.draw.rect(surface, (210, 60, 60), rev_r, border_radius=10)
                     rev_s = self.fnt["tag"].render("Revoke", True, (255, 255, 255))
                     surface.blit(rev_s, rev_s.get_rect(center=rev_r.center))
                     self._unshare_rects.append((rev_r, t["id"]))
-                    content_y += row_h + self._sc(4)
-        elif content_y + lbl_h <= close_top:
-            surface.blit(self.fnt["small"].render(
-                "Not shared with anyone yet.", True, muted_col), (mr.x + pad, content_y))
+                y += row_h + row_gap
+            surface.set_clip(prev_clip)
+
+            # Minimal scroll affordance: a thin track + thumb along the
+            # viewport's right edge, only drawn when there's more to see.
+            if self._share_shared_scroll_max > 0:
+                track_w = self._sc(5)
+                track_r = pygame.Rect(viewport.right - track_w, viewport.top,
+                                      track_w, viewport.height)
+                pygame.draw.rect(surface, shared_label_col, track_r, border_radius=track_w // 2)
+                thumb_h = max(self._sc(24), int(viewport.height *
+                             (viewport.height / (total_h if total_h else 1))))
+                thumb_y = viewport.top + int((viewport.height - thumb_h) *
+                         (self._share_shared_scroll / self._share_shared_scroll_max))
+                thumb_r = pygame.Rect(track_r.x, thumb_y, track_w, thumb_h)
+                pygame.draw.rect(surface, (*((140, 180, 255) if dark else (40, 120, 200)),),
+                                 thumb_r, border_radius=track_w // 2)
 
         # ── Single Close button ──────────────────────────────────────
         bw_c = self._sc(160)
@@ -6577,6 +6721,61 @@ class TherapistDashboardScene:
         dialog so they all read as one consistent type system."""
         return {"title": self.fnt["modal_head"], "title_small": self.fnt["modal_lbl"],
                 "body": self.fnt["modal_lbl"], "btn": self.fnt["btn"], "sym": self.fnt["sym26"]}
+
+    # ── Patient Sharing/Transferring popups: one shared sizing system ───
+    # All four (therapist search, SHARE|TRANSFER chooser, Share confirm,
+    # Transfer confirm) share the exact same outer card size and the same
+    # title/body font choices, via draw_dialog_chrome's/draw_confirm_
+    # dialog's fixed_size param -- never four independently-sized popups.
+
+    def _share_popup_size(self):
+        """~620x420 at the 800x480 reference LCD, expressed as a fraction
+        of the actual screen so it scales proportionally on any other
+        resolution instead of drifting from the non-proportional _sc/_tt
+        control-sizing curve those functions otherwise use.
+
+        The spec target was ~620x380, but the Transfer confirmation's own
+        content -- a full warning paragraph, three labeled detail lines,
+        AND a dynamic title repeating both names -- genuinely does not fit
+        380px even after every reasonable optimization (a denser shared
+        body font, no mid-paragraph blank line, no icon for this one
+        popup): it needs ~400-410px, measured directly against real font
+        metrics, not estimated. 420 gives a small safety margin while
+        still leaving ~30px of comfortable top+bottom screen margin --
+        the "adjusting only if necessary" the spec itself allows for,
+        rather than truncating names or shrinking fonts further to force
+        a tighter number.
+
+        The search popup's own content (label+input row, live suggestions
+        OR the persistent shared-with list, a scrollable two-column list)
+        pushed this up further still, to ~0.93 -- at 0.88 the shared-with
+        viewport came out under one full touch-sized row even in its best
+        case (no live suggestions competing for room), which fails "make
+        the shared-with list scrollable" in practice (nothing usable to
+        scroll). 0.93 leaves the list genuinely usable (about two rows)
+        while keeping ~17px of top+bottom screen margin -- tight, but
+        still a real margin, not edge-to-edge."""
+        return int(self.WIDTH * 0.775), int(self.HEIGHT * 0.93)
+
+    def _share_dialog_fonts(self):
+        """Same title font as every other standard dialog, but a smaller,
+        denser body font than draw_confirm_dialog's default (modal_lbl) --
+        shared by all four of these popups specifically (not just the ones
+        that strictly need it) so "same body font size" actually holds
+        across the family, and so the fixed card size has room for what
+        the busiest of the four (Transfer) needs to show."""
+        f = dict(self._dialog_fonts())
+        f["body"] = self.fnt["tag"]
+        return f
+
+    def _share_header_metrics(self):
+        """pad_px/icon_r_px for all four Patient Sharing/Transferring
+        popups -- smaller than draw_confirm_dialog's/draw_dialog_chrome's
+        own defaults (24/32), passed identically to every one of the four
+        so their header heights stay equal ("same header height" per
+        spec) while reclaiming the room this content-dense family of
+        popups needs within its shared fixed outer size."""
+        return 14, 20   # (pad_px, icon_r_px)
 
     def _draw_choice_modal(self, surface, title, body, icon, accent):
         """Shared CANCEL | CONFIRM dialog (used for SELECT and DESELECT),
@@ -7901,13 +8100,23 @@ class TherapistDashboardScene:
         # params set to confirm in that path.
         game_configured = self.calibration_bypassed or bool(
             (self.calibration_result or {}).get("params"))
-        steps = [
-            ("Patient Selected",     self.selected_patient is not None),
-            ("Game Selected",        gc["selected_game"] is not None),
+        # "Patient Selected" / "Game Selected" are still REQUIRED for the
+        # session to be ready -- the game-config flow already can't reach
+        # this screen without both -- but are no longer shown as rows in the
+        # visible checklist (which only needs to surface the three steps the
+        # therapist still has to actively do here). `steps` (hidden + shown)
+        # is still what the readiness gate below is computed from; only
+        # `display_steps` drives the on-screen rows/spacing.
+        _hidden_requirements = [
+            ("Patient Selected", self.selected_patient is not None),
+            ("Game Selected",    gc["selected_game"] is not None),
+        ]
+        display_steps = [
             ("Game Configured",      game_configured),
             ("Controller Connected", self._controller_status()[0] == "connected"),
             ("Sensor Calibrated",    cal_done and not cal_mismatch),
         ]
+        steps = _hidden_requirements + display_steps
         # The CTA button only becomes "Start Session" once every item above
         # is checked -- the checklist IS the readiness gate now, not a
         # separate self._session_ready() computation. The dev-only Test Mode
@@ -7925,9 +8134,13 @@ class TherapistDashboardScene:
             ready = all(ok for _, ok in steps)
         hpad = self._sc(10)
         head_s = self.fnt["section"].render("Session Readiness Checklist", True, (75, 95, 125))
-        avail_rows_h = max(1, content_bottom - (y + hpad + head_s.get_height() + self._sc(4)) - hpad)
-        row_h = min(self._sc(46), avail_rows_h / len(steps))
-        checklist_h = hpad + head_s.get_height() + self._sc(4) + row_h * len(steps) + hpad
+        # More room between the heading and the first row, and a taller cap
+        # per row, now that only 3 rows (not 5) need to share the available
+        # height -- both freed up by dropping the two hidden rows above.
+        head_gap = self._sc(16)
+        avail_rows_h = max(1, content_bottom - (y + hpad + head_s.get_height() + head_gap) - hpad)
+        row_h = min(self._sc(62), avail_rows_h / len(display_steps))
+        checklist_h = hpad + head_s.get_height() + head_gap + row_h * len(display_steps) + hpad
         checklist_r = pygame.Rect(x0, y, card_w, min(checklist_h, content_bottom - y))
         _card_bg(surface, checklist_r, alpha=235, border_col=(185, 210, 240), border_w=1)
         surface.blit(head_s, (checklist_r.x + hpad, checklist_r.y + hpad))
@@ -7950,9 +8163,9 @@ class TherapistDashboardScene:
         else:
             self._test_mode_btn_rect = pygame.Rect(0, 0, 1, 1)
 
-        rows_top = checklist_r.y + hpad + head_s.get_height() + self._sc(4)
+        rows_top = checklist_r.y + hpad + head_s.get_height() + head_gap
         dot_r    = self._sc(9)
-        for i, (lbl, ok) in enumerate(steps):
+        for i, (lbl, ok) in enumerate(display_steps):
             cy = int(rows_top + i * row_h + row_h / 2)
             cx = checklist_r.x + hpad + dot_r
             if ok:

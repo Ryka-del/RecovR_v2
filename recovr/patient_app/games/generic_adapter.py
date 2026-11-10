@@ -80,15 +80,17 @@ def _mask_results_buttons(game, surface):
     a guessed screen-fraction strip -- those rects are exactly where the game
     just drew the buttons this frame, so this never drifts out of sync when a
     game's results layout changes (a hardcoded strip previously did, landing
-    visibly off-target after the Round Complete card redesign)."""
+    visibly off-target after the Round Complete card redesign).
+
+    The fill colour is SAMPLED from the pixel just above the button strip --
+    i.e. the Round Complete card's own stat-row background -- rather than a
+    flat constants.get_theme()["PANEL"] guess. PANEL is pure white in Light
+    mode, which painted a visibly mismatched white rectangle over the
+    card's actual (non-white) art at that point; sampling what the game
+    itself just rendered there blends in regardless of theme or which
+    game's card is on screen."""
     if not getattr(game, "game_over", False):
         return
-    try:
-        from constants import get_theme
-        panel = get_theme()["PANEL"]
-    except Exception:
-        panel = (30, 35, 50)
-
     rects = [r for r in (
         getattr(game, "_results_again_rect", None),
         getattr(game, "_results_exit_rect", None),
@@ -98,7 +100,26 @@ def _mask_results_buttons(game, surface):
     if not rects:
         return
     strip = rects[0].unionall(rects[1:]).inflate(16, 16)
-    surface.fill(panel, strip)
+    try:
+        sw, sh = surface.get_size()
+        # Sample just OUTSIDE the strip's left/right edges, at its own
+        # vertical centre -- the same backdrop band the buttons sit on,
+        # clear of both the button artwork itself and any text/confetti
+        # directly above/below -- and average the two so one odd pixel
+        # (e.g. a stray confetti fleck) can't skew the whole fill.
+        sy = max(0, min(sh - 1, strip.centery))
+        xs = [x for x in (strip.left - 6, strip.right + 5) if 0 <= x < sw]
+        if not xs:
+            xs = [max(0, min(sw - 1, strip.centerx))]
+        samples = [surface.get_at((x, sy))[:3] for x in xs]
+        fill_col = tuple(sum(c) // len(samples) for c in zip(*samples))
+    except Exception:
+        try:
+            from constants import get_theme
+            fill_col = get_theme()["PANEL"]
+        except Exception:
+            fill_col = (30, 35, 50)
+    surface.fill(fill_col, strip)
 
 
 def _hidden_pause_rect(game):

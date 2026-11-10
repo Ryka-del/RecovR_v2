@@ -93,18 +93,14 @@ class FatigueMixin:
     def _draw_fatigue_overlay(self, surface):
         if not self.fatigue_paused:
             return
-        T        = get_theme()
-        font_big = pygame.font.SysFont("monospace", 64, bold=True)
-        font     = pygame.font.SysFont("monospace", 36)
-        font_sm  = pygame.font.SysFont("monospace", 28)
-        overlay  = pygame.Surface((GAME_W, GAME_H), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 200))
-        surface.blit(overlay, (0, 0))
-        title = font_big.render("Take a Break!", True, T["YELLOW"])
-        surface.blit(title, (GAME_W // 2 - title.get_width() // 2, GAME_H // 2 - 140))
-        msg = font.render("No activity detected for 60 seconds.", True, T["TEXT"])
-        surface.blit(msg, (GAME_W // 2 - msg.get_width() // 2, GAME_H // 2 - 40))
-        sub = font.render("Take a deep breath and rest your hand.", True, T["GRAY"])
-        surface.blit(sub, (GAME_W // 2 - sub.get_width() // 2, GAME_H // 2 + 20))
-        hint = font_sm.render("Press ENTER or squeeze to continue.", True, T["ACCENT"])
-        surface.blit(hint, (GAME_W // 2 - hint.get_width() // 2, GAME_H // 2 + 100))
+        from ui_cards import draw_state_card, BREAK_ACCENT
+        draw_state_card(
+            surface,
+            title="Take a Break!",
+            subtitle="Relax your hand and take a deep breath.",
+            accent=BREAK_ACCENT,
+            kind="break",
+            dim=True,
+            extra_lines=[("No activity detected for 60 seconds.", (170, 182, 205))],
+            hint="Press ENTER or squeeze to continue.",
+        )

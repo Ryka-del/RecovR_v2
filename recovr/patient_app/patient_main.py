@@ -351,14 +351,20 @@ class PatientApp:
             self._set_mode(HOWTOPLAY if self.runner is not None else DASHBOARD)
             return
 
-        # 4. START GAME / RESTART -> the actual game starts NOW (no touch, no timer).
+        # 4. START GAME / RESTART -> show the "Get Ready! / 3-2-1 / START!"
+        #    countdown (GameRunner.begin_countdown()), then the actual game
+        #    begins. GameRunner keeps the wrapped game -- its timer, score,
+        #    and sensor processing -- fully frozen for the whole countdown
+        #    (see GameRunner.update()'s `counting_down` branch); mode is
+        #    PLAYING for the whole sequence since draw()/update() already
+        #    delegate entirely to the runner either way.
         if status == cmd.RUNNING and game_seq != self.applied_game_seq:
             self.applied_game_seq = game_seq
             if self.runner is None or self.runner.finished:
                 self._begin_session(config)           # restart / late-join -> fresh instance
             if self.runner is not None:
                 self._set_mode(PLAYING)
-                self.runner.force_begin()
+                self.runner.begin_countdown()
             else:
                 self._set_mode(self._resting_mode(snap))
             return

@@ -1200,16 +1200,19 @@ class CalibrationWindow:
                 "Trial saved", True, C["green"]), (lx, cy))
         cy += row3_h + self._sc(5)
 
-        # row 4 -- controller status (simulation mode only shown when the
-        # keyboard fallback -- the app's existing simulated-input path -- is
-        # actually what's driving the reading)
+        # row 4 -- real controller status only. The Simulation Mode
+        # instructional hint (the "[ Hold SPACE to simulate grip ]"-style
+        # text) is UI narration, not calibration data -- removed per the
+        # instructional-cleanup request. Test Mode / the keyboard fallback
+        # itself is untouched (sensors/input_handler's own simulated-input
+        # path keeps working exactly as before); this row simply has nothing
+        # to show while it's active, so its space is reclaimed instead of
+        # being spent on a row stating the obvious.
         if input_handler.connected:
-            ctrl_txt, ctrl_col = "Controller Connected", C["green"]
-        else:
-            ctrl_txt, ctrl_col = f"Simulation Mode — {self.cfg['key_hint']}", C["orange"]
-        ctrl_s = self._fit_text(self._small_font_path, self._sc(21), ctrl_txt, rw, ctrl_col, self._sc(14))
-        surface.blit(ctrl_s, (lx, cy))
-        cy += ctrl_s.get_height() + self._sc(5)
+            ctrl_s = self._fit_text(self._small_font_path, self._sc(21),
+                                    "Controller Connected", rw, C["green"], self._sc(14))
+            surface.blit(ctrl_s, (lx, cy))
+            cy += ctrl_s.get_height() + self._sc(5)
 
         # row 5 -- trial indicators (completed / active / pending)
         dot_r = self._sc(10)   # must match _draw_trial_dots' own internal dot_r

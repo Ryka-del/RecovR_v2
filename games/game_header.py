@@ -161,11 +161,32 @@ def draw_game_header(surface, game_name, difficulty, time_left, score, game_w, g
         surface.blit(diff_img, (int(x), top + header_h // 2 - diff_img.get_height() // 2))
         x += diff_img.get_width() + inter_gap
 
+    def _badge_fill_color(img):
+        """Sample the badge asset's own solid background colour (far right
+        edge, past the baked-in icon/label -- see time_game.png/score_game.png,
+        which both ship a wide blank pill extending well past their text) so
+        a stretched extension matches it exactly."""
+        w, h = img.get_size()
+        return img.get_at((max(0, w - 2), h // 2))
+
     def _value_badge(img, text, label_frac, reserved_w):
         nonlocal x
         if img is None:
             return
         y = top + header_h // 2 - img.get_height() // 2
+        if reserved_w > img.get_width():
+            # The value needs more room than the badge PNG's own fixed
+            # width -- stretch a solid-colour pill extension behind it
+            # (with a matching rounded cap) instead of uniformly scaling the
+            # image, which would distort the baked-in icon/label artwork.
+            # This is what keeps "10:00" / "999" fully inside a rounded
+            # container instead of spilling text past the badge's own
+            # right edge onto the plain header background.
+            ext = pygame.Surface((reserved_w, img.get_height()), pygame.SRCALPHA)
+            cap_r = img.get_height() // 2
+            pygame.draw.rect(ext, _badge_fill_color(img),
+                             (0, 0, reserved_w, img.get_height()), border_radius=cap_r)
+            surface.blit(ext, (int(x), y))
         surface.blit(img, (int(x), y))
         # the asset only bakes in the icon + label; the live value is drawn
         # in the blank space to its right.

@@ -1,20 +1,26 @@
 """
 "Game Stopped" notice -- shown on the patient monitor when the therapist presses
 the red STOP. The game is HELD (paused, not destroyed) while the therapist
-decides whether to resume it or end the session. Theme-aware (follows
-constants.get_theme()), in the same minimal style as the other patient screens.
+decides whether to resume it or end the session -- that hold/decide logic is
+unchanged here; this screen only shows the patient a calm, final-sounding
+notice instead of narrating the therapist's still-open CONTINUE/BACK choice.
+Theme-aware background (follows constants.get_theme()), same shared card
+language as Take a Break / Game Paused (see ui_cards.py).
 """
 
-from recovr.patient_app.scenes.common import PALETTE, fill_bg, draw_lines
+from recovr.patient_app.scenes.common import fill_bg
+from ui_cards import draw_state_card, STOP_ACCENT
 
 
 class StoppedScreen:
 
     def draw(self, surface):
         fill_bg(surface)
-        draw_lines(surface, [
-            ("GAME STOPPED", 60, PALETTE["bad"]),
-            ("", 14, PALETTE["muted"]),
-            ("The game has been paused by the therapist.", 30, PALETTE["text"]),
-            ("Please wait -- your game may resume shortly.", 28, PALETTE["muted"]),
-        ], top_frac=0.46)
+        draw_state_card(
+            surface,
+            title="Game Stopped",
+            subtitle="Your therapist has ended this session.",
+            accent=STOP_ACCENT,
+            kind="stop",
+            dim=False,
+        )
