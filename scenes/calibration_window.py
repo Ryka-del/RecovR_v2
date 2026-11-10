@@ -99,6 +99,23 @@ SENSOR_CFG = {
     },
 }
 
+# Whack-a-Mole calibrates its 5 fingers independently (one multi-sensor
+# pass per finger, reusing the exact same sensitivity/countdown/recording/
+# trial_done engine as every other sensor -- see MULTI_SENSOR_CALIBRATION
+# below) instead of sharing the single generic "Finger Flexion" entry every
+# other finger-flex game (Piano Tiles, Plant the Garden, Steady Aim) uses,
+# so adding it can never change those games' calibration.
+_FINGER_FLEX_KEYS = [
+    "Thumb Flexion", "Index Flexion", "Middle Flexion", "Ring Flexion", "Pinky Flexion",
+]
+for _i, _key in enumerate(_FINGER_FLEX_KEYS):
+    SENSOR_CFG[_key] = {
+        "sensor_name": f"{_key.split()[0]} Flex Sensor",
+        "key_hint":    f"[ Hold number key {_i + 1} to simulate {_key.split()[0]} flex ]",
+        "read":        (lambda s, _i=_i: s["finger_flex"][_i]),
+    }
+del _i, _key
+
 # Difficulty presets — threshold_pct is applied to the calibrated average
 DIFFICULTY_PRESETS = {
     "Easy": {
@@ -144,7 +161,7 @@ TRIAL_DONE_PAUSE = 1.5
 # preset card is picked and to restore via "Reset to Preset". "key" is the
 # calibration_result["params"] key the game checks (falling back to its own
 # difficulty dict when absent, so normal non-customized sessions are
-# unaffected). Games not listed here (Whack-a-Mole Twist) have not been
+# unaffected). Games not listed here (Whack-a-Mole) have not been
 # individually audited for overridable constants, so they get no
 # game-specific rows -- only the generic Speed control that already applies
 # to the games listed in GAMES_USING_SPEED.

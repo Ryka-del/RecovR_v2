@@ -5,6 +5,11 @@ BLE mode (when RecovR-Controller is connected via Bluetooth):
   FSR402      → state["grip"]        0.0–1.0
   Flex Sensor → state["tilt_y"]      0.0–1.0  (also used by calibration window)
   Flex Sensor → state["fingers"]     edge-detected, all 5 lanes fire together
+  5x Flex     → state["finger_flex"] 0.0–1.0 x5 (Thumb/Index/Middle/Ring/Pinky
+                independent raw readings -- Whack-a-Mole; see FINGER_NAMES.
+                Until the real 5-finger glove wiring is confirmed (see
+                firmware/controller_esp32c3.ino), all five duplicate the
+                single legacy flex sensor, same as state["fingers"] above.)
   MPU6050 X   → state["tilt_x"]     −1.0–1.0  (wrist left/right rotation)
   Push Button → synthetic pygame KEYDOWN K_RETURN (rising edge only)
 
@@ -13,6 +18,8 @@ Keyboard fallback (when BLE is disconnected or bleak not installed):
   LEFT/RIGHT  → tilt_x  −1.0 / +1.0
   UP/DOWN     → tilt_y  −1.0 / +1.0
   A/S/D/F/G   → finger lanes handled by individual games (events, not get_state)
+  1/2/3/4/5   → state["finger_flex"] independent per-finger Test Mode
+                (Thumb/Index/Middle/Ring/Pinky) -- Whack-a-Mole
 
 All game files and the calibration window use this module via the singleton
 `input_handler` — the interface is unchanged so no game code needs editing.
@@ -31,6 +38,12 @@ def _clamp(v, lo, hi):
     return lo if v < lo else hi if v > hi else v
 
 
+# Whack-a-Mole's 5-finger glove -- canonical finger order/names, shared
+# by input_handler, games/whack_mole.py, and the therapist monitoring panel
+# (scenes/therapist_dashboard.py) so all three never drift out of sync.
+FINGER_NAMES = ["Thumb", "Index", "Middle", "Ring", "Pinky"]
+
+
 class InputHandler:
 
     RAMP_UP      = 1.25    # grip ramp-up rate in keyboard mode (full in ~0.8 s)
@@ -45,6 +58,10 @@ class InputHandler:
         "right":  (pygame.K_RIGHT,),
     }
 
+    # Test Mode: 1/2/3/4/5 independently simulate Thumb/Index/Middle/Ring/
+    # Pinky -- see FINGER_NAMES. Order matches 1-for-1.
+    _FINGER_TEST_KEYS = (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5)
+
     def __init__(self):
         # Sensor state (shared between update() and get_state())
         self._grip    = 0.0
@@ -52,6 +69,7 @@ class InputHandler:
         self._tilt_y  = 0.0
         self._fingers      = [False] * 5   # current frame finger state
         self._prev_fingers = [False] * 5   # previous frame (for edge detection)
+        self._finger_flex  = [0.0] * 5     # Whack-a-Mole: independent raw per-finger flex
 
         # Button edge detection
         self._prev_button = False
@@ -75,12 +93,15 @@ class InputHandler:
             tilt_x  float −1–1     (wrist left/right, or left/right arrows)
             tilt_y  float −1–1     (flex bend, or up/down arrows)
             fingers list[bool]×5   (True on rising edge of flex press, all lanes)
+            finger_flex list[float]×5  0-1 independent raw Thumb/Index/Middle/
+                        Ring/Pinky flexion (Whack-a-Mole; see FINGER_NAMES)
         """
         return {
-            "grip":    self._grip,
-            "tilt_x":  self._tilt_x,
-            "tilt_y":  self._tilt_y,
-            "fingers": list(self._fingers),
+            "grip":        self._grip,
+            "tilt_x":      self._tilt_x,
+            "tilt_y":      self._tilt_y,
+            "fingers":     list(self._fingers),
+            "finger_flex": list(self._finger_flex),
         }
 
     # ── Public: event-based action detection (unchanged API) ─────────────────
@@ -130,6 +151,21 @@ class InputHandler:
         # True only on the frame the sensor crosses the threshold (rising edge)
         self._fingers = [is_bent and not was_bent] * 5
 
+        # Whack-a-Mole -- 5 independent raw flex readings (0.0-1.0).
+        # raw["flex_thumb_raw"] etc. default to duplicating flex_raw when the
+        # controller is still on the old 9-byte firmware or the 5-finger
+        # glove wiring hasn't been verified yet (see ble_receiver.py /
+        # firmware/controller_esp32c3.ino) -- same value on every finger,
+        # which is harmless (no false differentiation) rather than a crash
+        # or a frozen reading.
+        self._finger_flex = [
+            _clamp(raw.get("flex_thumb_raw",  raw["flex_raw"]) / 4095.0, 0.0, 1.0),
+            _clamp(raw.get("flex_index_raw",  raw["flex_raw"]) / 4095.0, 0.0, 1.0),
+            _clamp(raw.get("flex_middle_raw", raw["flex_raw"]) / 4095.0, 0.0, 1.0),
+            _clamp(raw.get("flex_ring_raw",   raw["flex_raw"]) / 4095.0, 0.0, 1.0),
+            _clamp(raw.get("flex_pinky_raw",  raw["flex_raw"]) / 4095.0, 0.0, 1.0),
+        ]
+
         # Push button (C10, pull-down) → synthetic pygame KEYDOWN on rising edge
         btn_now = bool(raw["buttons"] & 0x01)
         if btn_now and not self._prev_button:
@@ -169,6 +205,13 @@ class InputHandler:
         # Fingers remain all-False in keyboard mode; piano tiles uses KEYDOWN events
         self._prev_fingers = list(self._fingers)
         self._fingers      = [False] * 5
+
+        # Whack-a-Mole Test Mode -- keys 1-5 independently simulate
+        # Thumb/Index/Middle/Ring/Pinky flexion. A held key reports a steady
+        # 1.0 (fully bent); releasing drops it straight to 0.0, matching how
+        # SPACE/grip behaves above. The game's own calibrated threshold +
+        # release/rearm logic (not this module) decides what counts as a hit.
+        self._finger_flex = [1.0 if keys[k] else 0.0 for k in self._FINGER_TEST_KEYS]
 
 
 # Module-level singleton used by all game files and calibration_window

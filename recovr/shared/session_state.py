@@ -257,10 +257,9 @@ class SessionStore:
                 stats = None
                 if isinstance(stats_in, dict):
                     stats = {
-                        "total_sessions":  int(stats_in.get("total_sessions", 0) or 0),
-                        "games_played":    int(stats_in.get("games_played", 0) or 0),
-                        "goals_assigned":  int(stats_in.get("goals_assigned", 0) or 0),
-                        "goals_completed": int(stats_in.get("goals_completed", 0) or 0),
+                        "total_sessions":   int(stats_in.get("total_sessions", 0) or 0),
+                        "time_elapsed_sec": int(stats_in.get("time_elapsed_sec", 0) or 0),
+                        "goals_completed":  int(stats_in.get("goals_completed", 0) or 0),
                     }
                 self._state.selected_patient = {
                     "id":        data.get("id"),

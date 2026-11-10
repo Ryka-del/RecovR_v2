@@ -76,6 +76,17 @@ DOT_SPACING_FRAC   = 0.034   # centre-to-centre spacing between dots, of W
 NAVY_TEXT        = (7, 23, 71)          # #071747 -- primary/secondary text, light theme
 DIVIDER_COLOR    = (176, 196, 221, 170) # thin light blue-gray vertical rule
 
+# Dark Mode: the card's glass shell used to stay a WHITE-tinted fill/border
+# regardless of theme (draw_glass_card's own hardcoded default), which read
+# as a washed-out, too-bright panel against the dark gradient background --
+# only the TEXT color was theme-aware before. A dark navy fill (still
+# translucent, so the gradient shows through, just a dark tint instead of a
+# light one) with a cooler, dimmer border/glow fixes that without touching
+# the Light Mode look at all (CARD_FILL_ALPHA/BORDER_ALPHA unchanged there).
+CARD_FILL_DARK   = (10, 16, 34)
+CARD_BORDER_DARK = (120, 150, 200)
+CARD_GLOW_DARK   = (90, 120, 170)
+
 
 _FONT_DIR = os.path.abspath(os.path.join(
     os.path.dirname(__file__), "..", "..", "..", "..", "assets", "font"))
@@ -147,7 +158,7 @@ class WaitingScreen:
         return draw_recovr_wordmark(surface, W // 2, top_y, box_w, box_h)
 
     def _draw_card(self, surface, rect, text_col, primary, secondary=None,
-                   sprite_name=None, alpha_scale=1.0):
+                   sprite_name=None, alpha_scale=1.0, dark=False):
         """Icon-left / text-right instruction card: [ pale circle + sprite ]
         [ divider ] [ bold primary line(s) + lighter secondary line ], all
         vertically centred so they read as one combined unit. The card itself
@@ -194,7 +205,10 @@ class WaitingScreen:
                             gap_frac=ICON_TEXT_GAP_FRAC, line_gap_frac=LINE_GAP_FRAC,
                             fill_alpha=CARD_FILL_ALPHA, border_alpha=CARD_BORDER_ALPHA,
                             shadow_alpha=SHADOW_ALPHA, alpha_scale=alpha_scale,
-                            glow_alpha=GLOW_ALPHA, divider_color=DIVIDER_COLOR)
+                            glow_alpha=GLOW_ALPHA, divider_color=DIVIDER_COLOR,
+                            fill_color=CARD_FILL_DARK if dark else (255, 255, 255),
+                            border_color=CARD_BORDER_DARK if dark else (255, 255, 255),
+                            glow_color=CARD_GLOW_DARK if dark else (255, 255, 255))
 
     def _draw_dots(self, surface, card, active_idx, N, dot_col):
         H, W = surface.get_size()[1], surface.get_size()[0]
@@ -255,7 +269,7 @@ class WaitingScreen:
             r = card.copy(); r.centerx = x
             primary, secondary, sprite_name = WAITING_INSTRUCTIONS[idx]
             self._draw_card(surface, r, text_col, primary, secondary,
-                            sprite_name=sprite_name, alpha_scale=a)
+                            sprite_name=sprite_name, alpha_scale=a, dark=dark)
 
         surface.set_clip(prev_clip)
 

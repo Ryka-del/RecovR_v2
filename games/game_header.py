@@ -126,7 +126,10 @@ def draw_game_header(surface, game_name, difficulty, time_left, score, game_w, g
         if img is None:
             return 0
         val_w   = f_val.size(text)[0]
-        right_pad = int(img.get_width() * 0.06)
+        # More breathing room on the right than before -- the value used to
+        # sit almost flush against the badge's own right edge (0.06), read
+        # as cramped/too-close-to-the-edge on the real header.
+        right_pad = int(img.get_width() * 0.14)
         needed  = int(img.get_width() * label_frac) + val_w + right_pad
         return max(img.get_width(), needed)
 
@@ -189,9 +192,11 @@ def draw_game_header(surface, game_name, difficulty, time_left, score, game_w, g
             surface.blit(ext, (int(x), y))
         surface.blit(img, (int(x), y))
         # the asset only bakes in the icon + label; the live value is drawn
-        # in the blank space to its right.
+        # in the blank space to its right -- nudged slightly left of where
+        # the label art ends (instead of hugging the badge's right edge),
+        # matching the extra right_pad reserved above.
         vs = f_val.render(text, True, (255, 255, 255))
-        vx = int(x) + int(img.get_width() * label_frac)
+        vx = int(x) + int(img.get_width() * label_frac) - int(img.get_width() * 0.02)
         surface.blit(vs, vs.get_rect(midleft=(vx, y + img.get_height() // 2)))
         # advance by the MEASURED badge width (>= the image's own width),
         # not just the image's width, so a long value never overlaps/overflows

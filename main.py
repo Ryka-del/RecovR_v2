@@ -184,7 +184,6 @@ _dlg_fonts = {
     "title_small": _dlg_font("Poppins-SemiBold.ttf", int(20 * _DLG_FS)),
     "body":        _dlg_font("Poppins-Regular.ttf",  int(19 * _DLG_FS)),
     "btn":         _dlg_font("Poppins-SemiBold.ttf", int(20 * _DLG_FS)),
-    "sym":         pygame.font.SysFont("segoeuisymbol", int(20 * _DLG_FS)),
 }
 
 _yes_rect = pygame.Rect(0, 0, 1, 1)
@@ -325,7 +324,8 @@ while True:
         # outside the scene entirely.
         _share_blocking = (
             bool(getattr(current_scene, "_share_modal_open", False)) or
-            getattr(current_scene, "modal", None) == "transfer_success"
+            getattr(current_scene, "modal", None) == "transfer_success" or
+            bool(getattr(current_scene, "_gc_skill_modal_open", False))
         )
         _btn_active = (
             _current_scene_name not in _game_scene_names and
@@ -389,7 +389,8 @@ while True:
     _in_calibration = getattr(current_scene, "_cal_win", None) is not None
     _in_share_modal = (
         bool(getattr(current_scene, "_share_modal_open", False)) or
-        getattr(current_scene, "modal", None) == "transfer_success"
+        getattr(current_scene, "modal", None) == "transfer_success" or
+        bool(getattr(current_scene, "_gc_skill_modal_open", False))
     )
     if not _in_game and not _in_calibration and not _in_share_modal:
         _close_hover = _close_rect.collidepoint(mouse_pos)

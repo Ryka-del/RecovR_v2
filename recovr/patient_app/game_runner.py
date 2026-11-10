@@ -52,6 +52,7 @@ _REAL_GAMES = {
     "Lemonade":                 ("games.lemonade",      "LemonadeGame"),
     "Feed the Cat":             ("games.feed_the_cat",  "FeedTheCatGame"),
     "Plant the Garden":         ("games.plant_the_garden", "PlantTheGardenGame"),
+    "Whack-a-Mole":       ("games.whack_mole",    "WhackMoleGame"),
 }
 
 
@@ -95,6 +96,9 @@ class GameRunner:
 
         self.counting_down = False     # pre-gameplay "Get Ready / 3-2-1 / START!"
         self._countdown_t = 0.0
+        self._countdown_resume = False  # True: this countdown ends in a plain
+                                         # unpause, not force_begin() (see
+                                         # begin_resume_countdown())
         self._countdown_screen = CountdownScreen()
 
         self._tele_accum = 0.0
@@ -148,6 +152,21 @@ class GameRunner:
         adapter) instead of each game drawing its own countdown."""
         self.counting_down = True
         self._countdown_t = 0.0
+        self._countdown_resume = False
+
+    def begin_resume_countdown(self):
+        """Therapist RESUME after a Pause (or the Game Stopped decision
+        screen's CONTINUE) -- the SAME Get Ready!/3-2-1/START! sequence as
+        the initial launch, but ending in a plain unpause (set_paused(False))
+        instead of force_begin(): score, elapsed time, remaining targets and
+        every other bit of the game's own state are left completely
+        untouched, only resumed. The underlying game is already paused
+        (self.paused stays True for the whole countdown) so draw()/update()/
+        handle_event() all freeze it exactly like a not-yet-started game is
+        frozen by `counting_down` -- same guard, same code path."""
+        self.counting_down = True
+        self._countdown_t = 0.0
+        self._countdown_resume = True
 
     def set_paused(self, value: bool):
         self.paused = bool(value)
@@ -158,10 +177,12 @@ class GameRunner:
 
     def stop(self):
         self.stopped = True
-        # A countdown that gets cancelled must never reach force_begin() on a
-        # later update() -- clearing it here (not just leaving self.stopped
-        # to short-circuit update()) is what guarantees that.
+        # A countdown that gets cancelled must never reach force_begin() (or,
+        # for a resume countdown, set_paused(False)) on a later update() --
+        # clearing it here (not just leaving self.stopped to short-circuit
+        # update()) is what guarantees that.
         self.counting_down = False
+        self._countdown_resume = False
         hook = getattr(self.game, "external_stop", None)
         if callable(hook):
             hook()
@@ -177,7 +198,11 @@ class GameRunner:
             self._countdown_t += dt
             if self._countdown_t >= COUNTDOWN_TOTAL_SEC:
                 self.counting_down = False
-                self.force_begin()
+                if self._countdown_resume:
+                    self._countdown_resume = False
+                    self.set_paused(False)
+                else:
+                    self.force_begin()
             return
         if self.stopped or self.finished or self.paused:
             return

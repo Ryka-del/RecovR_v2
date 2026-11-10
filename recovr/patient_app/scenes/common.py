@@ -386,7 +386,9 @@ def draw_icon_text_card(surface: pygame.Surface, rect: pygame.Rect, sprite_name:
                          shadow_alpha: int = 16, alpha_scale: float = 1.0,
                          glow_alpha: int = 0, icon_bg_color: tuple | None = None,
                          icon_bg_scale: float = 1.32, divider_color: tuple | None = None,
-                         divider_inset_frac: float = 0.16, divider_width: int = 2):
+                         divider_inset_frac: float = 0.16, divider_width: int = 2,
+                         fill_color: tuple = (255, 255, 255), border_color: tuple = (255, 255, 255),
+                         glow_color: tuple = (255, 255, 255)):
     """The Waiting Screen's "[ LARGE SPRITE ] [ text ]" instruction card,
     shared so any screen can show the same icon-text combination without
     copying the layout: a frosted glass shell (draw_glass_card), a large
@@ -409,7 +411,8 @@ def draw_icon_text_card(surface: pygame.Surface, rect: pygame.Rect, sprite_name:
     H = surface.get_height()
     draw_glass_card(surface, rect, radius_frac=radius_frac, fill_alpha=fill_alpha,
                     border_alpha=border_alpha, shadow_alpha=shadow_alpha, alpha_scale=alpha_scale,
-                    glow_alpha=glow_alpha)
+                    glow_alpha=glow_alpha, fill_color=fill_color, border_color=border_color,
+                    glow_color=glow_color)
 
     icon_size, text_left, _ = icon_text_geometry(
         rect, pad_x_frac, pad_y_frac, icon_frac, gap_frac, has_icon=bool(sprite_name))

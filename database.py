@@ -366,27 +366,37 @@ class Database:
 
     def get_patient_progress_summary(self, patient_id):
         """Aggregate counts for the Patient Dashboard's Rehabilitation
-        Summary card -- real COUNT()s over the sessions table, nothing
-        fabricated. "Goals Completed" only counts rows that actually had a
-        Target Mode goal set (goal IS NOT NULL); Timed Mode sessions have no
-        goal and are excluded from that ratio's denominator, same as they
-        were always excluded from goal-based progress elsewhere."""
+        Summary card -- real SUM()/COUNT()s over the sessions table in ONE
+        query, nothing fabricated, nothing double-queried:
+          - total_sessions: every COMPLETED session, Target or Timed Mode
+            alike (stopped/canceled rows are excluded by status='completed'
+            alone).
+          - time_elapsed_sec: real recorded gameplay duration (duration_sec),
+            summed over COMPLETED Timed Mode sessions only -- Target Mode
+            sessions, and any stopped/canceled session, contribute nothing
+            here (a stopped session's partial duration_sec is never close
+            to "time well spent" the way a genuinely finished one is).
+          - goals_completed: COMPLETED Target Mode sessions only. A Target
+            Mode session's status is only ever set to 'completed' once its
+            goal is actually reached (games/*.py's own _end_game(), the sole
+            caller of _save_session(status="completed") in Target Mode) --
+            so this is never "reached the score but got stopped partway",
+            which only ever produces status='stopped' instead.
+        """
         cur = self.conn.execute("""
             SELECT
-                COUNT(*)                                                     AS total_sessions,
-                COUNT(DISTINCT game)                                         AS games_played,
-                SUM(CASE WHEN goal IS NOT NULL THEN 1 ELSE 0 END)            AS goals_assigned,
-                SUM(CASE WHEN goal IS NOT NULL AND completed_reps >= goal
-                         THEN 1 ELSE 0 END)                                  AS goals_completed
+                COUNT(*)                                                          AS total_sessions,
+                SUM(CASE WHEN session_mode = 'timed'
+                         THEN duration_sec ELSE 0 END)                            AS time_elapsed_sec,
+                SUM(CASE WHEN session_mode = 'target' THEN 1 ELSE 0 END)          AS goals_completed
             FROM sessions
             WHERE patient_id = ? AND status = 'completed'
         """, (int(patient_id),))
         r = cur.fetchone()
         return {
-            "total_sessions":  r["total_sessions"] or 0,
-            "games_played":    r["games_played"] or 0,
-            "goals_assigned":  r["goals_assigned"] or 0,
-            "goals_completed": r["goals_completed"] or 0,
+            "total_sessions":   r["total_sessions"] or 0,
+            "time_elapsed_sec": r["time_elapsed_sec"] or 0,
+            "goals_completed":  r["goals_completed"] or 0,
         }
 
     # ── THERAPIST CREATE ──────────────────────────────────────────────

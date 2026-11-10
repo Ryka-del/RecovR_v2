@@ -294,8 +294,15 @@ class PatientApp:
         # 1b. Decision made while the "Game Stopped" screen is up.
         if self.mode == STOPPED_NOTICE:
             if self.runner is not None and status in (cmd.RUNNING, cmd.PAUSED):
-                # CONTINUE -> the SAME game resumes (state preserved).
-                self.runner.set_paused(status == cmd.PAUSED)
+                if status == cmd.PAUSED:
+                    self.runner.set_paused(True)
+                else:
+                    # CONTINUE -> the SAME game resumes (state preserved),
+                    # through the same Get Ready!/3-2-1/START! countdown as
+                    # any other resume (runner.paused is already True from
+                    # the stop_pending branch above, so the game stays
+                    # frozen straight through into the countdown).
+                    self.runner.begin_resume_countdown()
                 self._set_mode(PLAYING)
             elif self.runner is not None and status == cmd.READY:
                 # CONTINUE during How-to-Play -> back to the game's own screen.
@@ -369,13 +376,22 @@ class PatientApp:
                 self._set_mode(self._resting_mode(snap))
             return
 
-        # 5. pause / resume the running game
+        # 5. pause / resume the running game. Pausing is instant (no
+        #    countdown -- the therapist wants the game frozen NOW); resuming
+        #    runs the same Get Ready!/3-2-1/START! countdown as the initial
+        #    launch (begin_resume_countdown(), not a plain set_paused(False))
+        #    so the patient isn't caught off guard by sensor input suddenly
+        #    mattering again. Guarded on `runner.paused and not
+        #    runner.counting_down` so this fires exactly once per RESUME_GAME
+        #    (not every reconcile tick while RUNNING, which would otherwise
+        #    restart the countdown from zero forever).
         if status == cmd.PAUSED:
             if self.mode == PLAYING and self.runner is not None:
                 self.runner.set_paused(True)
             return
         if status == cmd.RUNNING and self.mode == PLAYING and self.runner is not None:
-            self.runner.set_paused(False)
+            if self.runner.paused and not self.runner.counting_down:
+                self.runner.begin_resume_countdown()
             return
 
         # 6. COMPLETE -> stay in PLAYING; the game keeps drawing its OWN original

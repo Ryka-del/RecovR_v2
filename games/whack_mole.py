@@ -1,327 +1,777 @@
 """
-Whack-A-Mole — Finger Flexion game (1920x1080)
+Whack-a-Mole — Finger Flexion game (1920x1080)
 
 Mechanic:
-  - 5 mole holes, one per finger (index→pinky + thumb)
-  - A mole pops up in a hole; patient presses the matching finger button
-  - EASY:   Classic — just hit the lit mole. 2 fingers active at a time.
-  - MEDIUM: Go/No-Go — GREEN mole = hit it, RED mole = ignore it.
-  - HARD:   Inhibitory — hit unless a warning symbol appears (Stroop-style).
-
-Anti-spasticity: mass flexion (all 5 buttons at once) is ignored.
-Goal: hit 15 correct moles OR reach 80% accuracy within 20–30 seconds.
+  - 5 mole holes are always visible, compactly arranged on the forest
+    background's dirt patch, one per finger (Thumb/Index/Middle/Ring/Pinky
+    -- see HOLE_CONFIG). ONLY ONE mole is active at a time, regardless of
+    difficulty -- it appears in a randomly chosen hole (never the same hole
+    twice in a row) and must be hit with that hole's own finger within a
+    flat 3-second hit window (MOLE_HIT_WINDOW_SEC) before it retreats.
+  - Every mole that appears is a valid target -- there is no red/green
+    Go/No-Go distinction.
+  - A mole animates rising out of its hole (head first, then upper body,
+    bottom concealed behind the hole's near edge) and sinking back down the
+    same way when hit or missed -- see Mole.reveal_progress()/_draw_mole().
+    This is done entirely by clipping the existing mole art against a fixed
+    ground line, never by faking it with a fade/scale/teleport.
+  - A successful hit swings the (enlarged) hammer from its resting corner
+    over to the mole's hole, rotating head-first into it, before returning
+    -- see _trigger_hammer()/_update_hammer()/_draw_hammer(). Purely visual;
+    it never gates or delays sensor processing.
+  - All 5 Flex Sensors (sensors.input_handler's state["finger_flex"]) are
+    read every frame regardless of which single hole is currently active,
+    each with its own independent calibrated threshold and press/release
+    (hysteresis) state machine -- see _update_fingers(). A finger already
+    held above its threshold when a mole appears cannot auto-hit it; it
+    must release and re-flex.
 """
 
-import pygame
+import os
+import math
 import random
-import time
+import pygame
 from screens.base import BaseScreen
 from games.fatigue import FatigueMixin
-from sensors.input_handler import input_handler
-from audio import play_success, play_error, start_music, stop_music
+from games.session_mode import SessionModeMixin
+from sensors.input_handler import input_handler, FINGER_NAMES
+from audio import (start_music, stop_music, pause_music, resume_music,
+                    game_bgm_path, play_success, play_error, play_completion, play_click)
 from constants import get_theme, GAME_W, GAME_H
 from games.game_header import draw_game_header, HEADER_BOTTOM
 
-GOALS        = {"Easy": 15, "Medium": 15, "Hard": 15}
-DURATION     = {"Easy": 45, "Medium": 40, "Hard": 35}
-MOLE_TIME    = {"Easy": 3.0, "Medium": 2.2, "Hard": 1.4}   # seconds mole stays up
-ACTIVE_LANES = {"Easy": 2,   "Medium": 5,   "Hard": 5}
+# ── difficulty-scaled parameters ────────────────────────────────────────────
+GOAL          = {"Easy": 15,  "Medium": 15,  "Hard": 15}    # Target Mode: moles to hit
+DURATION      = {"Easy": 45,  "Medium": 40,  "Hard": 35}    # Timed Mode: session length (s)
+SPAWN_GAP     = {"Easy": 0.5, "Medium": 0.35, "Hard": 0.25}  # pause between moles
+DEFAULT_THRESHOLD = {"Easy": 0.35, "Medium": 0.45, "Hard": 0.55}  # used if calibration is absent
+RELEASE_MARGIN = 0.65   # release threshold = press threshold * this (must release below it to re-arm)
 
-FINGER_LABELS = ["Index", "Middle", "Ring", "Pinky", "Thumb"]
-FINGER_KEYS   = [pygame.K_a, pygame.K_s, pygame.K_d, pygame.K_f, pygame.K_g]
+# Every mole stays up for exactly this long regardless of difficulty -- the
+# "3-second timer" is the mole's available hit window, not the session
+# length (see DURATION/GOAL above for that).
+MOLE_HIT_WINDOW_SEC = 3.0
+RISE_TIME_SEC   = 0.15   # spawn animation: fully hidden -> fully risen
+SINK_TIME_SEC   = 0.18   # disappearance animation: fully risen -> fully hidden
+HIT_FLASH_SEC   = 0.45   # dizzy sprite hold time after a successful hit, before sinking
 
-COL_W = GAME_W // 5   # 384px per column
-# Hole centers: horizontally centered in each column, vertically centered in the play area
-PLAY_TOP = HEADER_BOTTOM + 20    # below the shared header bar
-PLAY_BOT = GAME_H - 120  # above key labels
-HOLE_Y   = (PLAY_TOP + PLAY_BOT) // 2
-HOLE_POSITIONS = [
-    (COL_W * i + COL_W // 2, HOLE_Y) for i in range(5)
+# Hole index -> (finger name, x-fraction of the screen, row). Compactly
+# clustered on the background art's dirt patch -- front row sits lower/
+# bigger (closer to camera), back row higher/smaller (further away). Only
+# this table needs editing if the real glove's physical finger layout ever
+# differs from the proposed one -- nothing else in the file hardcodes which
+# finger goes with which hole.
+HOLE_CONFIG = [
+    ("Thumb",  0.28, "front"),
+    ("Index",  0.39, "back"),
+    ("Middle", 0.50, "front"),
+    ("Ring",   0.61, "back"),
+    ("Pinky",  0.72, "front"),
 ]
 
+FRONT_Y_FRAC, BACK_Y_FRAC = 0.824, 0.690
+FRONT_RADIUS, BACK_RADIUS = 100, 78
+
+_MOLE_SPRITES = ["mole1", "mole2", "mole3", "rare_mole", "epic_mole"]
+_MOLE_WEIGHTS = [34, 34, 24, 5, 3]   # rare/epic are cosmetic variety only, no bonus scoring
+
+# Hammer -- enlarged resting size, and the swing/strike animation it plays
+# on every successful hit. Angle is in pygame.transform.rotate()'s own
+# convention (positive = counter-clockwise); HEAD_FRAC is where the
+# striking face sits within the UNROTATED art, as a fraction of its own
+# width/height, used as the pivot the whole swing is anchored on so the
+# head (not the handle) is what travels to and visually contacts the mole.
+HAMMER_SIZE_FRAC   = 0.235          # of GAME_W
+HAMMER_HEAD_FRAC   = (0.62, 0.30)
+HAMMER_SWING_SEC   = 0.12
+HAMMER_HOLD_SEC    = 0.14
+HAMMER_RETURN_SEC  = 0.20
+HAMMER_STRIKE_ANGLE = -32
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_img_cache = {}
+
+
+def _load_image_fit(name, w, h):
+    key = (name, w, h)
+    if key not in _img_cache:
+        try:
+            raw = pygame.image.load(os.path.join(_ROOT, "assets", "images", name)).convert_alpha()
+            cropped = raw.subsurface(raw.get_bounding_rect(min_alpha=10)).copy()
+            cw, ch = cropped.get_size()
+            scale = min(w / cw, h / ch)
+            _img_cache[key] = pygame.transform.smoothscale(
+                cropped, (max(1, int(cw * scale)), max(1, int(ch * scale))))
+        except Exception:
+            _img_cache[key] = None
+    return _img_cache[key]
+
+
+def _load_image_cover(name, w, h):
+    key = ("cover", name, w, h)
+    if key not in _img_cache:
+        try:
+            raw = pygame.image.load(os.path.join(_ROOT, "assets", "images", name)).convert_alpha()
+            cropped = raw.subsurface(raw.get_bounding_rect(min_alpha=10)).copy()
+            rw, rh = cropped.get_size()
+            scale = max(w / rw, h / rh)
+            sw, sh = max(1, int(rw * scale)), max(1, int(rh * scale))
+            scaled = pygame.transform.smoothscale(cropped, (sw, sh))
+            x, y = (sw - w) // 2, (sh - h) // 2
+            _img_cache[key] = scaled.subsurface((x, y, w, h)).copy().convert()
+        except Exception:
+            _img_cache[key] = None
+    return _img_cache[key]
+
+
+def _ease(t):
+    """Smoothstep -- cheap, dependency-free easing for the hammer swing."""
+    t = max(0.0, min(1.0, t))
+    return t * t * (3 - 2 * t)
+
+
 class Mole:
-    def __init__(self, lane, color, valid, lifetime):
-        self.lane     = lane
-        self.color    = color   # GREEN=go, RED=no-go
-        self.valid    = valid   # True = should be hit
-        self.lifetime = lifetime
-        self.timer    = 0.0
-        self.hit      = False
-        self.expired  = False
-        self.spawn_t  = time.time() * 1000   # for reaction time tracking
+    """One active mole: which hole it's in, and its own rise/active/
+    hit-flash/retreat phase timeline (see module docstring). Every mole is
+    a valid target -- there is no red/green distinction any more."""
 
-    def update(self, dt):
-        if not self.hit:
-            self.timer += dt
-            if self.timer >= self.lifetime:
-                self.expired = True
+    def __init__(self, hole_idx, sprite_key):
+        self.hole_idx   = hole_idx
+        self.sprite_key = sprite_key
+        self.phase      = "rising"   # rising -> active -> (hit_flash ->) retreating -> done
+        self.timer      = 0.0
+        self.hit        = False
 
-    def draw(self, surface, font, x, y, T):
-        if self.expired and not self.hit:
-            return
-        radius = 54
-        color = self.color if not self.hit else T["GRAY"]
-        pygame.draw.circle(surface, T["PANEL"],  (x, y), radius)
-        pygame.draw.circle(surface, color,  (x, y), radius, 6)
-        if not self.hit:
-            import math
-            progress = 1.0 - (self.timer / self.lifetime)
-            arc_rect = pygame.Rect(x-radius-10, y-radius-10, (radius+10)*2, (radius+10)*2)
-            end_angle = -math.pi/2 + 2*math.pi*progress
-            pygame.draw.arc(surface, T["YELLOW"], arc_rect, -math.pi/2, end_angle, 5)
-            pygame.draw.circle(surface, color, (x, y), 16)
-        else:
-            pygame.draw.line(surface, T["GREEN"], (x-20, y-20), (x+20, y+20), 6)
-            pygame.draw.line(surface, T["GREEN"], (x+20, y-20), (x-20, y+20), 6)
-        lbl = font.render(FINGER_LABELS[self.lane][0], True, color)
-        surface.blit(lbl, (x - lbl.get_width()//2, y + radius + 8))
+    def is_hittable(self):
+        return self.phase == "active"
+
+    @property
+    def done(self):
+        return self.phase == "done"
+
+    def register_hit(self):
+        """Called by the game once a correct, newly-armed finger press is
+        confirmed against this mole. No-ops (returns False) if the mole
+        isn't currently hittable -- callers don't need to check phase
+        themselves."""
+        if self.phase != "active":
+            return False
+        self.hit   = True
+        self.phase = "hit_flash"
+        self.timer = 0.0
+        return True
+
+    def update(self, dt, hit_window):
+        """Advance this mole's phase timeline. Returns "missed" on the
+        single frame its hit window runs out unhit, else None -- the game
+        uses that to count a miss exactly once."""
+        event = None
+        self.timer += dt
+        if self.phase == "rising":
+            if self.timer >= RISE_TIME_SEC:
+                self.phase, self.timer = "active", 0.0
+        elif self.phase == "active":
+            if self.timer >= hit_window:
+                event = "missed"
+                self.phase, self.timer = "retreating", 0.0
+        elif self.phase == "hit_flash":
+            if self.timer >= HIT_FLASH_SEC:
+                self.phase, self.timer = "retreating", 0.0
+        elif self.phase == "retreating":
+            if self.timer >= SINK_TIME_SEC:
+                self.phase = "done"
+        return event
+
+    def reveal_progress(self):
+        """0 = fully hidden in the hole, 1 = fully risen at rest."""
+        if self.phase == "rising":
+            return max(0.0, min(1.0, self.timer / RISE_TIME_SEC))
+        if self.phase in ("active", "hit_flash"):
+            return 1.0
+        if self.phase == "retreating":
+            return max(0.0, 1.0 - self.timer / SINK_TIME_SEC)
+        return 0.0
+
+    def sprite_name(self):
+        return f"{self.sprite_key}_dizzy_whack_a_mole.png" if self.hit \
+            else f"{self.sprite_key}_whack_a_mole.png"
 
 
-class WhackMoleGame(FatigueMixin, BaseScreen):
+class WhackMoleGame(SessionModeMixin, FatigueMixin, BaseScreen):
+
     def on_enter(self, data):
         self.account_id = data.get("account_id")
         self.account    = data.get("account")
+        self._patient   = data.get("patient")
         self.exercise   = "finger"
         self.difficulty = data.get("difficulty", "Easy")
         self.cal        = data.get("calibration", {})
 
-        self.goal        = GOALS[self.difficulty]
-        self.duration    = DURATION[self.difficulty]
-        self.mole_time   = MOLE_TIME[self.difficulty]
-        self.active_lanes = list(range(ACTIVE_LANES[self.difficulty]))
+        self._session_init(data, GOAL, DURATION, self.difficulty, cal_goal_key="wam_goal")
+        self.spawn_gap       = SPAWN_GAP[self.difficulty]
+        self.mole_hit_window = MOLE_HIT_WINDOW_SEC
 
-        # Adaptive: use reaction baseline only to scale Easy slightly
-        reaction_ms = self.cal.get("reaction_ms", 800)
-        if self.difficulty == "Easy":
-            self.mole_time = max(2.0, reaction_ms / 1000 * 2.0)
+        # Per-finger calibrated press threshold (0-1), from the 5 independent
+        # "<Finger> Flexion" calibration passes (see MULTI_SENSOR_CALIBRATION
+        # in scenes/therapist_dashboard.py / SENSOR_CFG in
+        # scenes/calibration_window.py) -- falls back to a difficulty default
+        # for any finger never actually calibrated (e.g. calibration skipped).
+        sensors_cal = self.cal.get("sensors", {})
+        default_thr = DEFAULT_THRESHOLD[self.difficulty]
+        self.press_threshold = []
+        for name in FINGER_NAMES:
+            entry = sensors_cal.get(f"{name} Flexion")
+            thr = entry.get("threshold") if entry else None
+            self.press_threshold.append(thr if thr and thr > 0 else default_thr)
+        self.release_threshold = [t * RELEASE_MARGIN for t in self.press_threshold]
 
-        self._init_fatigue()
-        start_music()
-        self._reset()
-        self.paused    = False
-        self.pause_sel = 0
+        W, H = GAME_W, GAME_H
+        front_y = int(H * FRONT_Y_FRAC)
+        back_y  = int(H * BACK_Y_FRAC)
+        self._hole_pos    = []
+        self._hole_finger = []
+        for name, x_frac, row in HOLE_CONFIG:
+            x = int(W * x_frac)
+            y = front_y if row == "front" else back_y
+            r = FRONT_RADIUS if row == "front" else BACK_RADIUS
+            self._hole_pos.append((x, y, r))
+            self._hole_finger.append(name)
+
+        self._bg_img = _load_image_cover("bg_whack_a_mole.png", W, H)
+        self._hole_img = {}
+        for _x, _y, r in self._hole_pos:
+            d = r * 2
+            if d not in self._hole_img:
+                self._hole_img[d] = _load_image_fit("hole_whack_a_mole.png", d, d)
+
+        hammer_wh = int(HAMMER_SIZE_FRAC * W)
+        self._hammer_img = _load_image_fit("hammer_whack_a_mole.png", hammer_wh, hammer_wh)
+        hw, hh = self._hammer_img.get_size() if self._hammer_img is not None else (hammer_wh, hammer_wh)
+        self._hammer_size = (hw, hh)
+        rest_right  = W - int(20 * W / 1920)
+        rest_bottom = H - int(10 * H / 1080)
+        rest_topleft = (rest_right - hw, rest_bottom - hh)
+        self._hammer_rest_head = (rest_topleft[0] + HAMMER_HEAD_FRAC[0] * hw,
+                                   rest_topleft[1] + HAMMER_HEAD_FRAC[1] * hh)
+        self._hammer_rest_anchor = (rest_right, rest_bottom)
+
+        self._font_hud = pygame.font.SysFont("monospace", 34, bold=True)
+        self._font_sm  = pygame.font.SysFont("monospace", 24)
+        self._font_obj = pygame.font.SysFont("monospace", 22, bold=True)
+        self._font_fb  = pygame.font.SysFont("monospace", 48, bold=True)
+
         self.vol_active = False
         try:
             from db.database import get_volume
             self.pause_vol = get_volume()
         except Exception:
             self.pause_vol = 0.4
-        self._font_hud = pygame.font.SysFont("monospace", 34, bold=True)
-        self._font_sm  = pygame.font.SysFont("monospace", 24)
-        self._font_obj = pygame.font.SysFont("monospace", 26, bold=True)
-        self._font_fb  = pygame.font.SysFont("monospace", 52, bold=True)
+
+        self._pause_btn_rect     = pygame.Rect(GAME_W - 90, HEADER_BOTTOM + 14, 70, 46)
+        self._results_again_rect = pygame.Rect(0, 0, 1, 1)
+        self._results_exit_rect  = pygame.Rect(0, 0, 1, 1)
+
+        self._init_fatigue()
+        self._reset()
+        self._show_instructions = True
 
     def _reset(self):
-        self.moles       = [None] * 5
-        self.score       = 0
-        self.errors      = 0
-        self.reps        = 0
-        self.time_left   = float(self.duration)
-        self.start_time  = pygame.time.get_ticks()
-        self.spawn_timer = 0.0
-        self.spawn_interval = self.mole_time * 0.7
-        self.flash       = {}
-        self.feedback    = None
-        self.reaction_times = []
-        self._prev_fingers  = [0] * 5
+        self.game_over          = False
+        self.game_over_score    = 0
+        self.game_over_duration = 0
+        self.paused    = False
+        self.pause_sel = 0
 
-    def _spawn_mole(self):
-        empty = [i for i in self.active_lanes if self.moles[i] is None]
-        if not empty: return
-        lane = random.choice(empty)
-        T = get_theme()
-        G, R = T["GREEN"], T["RED"]
-        if self.difficulty == "Easy":
-            color, valid = G, True
-        elif self.difficulty == "Medium":
-            color, valid = random.choice([(G, True), (G, True), (R, False)])
+        self.score  = 0
+        self.reps   = 0    # successful hits
+        self.missed = 0    # moles that retreated unhit
+        self._session_reset()
+        self.start_time = pygame.time.get_ticks()
+
+        self._mole = None
+        self._last_hole_idx  = None
+        self.required_finger = None   # therapist-monitoring: which finger the active mole needs
+        self._spawn_timer = 0.0
+        self.feedback = None
+
+        self._hammer_phase = "idle"
+        self._hammer_timer = 0.0
+        self._hammer_from_head, self._hammer_from_angle = self._hammer_rest_head, 0.0
+        self._hammer_to_head, self._hammer_to_angle     = self._hammer_rest_head, 0.0
+
+        # Per-finger press/release (hysteresis) state. "armed" starts True
+        # only if the finger is NOT already held above its own release
+        # threshold right now -- a finger already flexed before the session
+        # begins (or before it's next needed) must release once before it
+        # can register a press, exactly like mid-session.
+        state = input_handler.get_state()
+        flex = state.get("finger_flex", [0.0] * 5)
+        self._armed = [flex[i] < self.release_threshold[i] for i in range(5)]
+        self._state = {"finger_flex": list(flex), "fingers": [False] * 5}
+
+    def _normalize_finger(self, index, raw):
+        """Used by recovr/patient_app/games/generic_adapter.py's therapist
+        telemetry -- "calibrated" reading is whether THIS finger is
+        currently above ITS OWN calibrated threshold, the same value the
+        press/release state machine itself acts on."""
+        return 1.0 if raw >= self.press_threshold[index] else 0.0
+
+    # ── input: 5 independent finger channels, always live ──────────────────
+
+    def _update_fingers(self, dt):
+        flex = self._state.get("finger_flex", [0.0] * 5)
+        for i in range(5):
+            f = flex[i]
+            if self._armed[i]:
+                if f >= self.press_threshold[i]:
+                    self._armed[i] = False
+                    self._on_finger_press(i)
+            else:
+                if f <= self.release_threshold[i]:
+                    self._armed[i] = True
+
+    def _on_finger_press(self, finger_index):
+        mole = self._mole
+        if mole is None or not mole.is_hittable():
+            return
+        if self._hole_finger[mole.hole_idx] != FINGER_NAMES[finger_index]:
+            return   # wrong finger for the active mole -- no effect
+        if mole.register_hit():
+            self.score += 1
+            self.reps  += 1
+            self.feedback = ("HIT!", (0, 220, 140), 0.6)
+            play_success()
+            self._trigger_hammer(mole.hole_idx)
+            if self._session_target_reached():
+                self._end_game()
+
+    # ── hammer swing: purely cosmetic, never gates input/sensor handling ──
+
+    def _hammer_current(self):
+        """(head_pos, angle) for whatever the hammer is doing RIGHT NOW --
+        used both to draw it and, on a new hit, as the swing's own "from"
+        so retriggering mid-animation never jumps/snaps."""
+        if self._hammer_phase == "swing":
+            t = _ease(self._hammer_timer / HAMMER_SWING_SEC)
+        elif self._hammer_phase == "return":
+            t = _ease(self._hammer_timer / HAMMER_RETURN_SEC)
         else:
-            color = G
-            valid = random.random() > 0.3
-            if not valid: color = R
-        self.moles[lane] = Mole(lane, color, valid, self.mole_time)
+            t = 1.0
+        if self._hammer_phase == "swing":
+            fx, fy = self._hammer_from_head
+            tx, ty = self._hammer_to_head
+            a0, a1 = self._hammer_from_angle, self._hammer_to_angle
+        elif self._hammer_phase == "return":
+            fx, fy = self._hammer_to_head
+            tx, ty = self._hammer_rest_head
+            a0, a1 = self._hammer_to_angle, 0.0
+        elif self._hammer_phase == "hold":
+            return self._hammer_to_head, self._hammer_to_angle
+        else:
+            return self._hammer_rest_head, 0.0
+        return (fx + (tx - fx) * t, fy + (ty - fy) * t), a0 + (a1 - a0) * t
+
+    def _trigger_hammer(self, hole_idx):
+        x, y, r = self._hole_pos[hole_idx]
+        cur_head, cur_angle = self._hammer_current()
+        self._hammer_from_head, self._hammer_from_angle = cur_head, cur_angle
+        self._hammer_to_head  = (x, y - int(r * 0.05))
+        self._hammer_to_angle = HAMMER_STRIKE_ANGLE
+        self._hammer_phase = "swing"
+        self._hammer_timer = 0.0
+
+    def _update_hammer(self, dt):
+        if self._hammer_phase == "idle":
+            return
+        self._hammer_timer += dt
+        if self._hammer_phase == "swing" and self._hammer_timer >= HAMMER_SWING_SEC:
+            self._hammer_phase, self._hammer_timer = "hold", 0.0
+        elif self._hammer_phase == "hold" and self._hammer_timer >= HAMMER_HOLD_SEC:
+            self._hammer_phase, self._hammer_timer = "return", 0.0
+        elif self._hammer_phase == "return" and self._hammer_timer >= HAMMER_RETURN_SEC:
+            self._hammer_phase, self._hammer_timer = "idle", 0.0
+
+    # ── lifecycle ────────────────────────────────────────────────────────
 
     def handle_event(self, event):
+        if self._show_instructions:
+            if (event.type == pygame.KEYDOWN or
+                    (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1) or
+                    input_handler.was_pressed(event, "action")):
+                self._show_instructions = False
+                self.start_time = pygame.time.get_ticks()
+                start_music(game_bgm_path("Whack-a-Mole"))
+            return
+
+        if self.game_over:
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if self._results_again_rect.collidepoint(event.pos):
+                    play_click()
+                    self._reset()
+                    start_music(game_bgm_path("Whack-a-Mole"))
+                elif self._results_exit_rect.collidepoint(event.pos):
+                    play_click()
+                    self._exit_to_game_config()
+            return
+
         if self.fatigue_paused:
             if input_handler.was_pressed(event, "action"): self._resume_fatigue()
             return
         if self.paused:
-            if self.vol_active:
-                if input_handler.was_pressed(event, "left"):
-                    self.pause_vol = max(0.0, self.pause_vol - 0.1); self._apply_vol()
-                elif input_handler.was_pressed(event, "right"):
-                    self.pause_vol = min(1.0, self.pause_vol + 0.1); self._apply_vol()
-                elif input_handler.was_pressed(event, "action") or input_handler.was_pressed(event, "back"):
-                    self.vol_active = False
+            self._pause_handle(event)
+            return
+        if (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
+                and self._pause_btn_rect.collidepoint(event.pos)):
+            self.paused = True
+            pause_music()
+            return
+        if input_handler.was_pressed(event, "back"):
+            self.paused = True; self.pause_sel = 0
+            pause_music()
+
+    def _pause_handle(self, event):
+        pos = None
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            pos = event.pos
+        elif event.type == pygame.FINGERDOWN:
+            pos = (int(event.x * GAME_W), int(event.y * GAME_H))
+        if pos is None:
+            return
+        if self.vol_active:
+            _bx = GAME_W // 2 - (10*30 + 9*6) // 2
+            _by = GAME_H // 2 - 160 + 2 * 96 + 52
+            for si in range(10):
+                sx = _bx + si * (30 + 6)
+                if pygame.Rect(sx, _by - 8, 30, 44).collidepoint(pos):
+                    self.pause_vol = (si + 1) / 10
+                    self._apply_vol()
+                    return
+            self.vol_active = False
+            return
+        opts_actions = [
+            lambda: (setattr(self, "paused", False), resume_music()),
+            lambda: (self._reset(), start_music(game_bgm_path("Whack-a-Mole"))),
+            lambda: setattr(self, "vol_active", True),
+            self._exit_to_game_config,
+        ]
+        for i, action in enumerate(opts_actions):
+            oy = GAME_H // 2 - 160 + i * 96
+            if pygame.Rect(GAME_W // 2 - 200, oy, 400, 80).collidepoint(pos):
+                play_click()
+                action()
                 return
-            if input_handler.was_pressed(event, "up"):   self.pause_sel = max(0, self.pause_sel - 1)
-            elif input_handler.was_pressed(event, "down"): self.pause_sel = min(3, self.pause_sel + 1)
-            elif input_handler.was_pressed(event, "action"):
-                if self.pause_sel == 0: self.paused = False
-                elif self.pause_sel == 1: self._reset(); self.paused = False
-                elif self.pause_sel == 2: self.vol_active = True
-                else: self._end_game()
-            return
-        if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_ESCAPE:
-                self.paused = True; return
-            if event.key in FINGER_KEYS:
-                self._handle_press(FINGER_KEYS.index(event.key))
-
-    def _handle_press(self, lane):
-        # Mass flexion check — if all 5 pressed simultaneously, ignore
-        state = input_handler.get_state()
-        if sum(state["fingers"]) >= 5:
-            return
-
-        self.flash[lane] = 0.15
-        mole = self.moles[lane]
-        if mole and not mole.hit and not mole.expired:
-            if mole.valid:
-                reaction = (time.time()*1000 - mole.spawn_t)
-                self.reaction_times.append(reaction)
-                mole.hit = True
-                self.score += 1
-                self.reps  += 1
-                self.feedback = ("HIT!", (0, 255, 160), 0.6)
-                play_success()
-            else:
-                mole.hit = True
-                self.errors += 1
-                self.feedback = ("NO-GO! Penalty.", (255, 60, 80), 0.8)
-                play_error()
-        elif mole is None or mole.expired:
-            # Pressed empty hole
-            if self.difficulty != "Easy":
-                self.errors += 1
 
     def update(self, dt):
-        state = input_handler.get_state()
-        self._state = state   # exposed for therapist-side raw/calibrated sensor monitoring
+        if self._show_instructions or self.game_over:
+            return
 
-        # ESP32 hardware button polling — only fire on rising edge (press, not hold)
-        if input_handler.connected:
-            fingers = state["fingers"]
-            if sum(fingers) < 5:   # ignore mass flexion
-                for i, pressed in enumerate(fingers):
-                    if pressed and not self._prev_fingers[i]:
-                        self._handle_press(i)
-            self._prev_fingers = list(fingers)
+        live = input_handler.get_state()
+        flex = live.get("finger_flex", [0.0] * 5)
+        self._state = {"finger_flex": list(flex),
+                        "fingers": [f > 0.1 for f in flex]}   # fatigue-activity proxy only
+        self._update_fatigue(dt, self._state)
+        if self.fatigue_paused or self.paused:
+            return
 
-        self._update_fatigue(dt, state)
-        if self.fatigue_paused or self.paused: return
+        # Finger press/release state always runs, independent of mole state
+        # or session pause-for-countdown (the dual-monitor host freezes
+        # update() entirely during the 3-2-1 countdown, so this never fires
+        # mid-countdown -- see GameRunner.counting_down).
+        self._update_fingers(dt)
+        self._update_hammer(dt)
 
-        self.time_left -= dt
-        if self.time_left <= 0 or self.score >= self.goal:
-            self._end_game(); return
+        if self._session_tick(dt):
+            self._end_game()
+            return
 
-        # Spawn
-        self.spawn_timer += dt
-        if self.spawn_timer >= self.spawn_interval:
-            self.spawn_timer = 0.0
-            self._spawn_mole()
-
-        for i, mole in enumerate(self.moles):
-            if mole:
-                mole.update(dt)
-                if mole.expired or mole.hit:
-                    self.moles[i] = None
-
-        for lane in list(self.flash):
-            self.flash[lane] -= dt
-            if self.flash[lane] <= 0: del self.flash[lane]
+        if self._mole is not None:
+            event = self._mole.update(dt, self.mole_hit_window)
+            if event == "missed":
+                self.missed += 1
+                self.feedback = ("Missed!", (255, 170, 60), 0.6)
+            if self._mole.done:
+                self._mole = None
+                self.required_finger = None
+                self._spawn_timer = 0.0
+        else:
+            self._spawn_timer += dt
+            if self._spawn_timer >= self.spawn_gap:
+                self._spawn_mole()
 
         if self.feedback:
             self.feedback = (self.feedback[0], self.feedback[1], self.feedback[2] - dt)
-            if self.feedback[2] <= 0: self.feedback = None
+            if self.feedback[2] <= 0:
+                self.feedback = None
 
+    def _spawn_mole(self):
+        choices = [i for i in range(5) if i != self._last_hole_idx]
+        hole_idx = random.choice(choices)
+        self._last_hole_idx = hole_idx
+        sprite_key = random.choices(_MOLE_SPRITES, weights=_MOLE_WEIGHTS, k=1)[0]
+        self._mole = Mole(hole_idx, sprite_key)
+        self.required_finger = self._hole_finger[hole_idx]
 
-    def _exit_to_menu(self):
+    def _exit_to_game_config(self):
+        import builtins
         stop_music()
-        self.manager.go_to("exercise_menu",
-            account_id=self.account_id, account=self.account)
+        if not self.game_over and not self._show_instructions:
+            self._save_session(status="stopped")
+        builtins.pending_panel   = 4
+        builtins.pending_patient = self._patient
+        builtins.pending_account = self.account
+        self.manager.go_to("therapist_dashboard")
+
+    def _save_session(self, status):
+        try:
+            from database import Database
+            db = Database()
+            patient_id = self._patient.get("id") if self._patient else None
+            db.save_session(
+                patient_id   = patient_id,
+                therapist_id = self.account_id,
+                game         = "Whack-a-Mole",
+                score        = self.score,
+                difficulty   = self.difficulty,
+                status       = status,
+                **self._session_result_fields(),
+            )
+        except Exception:
+            pass
 
     def _end_game(self):
+        if self.game_over:
+            return
         stop_music()
-        duration = (pygame.time.get_ticks() - self.start_time) // 1000
-        total    = self.score + self.errors
-        accuracy = int(self.score / total * 100) if total > 0 else 0
-        avg_rt   = int(sum(self.reaction_times)/len(self.reaction_times)) if self.reaction_times else 0
-        self.manager.go_to("endgame",
-            account_id=self.account_id, account=self.account,
-            exercise=self.exercise, game="whack_mole",
-            difficulty=self.difficulty, score=self.score,
-            reps=self.reps, duration_sec=duration,
-            max_score=self.goal, back_screen="game_select",
-            accuracy=accuracy, avg_reaction_ms=avg_rt)
+        play_completion()
+        self.game_over_duration = int(round(self.elapsed))
+        self.game_over_score    = self.score
+        self._save_session(status="completed")
+        self.game_over = True
+
+    # ── draw ─────────────────────────────────────────────────────────────
 
     def draw(self, surface):
         T = get_theme()
-        # Scanline grid
-        for y in range(0, GAME_H, 60):
-            pygame.draw.line(surface, T["PANEL"], (0, y), (GAME_W, y), 1)
-        for x in range(0, GAME_W, 80):
-            pygame.draw.line(surface, T["PANEL"], (x, 0), (x, GAME_H), 1)
+        if self._bg_img is not None:
+            surface.blit(self._bg_img, (0, 0))
+        else:
+            surface.fill(T["BG"])
 
-        font_sm  = self._font_sm
-        font_obj = self._font_obj
+        if self._show_instructions:
+            self._draw_instructions(surface)
+            return
 
-        # Target panels — 5 columns
-        col_w = GAME_W // 5
-        for i, (hx, hy) in enumerate(HOLE_POSITIONS):
-            active = self.moles[i] is not None and not self.moles[i].expired
-            flash  = i in self.flash
-            col    = LANE_COLORS[i]
+        font_sm = self._font_sm
 
-            col_surf = pygame.Surface((col_w - 20, PLAY_BOT - PLAY_TOP), pygame.SRCALPHA)
-            col_surf.fill((col[0]//8, col[1]//8, col[2]//8, 180))
-            surface.blit(col_surf, (i * col_w + 10, PLAY_TOP))
-            pygame.draw.rect(surface, col if active else T["PANEL"],
-                             (i * col_w + 10, PLAY_TOP, col_w - 20, PLAY_BOT - PLAY_TOP),
-                             2, border_radius=8)
-
-            ring_col = col if active else (40, 50, 80)
-            pygame.draw.circle(surface, ring_col, (hx, hy), 70, 4)
-            if active:
-                pygame.draw.circle(surface, ring_col, (hx, hy), 50, 2)
-                self.moles[i].draw(surface, font_obj, hx, hy, T)
+        for i, (x, y, r) in enumerate(self._hole_pos):
+            mole = self._mole if (self._mole is not None and self._mole.hole_idx == i
+                                   and not self._mole.done) else None
+            d = r * 2
+            hole_img = self._hole_img.get(d)
+            if hole_img is not None:
+                surface.blit(hole_img, hole_img.get_rect(center=(x, y)))
             else:
-                pygame.draw.line(surface, (40,50,80), (hx-20, hy), (hx+20, hy), 2)
-                pygame.draw.line(surface, (40,50,80), (hx, hy-20), (hx, hy+20), 2)
+                pygame.draw.ellipse(surface, (60, 40, 20), (x - r, y - int(r*0.5), r*2, int(r*0.9)))
 
-            if flash:
-                fl = pygame.Surface((col_w - 20, PLAY_BOT - PLAY_TOP), pygame.SRCALPHA)
-                fl.fill((*col, 60))
-                surface.blit(fl, (i * col_w + 10, PLAY_TOP))
+            if mole is not None:
+                self._draw_mole(surface, mole, x, y, r)
 
-            key_lbl = font_obj.render(["A","S","D","F","G"][i], True, col)
-            surface.blit(key_lbl, (hx - key_lbl.get_width()//2, GAME_H - 100))
-            finger_lbl = font_sm.render(FINGER_LABELS[i], True, T["GRAY"])
-            surface.blit(finger_lbl, (hx - finger_lbl.get_width()//2, GAME_H - 68))
+            finger_lbl = font_sm.render(self._hole_finger[i], True, (255, 255, 255))
+            lbl_r = finger_lbl.get_rect(center=(x, y + r + 26))
+            bg_r = lbl_r.inflate(14, 8)
+            bg_s = pygame.Surface(bg_r.size, pygame.SRCALPHA)
+            pygame.draw.rect(bg_s, (20, 20, 30, 170), (0, 0, *bg_r.size), border_radius=8)
+            surface.blit(bg_s, bg_r.topleft)
+            surface.blit(finger_lbl, lbl_r)
 
-        # Shared header — same component used by every RecovR game
-        draw_game_header(surface, "Whack-a-Mole Twist", self.difficulty,
-                          self.time_left, self.score, GAME_W, GAME_H)
+        self._draw_hammer(surface)
 
-        # Accuracy bar
-        total = self.score + self.errors
-        acc   = self.score / total if total > 0 else 1.0
-        bw, bh = 400, 14
-        bx = GAME_W//2 - bw//2
-        pygame.draw.rect(surface, T["PANEL"], (bx, GAME_H - 44, bw, bh), border_radius=7)
-        pygame.draw.rect(surface, T["GREEN"] if acc >= 0.8 else T["YELLOW"],
-                         (bx, GAME_H - 44, int(bw * acc), bh), border_radius=7)
-        surface.blit(font_sm.render(f"ACC {int(acc*100)}%", True, T["TEXT"]),
-                     (bx + bw + 12, GAME_H - 48))
-        surface.blit(font_sm.render(f"ERR {self.errors}", True, T["RED"]),
-                     (bx - 100, GAME_H - 48))
+        draw_game_header(surface, "Whack-a-Mole", self.difficulty,
+                          self._session_header_time(), self.score, GAME_W, GAME_H)
+
+        # A dark translucent backing behind the HUD text -- the forest
+        # background art is busy/detailed, so plain themed text alone (fine
+        # against every other game's flatter backgrounds) was hard to read
+        # here regardless of theme.
+        def _hud_text(text, pos, col):
+            s = font_sm.render(text, True, col)
+            bg_r = s.get_rect(topleft=pos).inflate(14, 8)
+            bg_s = pygame.Surface(bg_r.size, pygame.SRCALPHA)
+            pygame.draw.rect(bg_s, (15, 18, 28, 150), (0, 0, *bg_r.size), border_radius=8)
+            surface.blit(bg_s, bg_r.topleft)
+            surface.blit(s, pos)
+
+        _hud_text(self._session_progress_text("moles hit"),
+                  (int(40 * GAME_W / 1920), HEADER_BOTTOM + int(24 * GAME_H / 1080)), (255, 255, 255))
 
         if self.feedback:
             msg = self._font_fb.render(self.feedback[0], True, self.feedback[1])
-            surface.blit(msg, (GAME_W//2 - msg.get_width()//2, GAME_H//2 - 60))
+            surface.blit(msg, (GAME_W // 2 - msg.get_width() // 2, int(GAME_H * 0.10)))
+
+        pb     = self._pause_btn_rect
+        pb_col = T["ACCENT"]
+        pygame.draw.rect(surface, (15, 20, 36), pb, border_radius=8)
+        pygame.draw.rect(surface, pb_col, pb, 2, border_radius=8)
+        bw2, bh2 = 8, 22
+        by2 = pb.top + (pb.height - bh2) // 2
+        bx1 = pb.left + pb.width // 2 - bw2 - 4
+        bx2 = pb.left + pb.width // 2 + 4
+        pygame.draw.rect(surface, pb_col, (bx1, by2, bw2, bh2), border_radius=2)
+        pygame.draw.rect(surface, pb_col, (bx2, by2, bw2, bh2), border_radius=2)
 
         if self.paused: self._draw_pause(surface)
         self._draw_fatigue_overlay(surface)
+
+        if self.game_over:
+            self._draw_results(surface)
+
+    def _draw_mole(self, surface, mole, x, y, r):
+        """Clip-reveal animation: the sprite's bottom edge is pinned to a
+        fixed ground line (its normal resting midbottom anchor) and only
+        the top `reveal_progress()` fraction of it is ever blitted, so a
+        rising mole shows its head first with the rest concealed below the
+        hole's near edge, and a retreating one sinks back the same way --
+        never a fade/scale/teleport."""
+        name = mole.sprite_name()
+        box = int(r * 1.7)
+        img = _load_image_fit(name, box, box)
+        progress = mole.reveal_progress()
+        if progress <= 0.0:
+            return
+        if img is None:
+            col = (150, 150, 150) if mole.hit else (120, 80, 50)
+            pygame.draw.circle(surface, col, (x, y - int(r*0.1)), int(r * (0.1 + 0.5 * progress)))
+            return
+        rest_rect = img.get_rect(midbottom=(x, y + int(r * 0.3)))
+        ground_y  = rest_rect.bottom
+        full_h    = rest_rect.height
+        shifted_top = rest_rect.top + int(full_h * (1 - progress))
+        visible_h = max(0, min(full_h, ground_y - shifted_top))
+        if visible_h <= 0:
+            return
+        sub = img.subsurface((0, 0, rest_rect.width, visible_h))
+        surface.blit(sub, (rest_rect.left, shifted_top))
+
+    def _draw_hammer(self, surface):
+        img = self._hammer_img
+        if img is None:
+            return
+        head_pos, angle = self._hammer_current()
+        w, h = self._hammer_size
+        # Pivot/anchor offset (head position relative to the UNROTATED
+        # image's own center), rotated the same way pygame.transform.rotate
+        # rotates the image itself, so the head stays pinned to head_pos
+        # however the hammer is currently angled.
+        ax = HAMMER_HEAD_FRAC[0] * w - w / 2
+        ay = HAMMER_HEAD_FRAC[1] * h - h / 2
+        rotated = pygame.transform.rotate(img, angle)
+        rad = math.radians(angle)
+        rax = ax * math.cos(rad) + ay * math.sin(rad)
+        ray = -ax * math.sin(rad) + ay * math.cos(rad)
+        center = (head_pos[0] - rax, head_pos[1] - ray)
+        surface.blit(rotated, rotated.get_rect(center=center))
+
+    def _draw_instructions(self, surface):
+        T = get_theme()
+        ov = pygame.Surface((GAME_W, GAME_H), pygame.SRCALPHA)
+        ov.fill((0, 0, 0, 210))
+        surface.blit(ov, (0, 0))
+
+        pw, ph = 940, 580
+        px, py = (GAME_W - pw) // 2, (GAME_H - ph) // 2
+        bg = pygame.Surface((pw, ph), pygame.SRCALPHA)
+        pygame.draw.rect(bg, T["PANEL"] + (252,), (0, 0, pw, ph), border_radius=16)
+        surface.blit(bg, (px, py))
+        pygame.draw.rect(surface, T["ACCENT"], pygame.Rect(px, py, pw, ph), 2, border_radius=16)
+
+        f_title = pygame.font.SysFont("monospace", 36, bold=True)
+        f_head  = pygame.font.SysFont("monospace", 22, bold=True)
+        f_body  = pygame.font.SysFont("monospace", 19)
+
+        diff_col = {"Easy": T["GREEN"], "Medium": T["YELLOW"], "Hard": T["RED"]}[self.difficulty]
+        title = f_title.render("How to Play", True, diff_col)
+        surface.blit(title, title.get_rect(centerx=GAME_W // 2, top=py + 26))
+        pygame.draw.line(surface, T["ACCENT"], (px + 40, py + 78), (px + pw - 40, py + 78), 1)
+
+        y = py + 96
+        for header, lines in [
+            ("OBJECTIVE", [
+                "A mole pops up in ONE of the 5 holes at a time.",
+                "Every mole is a valid target -- bend the matching finger",
+                "before it ducks back under (3 seconds).",
+            ]),
+            ("FINGER MAP", [f"{finger}: {hole_name} hole" for hole_name, finger in
+                            (("Front-left", "Thumb"), ("Back-left", "Index"),
+                             ("Front-center", "Middle"), ("Back-right", "Ring"),
+                             ("Front-right", "Pinky"))]),
+            ("THIS SESSION", [
+                (f"Goal:       Hit {self.goal} moles" if self.session_mode == "target" else
+                 f"Duration:   {int(self.timed_duration)} seconds — hit as many as you can"),
+                f"Difficulty: {self.difficulty}",
+            ]),
+        ]:
+            surface.blit(f_head.render(header, True, T["ACCENT"]), (px + 48, y))
+            y += 30
+            for line in lines:
+                surface.blit(f_body.render(line, True, T["TEXT"]), (px + 64, y))
+                y += 25
+            y += 12
+        # No "press any key" prompt -- the patient never starts the game
+        # themselves, only the therapist's own START control does.
+
+    def _draw_results(self, surface):
+        T = get_theme()
+        ov = pygame.Surface((GAME_W, GAME_H), pygame.SRCALPHA)
+        ov.fill((0, 0, 0, 185))
+        surface.blit(ov, (0, 0))
+
+        pw, ph = 900, 520
+        px, py = (GAME_W - pw) // 2, (GAME_H - ph) // 2 - 20
+        bg = pygame.Surface((pw, ph), pygame.SRCALPHA)
+        pygame.draw.rect(bg, T["PANEL"] + (252,), (0, 0, pw, ph), border_radius=20)
+        surface.blit(bg, (px, py))
+        pygame.draw.rect(surface, T["ACCENT"], pygame.Rect(px, py, pw, ph), 2, border_radius=20)
+
+        f_title = pygame.font.SysFont("monospace", 40, bold=True)
+        f_lbl   = pygame.font.SysFont("monospace", 20)
+        f_num   = pygame.font.SysFont("monospace", 46, bold=True)
+
+        title = f_title.render("Round Complete!", True, T["GREEN"])
+        surface.blit(title, title.get_rect(centerx=GAME_W // 2, top=py + 30))
+
+        enc = f_lbl.render("You are awesome!", True, T["TEXT"])
+        surface.blit(enc, enc.get_rect(centerx=GAME_W // 2, top=py + 90))
+
+        mins, secs = divmod(max(0, self.game_over_duration), 60)
+        col_y = py + 160
+        col_w = pw // 3
+        cols = [
+            (f"{mins:02d}:{secs:02d}", "Total Time", px + col_w // 2),
+            (self._session_count_text(), "Moles Hit", px + pw // 2),
+            (str(self.missed), "Moles Missed", px + pw - col_w // 2),
+        ]
+        for val_txt, lbl_txt, cx in cols:
+            val_s = f_num.render(val_txt, True, T["ACCENT"])
+            lbl_s = f_lbl.render(lbl_txt, True, T["GRAY"])
+            surface.blit(val_s, val_s.get_rect(centerx=cx, top=col_y))
+            surface.blit(lbl_s, lbl_s.get_rect(centerx=cx, top=col_y + val_s.get_height() + 6))
+
+        f_btn = pygame.font.SysFont("monospace", 28, bold=True)
+        mp = pygame.mouse.get_pos()
+        bw, bh = 220, 52
+        by = py + ph - bh - 30
+
+        again_r = pygame.Rect(GAME_W // 2 - bw - 16, by, bw, bh)
+        exit_r  = pygame.Rect(GAME_W // 2 + 16,       by, bw, bh)
+        self._results_again_rect = again_r
+        self._results_exit_rect  = exit_r
+
+        ag_col = (55, 170, 100) if again_r.collidepoint(mp) else (40, 140, 80)
+        ex_col = (75, 110, 190) if exit_r.collidepoint(mp)  else (55,  85, 160)
+        pygame.draw.rect(surface, ag_col, again_r, border_radius=10)
+        pygame.draw.rect(surface, ex_col, exit_r,  border_radius=10)
+        surface.blit(f_btn.render("Play Again", True, T["WHITE"]), f_btn.render("Play Again", True, T["WHITE"]).get_rect(center=again_r.center))
+        surface.blit(f_btn.render("Exit",       True, T["WHITE"]), f_btn.render("Exit",       True, T["WHITE"]).get_rect(center=exit_r.center))
 
     def _apply_vol(self):
         try:
@@ -330,6 +780,3 @@ class WhackMoleGame(FatigueMixin, BaseScreen):
             set_volume(self.pause_vol)
         except Exception:
             pass
-
-# Lane colors for flash effect
-LANE_COLORS = [(255,80,120),(0,210,255),(180,0,255),(0,255,160),(255,200,0)]

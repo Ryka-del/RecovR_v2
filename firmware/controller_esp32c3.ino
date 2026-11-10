@@ -16,17 +16,33 @@
 //     S3  -> D6  (GPIO21)
 //     EN  -> GND (always enabled)
 //   FSR402      -> MUX channel C5
-//   Flex Sensor -> MUX channel C0
+//   Flex Sensor -> MUX channel C0   (legacy single-flex games: Piano Tiles,
+//                                    Plant the Garden, Steady Aim)
 //   Push Button -> MUX channel C10  (pull-down resistor to GND)
 //   MPU6050     -> I2C  SDA=D4(GPIO6)  SCL=D5(GPIO7)
 //
-// BLE Packet (9 bytes, little-endian, 50 Hz) -- must match
-// sensors/ble_receiver.py PACKET_FORMAT "<HHBhh":
-//   [0-1] uint16  grip_raw   FSR ADC value    0-4095
-//   [2-3] uint16  flex_raw   Flex ADC value   0-4095
-//   [4]   uint8   buttons    bit0 = push button (1=pressed)
-//   [5-6] int16   accel_x    MPU6050 accel X  (16384 LSB/g at +/-2g)
-//   [7-8] int16   accel_y    MPU6050 accel Y
+//   Whack-a-Mole (5-finger glove) -- PLACEHOLDER WIRING:
+//   the five CH_FLEX_* constants below are NOT yet verified against the real
+//   glove. Flash firmware/mux_channel_verify/mux_channel_verify.ino, flex one
+//   finger at a time, note which MUX channel (C0-C15) moves for each finger,
+//   then replace the five placeholder numbers below with the real ones
+//   before relying on per-finger gameplay. Until then they all read the same
+//   physical sensor as CH_FLEX, which is harmless (every finger reports the
+//   same value, matching this firmware's previous single-sensor behavior)
+//   but gives no real finger-to-finger differentiation.
+//
+// BLE Packet (19 bytes, little-endian, 50 Hz) -- must match
+// sensors/ble_receiver.py PACKET_FORMAT "<HHHHHHHBhh":
+//   [0-1]   uint16  grip_raw        FSR ADC value         0-4095
+//   [2-3]   uint16  flex_raw        Flex ADC (legacy)      0-4095
+//   [4-5]   uint16  flex_thumb_raw  Thumb Flex ADC         0-4095
+//   [6-7]   uint16  flex_index_raw  Index Flex ADC         0-4095
+//   [8-9]   uint16  flex_middle_raw Middle Flex ADC        0-4095
+//   [10-11] uint16  flex_ring_raw   Ring Flex ADC          0-4095
+//   [12-13] uint16  flex_pinky_raw  Pinky Flex ADC         0-4095
+//   [14]    uint8   buttons         bit0 = push button (1=pressed)
+//   [15-16] int16   accel_x         MPU6050 accel X  (16384 LSB/g at +/-2g)
+//   [17-18] int16   accel_y         MPU6050 accel Y
 //
 // Libraries -- install via Arduino Library Manager:
 //   Adafruit MPU6050        by Adafruit
@@ -58,9 +74,18 @@
 #define MUX_S3   21   // D6
 
 // -- MUX channels -------------------------------------------------------------
-#define CH_FLEX    0   // C0  Flex Sensor 2.2
+#define CH_FLEX    0   // C0  Flex Sensor 2.2 (legacy single-flex games)
 #define CH_FSR     5   // C5  FSR402
 #define CH_BUTTON  10  // C10 Push button
+
+// Whack-a-Mole 5-finger glove -- PLACEHOLDERS, see the header comment
+// above. All five default to CH_FLEX (C0) until verified with
+// firmware/mux_channel_verify/mux_channel_verify.ino.
+#define CH_FLEX_THUMB   0   // TODO: confirm via mux_channel_verify.ino
+#define CH_FLEX_INDEX   0   // TODO: confirm via mux_channel_verify.ino
+#define CH_FLEX_MIDDLE  0   // TODO: confirm via mux_channel_verify.ino
+#define CH_FLEX_RING    0   // TODO: confirm via mux_channel_verify.ino
+#define CH_FLEX_PINKY   0   // TODO: confirm via mux_channel_verify.ino
 
 // -- BLE identity (must match sensors/ble_receiver.py) ------------------------
 #define DEVICE_NAME  "RecovR-Controller"
@@ -188,8 +213,13 @@ void loop() {
     lastSend = now;
 
     // Read sensors via MUX
-    uint16_t grip_raw = readMuxChannel(CH_FSR);
-    uint16_t flex_raw = readMuxChannel(CH_FLEX);
+    uint16_t grip_raw        = readMuxChannel(CH_FSR);
+    uint16_t flex_raw        = readMuxChannel(CH_FLEX);
+    uint16_t flex_thumb_raw  = readMuxChannel(CH_FLEX_THUMB);
+    uint16_t flex_index_raw  = readMuxChannel(CH_FLEX_INDEX);
+    uint16_t flex_middle_raw = readMuxChannel(CH_FLEX_MIDDLE);
+    uint16_t flex_ring_raw   = readMuxChannel(CH_FLEX_RING);
+    uint16_t flex_pinky_raw  = readMuxChannel(CH_FLEX_PINKY);
     uint16_t btn_adc  = readMuxChannel(CH_BUTTON);
     uint8_t  buttons  = (btn_adc > 2047) ? 0x01 : 0x00;
 
@@ -205,13 +235,18 @@ void loop() {
 
     // Send BLE notification
     if (deviceConnected) {
-        uint8_t packet[9];
-        packU16(&packet[0], grip_raw);
-        packU16(&packet[2], flex_raw);
-        packet[4] = buttons;
-        packI16(&packet[5], accel_x);
-        packI16(&packet[7], accel_y);
-        pCharacteristic->setValue(packet, 9);
+        uint8_t packet[19];
+        packU16(&packet[0],  grip_raw);
+        packU16(&packet[2],  flex_raw);
+        packU16(&packet[4],  flex_thumb_raw);
+        packU16(&packet[6],  flex_index_raw);
+        packU16(&packet[8],  flex_middle_raw);
+        packU16(&packet[10], flex_ring_raw);
+        packU16(&packet[12], flex_pinky_raw);
+        packet[14] = buttons;
+        packI16(&packet[15], accel_x);
+        packI16(&packet[17], accel_y);
+        pCharacteristic->setValue(packet, 19);
         pCharacteristic->notify();
     }
 
@@ -221,8 +256,10 @@ void loop() {
     unsigned long printGap = deviceConnected ? 200 : 2000;
     if (now - lastPrint >= printGap) {
         lastPrint = now;
-        Serial.printf("%s grip=%4u flex=%4u btn=%u ax=%6d ay=%6d\n",
+        Serial.printf("%s grip=%4u flex=%4u T=%4u I=%4u M=%4u R=%4u P=%4u btn=%u ax=%6d ay=%6d\n",
                       deviceConnected ? "[LIVE]" : "[ADV ]",
-                      grip_raw, flex_raw, buttons, accel_x, accel_y);
+                      grip_raw, flex_raw, flex_thumb_raw, flex_index_raw,
+                      flex_middle_raw, flex_ring_raw, flex_pinky_raw,
+                      buttons, accel_x, accel_y);
     }
 }

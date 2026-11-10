@@ -17,6 +17,7 @@ _SFX_WELCOME = os.path.join(_DIR, "assets", "audio",
 _SFX_CLICK      = os.path.join(_DIR, "assets", "audio",
                                 "mixkit-modern-technology-select-3124.wav")
 _AUDIO_DIR = os.path.join(_DIR, "assets", "audio")
+_LOBBY_MUSIC = os.path.join(_AUDIO_DIR, "lobby_music.mp3")
 
 def game_music_path(game: str, difficulty: str) -> str:
     """Return the path for a game+difficulty track, falling back to default."""
@@ -33,6 +34,7 @@ _GAME_BGM = {
     "Feed the Cat":     "feed_the_cat.mp3",
     "Steady Aim":       "Steady Aim.mp3",
     "Key and Lock":     "Key and Lock.mp3",
+    "Whack-a-Mole":     "whack-a-mole.mp3",
 }
 
 
@@ -76,6 +78,18 @@ def stop_music():
         pygame.mixer.music.stop()
     except Exception:
         pass
+
+
+def start_lobby_music():
+    """Loop the therapist dashboard's idle/lobby track. Shares the same
+    pygame.mixer.music channel a launched game's own start_music() uses --
+    that call already stops whatever is playing first, so lobby music and a
+    game's BGM can never play at once."""
+    start_music(_LOBBY_MUSIC)
+
+
+def stop_lobby_music():
+    stop_music()
 
 
 def pause_music():

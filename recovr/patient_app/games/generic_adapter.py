@@ -54,7 +54,8 @@ def _sensor_telemetry(game):
     the dashboard decides what, if anything, to show for that.
 
     Returns {state_key: {"raw": float, "calibrated": float|None}} for every
-    key actually present in self._state (grip / tilt_x / tilt_y)."""
+    key actually present in self._state (grip / tilt_x / tilt_y / the 5
+    finger_thumb..finger_pinky channels Whack-a-Mole uses)."""
     state = getattr(game, "_state", None) or {}
     out = {}
     if "grip" in state:
@@ -66,6 +67,26 @@ def _sensor_telemetry(game):
             raw = state[key]
             fn = getattr(game, "_normalize_tilt", None)
             out[key] = {"raw": raw, "calibrated": _call_normalize(fn, raw, axis) if fn else None}
+    # Whack-a-Mole's 5 independent fingers -- the game's own
+    # self._state["finger_flex"] (set every frame from input_handler, same
+    # convention every other game already follows) paired with its own
+    # _normalize_finger(index, raw) method, exactly like grip/tilt above
+    # call the game's own normalize method rather than a second formula.
+    finger_flex = state.get("finger_flex")
+    if finger_flex:
+        fn = getattr(game, "_normalize_finger", None)
+        names = ("finger_thumb", "finger_index", "finger_middle", "finger_ring", "finger_pinky")
+        for i, key in enumerate(names):
+            if i >= len(finger_flex):
+                break
+            raw = finger_flex[i]
+            cal = None
+            if fn is not None:
+                try:
+                    cal = fn(i, raw)
+                except Exception:
+                    cal = None
+            out[key] = {"raw": raw, "calibrated": cal}
     return out
 
 
@@ -271,6 +292,12 @@ def make_real_adapter(game_cls):
                                   if getattr(self, "time_left", None) is not None else None),
                 "difficulty": getattr(self, "difficulty", ""),
                 "sensors": _sensor_telemetry(self),
+                # Whack-a-Mole only -- which finger the active mole
+                # currently requires (e.g. "Middle"), so the therapist
+                # monitoring panel can highlight that one row. None for
+                # every other game (no such attribute), and while no mole
+                # is up.
+                "required_finger": getattr(self, "required_finger", None),
             }
 
         def get_result(self):

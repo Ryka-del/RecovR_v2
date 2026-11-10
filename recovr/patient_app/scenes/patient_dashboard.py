@@ -8,8 +8,7 @@ PURE VIEW. `draw(surface, snapshot)` only *reads* the shared session snapshot:
       "history": [{game, played_at, difficulty, score, status, goal,
                    completed_reps, duration_sec, session_mode,
                    configured_duration_seconds}, ...],   # newest first
-      "stats":   {total_sessions, games_played,
-                   goals_assigned, goals_completed} | None,
+      "stats":   {total_sessions, time_elapsed_sec, goals_completed} | None,
   }
   snapshot["config"] -> therapist_name (display only)
   theme              -> constants.get_theme() via scenes.common.PALETTE
@@ -93,6 +92,17 @@ _SUMMARY_ICON_ASSETS = {
     "controller": "games_played.png",
     "target":     "goals_completed.png",
 }
+# Rehabilitation Summary row -> icon KIND (not asset name) -- swapped per
+# spec: the Total Sessions row now shows the icon that used to mean "Games
+# Played" (controller/games_played.png), and the new Time Elapsed row (which
+# replaces Games Played) shows the icon that used to mean "Total Sessions"
+# (calendar/total_sessions.png). Goals Completed keeps its own icon. The
+# asset filenames above are untouched -- only which row uses which key.
+_SUMMARY_ROW_ICON_KIND = {
+    "total_sessions": "controller",
+    "time_elapsed":   "calendar",
+    "goals_completed": "target",
+}
 
 _FONT_DIR = os.path.abspath(os.path.join(
     os.path.dirname(__file__), "..", "..", "..", "..", "assets", "font"))
@@ -119,6 +129,19 @@ def _mix(a, b, t):
     return (int(a[0] + (b[0] - a[0]) * t),
             int(a[1] + (b[1] - a[1]) * t),
             int(a[2] + (b[2] - a[2]) * t))
+
+
+def _fmt_elapsed(total_sec):
+    """Accumulated Time Elapsed as "7m 30s" / "25m 10s" / "1h 12m 45s" --
+    only the units that matter at that scale (no "0h"), per spec examples."""
+    total_sec = max(0, int(total_sec))
+    h, rem = divmod(total_sec, 3600)
+    m, s = divmod(rem, 60)
+    if h > 0:
+        return f"{h}h {m}m {s}s"
+    if m > 0:
+        return f"{m}m {s}s"
+    return f"{s}s"
 
 
 def _wrap(text, font, max_w):
@@ -215,7 +238,7 @@ def _draw_icon(surface, kind, rect, color, width=None):
         pygame.draw.circle(surface, color, (cx, cy), r, w)
         pygame.draw.line(surface, color, (cx, cy), (cx, cy - int(r * 0.6)), w)
         pygame.draw.line(surface, color, (cx, cy), (cx + int(r * 0.45), cy + int(r * 0.1)), w)
-    elif kind == "calendar":                      # Next Session
+    elif kind == "calendar":                      # Next Session / Time Elapsed (swapped icon)
         bw, bh = int(s * 0.74), int(s * 0.68)
         br = pygame.Rect(0, 0, bw, bh); br.center = (cx, cy + int(s * 0.04))
         pygame.draw.rect(surface, color, br, w, border_radius=max(2, int(s * 0.08)))
@@ -252,7 +275,7 @@ def _draw_icon(surface, kind, rect, color, width=None):
         for frac in (1.0, 0.62):
             pygame.draw.circle(surface, color, (cx, cy), int(s * 0.42 * frac), w)
         pygame.draw.circle(surface, color, (cx, cy), max(2, int(s * 0.1)))
-    elif kind == "controller":                    # Games Played
+    elif kind == "controller":                    # Total Sessions (swapped icon)
         bw, bh = int(s * 0.78), int(s * 0.42)
         br = pygame.Rect(0, 0, bw, bh); br.center = (cx, cy)
         pygame.draw.rect(surface, color, br, w, border_radius=int(bh * 0.5))
@@ -361,21 +384,14 @@ class PatientDashboardScreen:
     def _draw_summary_card(self, surface, rect, C, accent, stats):
         content = self._card_shell(surface, rect, "Rehabilitation Summary", "clipboard", C, accent)
 
-        total = stats.get("total_sessions") if stats else None
-        games = stats.get("games_played") if stats else None
-        g_done = stats.get("goals_completed") if stats else None
-        g_assigned = stats.get("goals_assigned") if stats else None
-
-        goals_txt = "Not Yet Available"
-        goals_pill = False
-        if stats is not None and (g_assigned or 0) > 0:
-            goals_txt = f"{g_done}/{g_assigned}"
-            goals_pill = True
+        total   = stats.get("total_sessions")   if stats else None
+        elapsed = stats.get("time_elapsed_sec") if stats else None
+        g_done  = stats.get("goals_completed")  if stats else None
 
         rows = [
-            ("calendar", "Total Sessions", "Not Yet Available" if total is None else str(total), False),
-            ("controller", "Games Played", "Not Yet Available" if games is None else str(games), False),
-            ("target", "Goals Completed", goals_txt, goals_pill),
+            ("total_sessions",  "Total Sessions", "Not Yet Available" if total is None else str(total), False),
+            ("time_elapsed",    "Time Elapsed",   "Not Yet Available" if elapsed is None else _fmt_elapsed(elapsed), False),
+            ("goals_completed", "Goals Completed", "Not Yet Available" if g_done is None else str(g_done), False),
         ]
         row_h = content.height / len(rows)
         f_lbl = _font("Medium", max(14, int(row_h * 0.3)))
@@ -385,12 +401,13 @@ class PatientDashboardScreen:
             ry = int(content.top + row_h * i + row_h * 0.5)
             icon_sz = int(row_h * 0.64)
             irect = pygame.Rect(content.left, ry - icon_sz // 2, icon_sz, icon_sz)
-            asset = _SUMMARY_ICON_ASSETS.get(kind)
+            icon_kind = _SUMMARY_ROW_ICON_KIND.get(kind, kind)
+            asset = _SUMMARY_ICON_ASSETS.get(icon_kind)
             spr = _sprite(asset, icon_sz, crop=True) if asset else None
             if spr is not None:
                 surface.blit(spr, spr.get_rect(center=irect.center))
             else:
-                _draw_icon(surface, kind, irect, accent)
+                _draw_icon(surface, icon_kind, irect, accent)
 
             lbl_s = f_lbl.render(label, True, C["body"])
             surface.blit(lbl_s, (irect.right + int(content.width * 0.04),

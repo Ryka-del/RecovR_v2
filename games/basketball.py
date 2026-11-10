@@ -15,6 +15,7 @@ from sensors.input_handler import input_handler
 from audio import play_success, play_error, play_completion, start_music, stop_music, game_music_path, play_click
 from constants import get_theme, is_dark_mode, GAME_W, GAME_H
 from games.game_header import draw_game_header
+from games.round_complete import draw_round_complete_overlay
 
 GOALS      = {"Easy": 10, "Medium": 15, "Hard": 20}   # Target Mode: shots to make to complete
 DURATION   = {"Easy": 40,  "Medium": 35,  "Hard": 30}  # Timed Mode: session length in seconds
@@ -651,8 +652,11 @@ class BasketballGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # cropped to its own opaque content (it ships with transparent side
         # padding for the drop shadow) then fit preserving aspect ratio.
         card_name = f"basketball_how_to_play_{'dark' if is_dark_mode() else 'light'}.png"
-        top_margin, bottom_reserved = int(GAME_H * 0.05), int(GAME_H * 0.07)
-        card = _load_image_fit(card_name, int(GAME_W * 0.60), GAME_H - top_margin - bottom_reserved)
+        # Same outer card box (position + max size) as _draw_results' Round
+        # Complete card -- the two screens read as stages of one interface
+        # rather than two differently-proportioned popups.
+        top_margin, bottom_reserved = int(GAME_H * 0.05), int(GAME_H * 0.17)
+        card = _load_image_fit(card_name, int(GAME_W * 0.50), GAME_H - top_margin - bottom_reserved)
         bottom_y = GAME_H // 2
         if card is not None:
             cr = card.get_rect(midtop=(GAME_W // 2, top_margin))
@@ -711,44 +715,15 @@ class BasketballGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
     def _draw_results(self, surface):
         T = get_theme()
-        ov = pygame.Surface((GAME_W, GAME_H), pygame.SRCALPHA)
-        ov.fill((0, 0, 0, 185))
-        surface.blit(ov, (0, 0))
+        _card, bottom_y = draw_round_complete_overlay(
+            surface, card_prefix="basketball", duration_sec=self.game_over_duration,
+            score_text=self._session_count_text(), load_fit=_load_image_fit)
 
-        card_name = f"basketball_round_complete_{'dark' if is_dark_mode() else 'light'}.png"
-        top_margin, bottom_reserved = int(GAME_H * 0.05), int(GAME_H * 0.17)
-        card = _load_image_fit(card_name, int(GAME_W * 0.50), GAME_H - top_margin - bottom_reserved)
-        bottom_y = GAME_H // 2
-        if card is not None:
-            cr = card.get_rect(midtop=(GAME_W // 2, top_margin))
-            surface.blit(card, cr)
-            bottom_y = cr.bottom
-
-            # The card's own "You shot / [[gap]] / Balls" stat slot -- same
-            # relative position on every how-to-play/round-complete asset in
-            # this set (confirmed across games), expressed as a fraction of
-            # the card's OWN rendered size so it still lands correctly
-            # whatever box size _load_image_fit scaled it to.
-            num_col = T["WHITE"] if not is_dark_mode() else (20, 80, 150)
-            f_num = pygame.font.SysFont("monospace", max(18, int(cr.height * 0.075)), bold=True)
-            num_s = f_num.render(self._session_count_text(), True, num_col)
-            surface.blit(num_s, num_s.get_rect(
-                center=(cr.x + int(cr.width * 0.81), cr.y + int(cr.height * 0.80))))
-
-        f_sm  = pygame.font.SysFont("monospace", 24)
         f_btn = pygame.font.SysFont("monospace", 28, bold=True)
-
-        mins, secs = divmod(self.game_over_duration, 60)
-        mode_lbl = "Target Mode" if self.session_mode == "target" else "Timed Mode"
-        du_s = f_sm.render(
-            f"Elapsed Time: {mins:02d}:{secs:02d}   ·   {self.difficulty} · {mode_lbl}",
-            True, T["WHITE"])
-        du_r = du_s.get_rect(centerx=GAME_W // 2, top=bottom_y + 16)
-        surface.blit(du_s, du_r)
 
         mp  = pygame.mouse.get_pos()
         bw, bh = 220, 52
-        by  = du_r.bottom + 20
+        by  = bottom_y + 20
 
         again_r = pygame.Rect(GAME_W // 2 - bw - 16, by, bw, bh)
         exit_r  = pygame.Rect(GAME_W // 2 + 16,       by, bw, bh)

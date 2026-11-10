@@ -24,8 +24,16 @@ _NAME_KEYWORDS = ["recovr", "fsr402", "esp32_fsr"]
 SERVICE_UUID  = "12345678-1234-1234-1234-123456789abc"
 CHAR_UUID     = "12345678-1234-1234-1234-123456789abd"
 
-PACKET_FORMAT = "<HHBhh"
-PACKET_SIZE   = struct.calcsize(PACKET_FORMAT)   # 9 bytes
+# grip_raw, flex_raw (legacy single-flex), flex_thumb/index/middle/ring/pinky
+# (Whack-a-Mole 5-finger glove), buttons, accel_x, accel_y -- must match
+# firmware/controller_esp32c3.ino's packet layout exactly.
+PACKET_FORMAT = "<HHHHHHHBhh"
+PACKET_SIZE   = struct.calcsize(PACKET_FORMAT)   # 19 bytes
+
+# Old firmware's 9-byte packet (grip, flex, buttons, accel_x, accel_y) --
+# accepted for backward compatibility, see _on_notification().
+_LEGACY_PACKET_FORMAT = "<HHBhh"
+_LEGACY_PACKET_SIZE   = struct.calcsize(_LEGACY_PACKET_FORMAT)   # 9 bytes
 
 _SCAN_TIMEOUT    = 5.0
 _RECONNECT_DELAY = 2.0
@@ -38,6 +46,8 @@ class BLEReceiver:
         self._lock      = threading.Lock()
         self._latest    = {
             "grip_raw": 0, "flex_raw": 0,
+            "flex_thumb_raw": 0, "flex_index_raw": 0, "flex_middle_raw": 0,
+            "flex_ring_raw": 0, "flex_pinky_raw": 0,
             "buttons":  0, "accel_x":  0, "accel_y": 0,
         }
         self._connected = False
@@ -294,18 +304,41 @@ class BLEReceiver:
     # ── Notification handler ──────────────────────────────────────────────────
 
     def _on_notification(self, sender, data: bytearray):
-        if len(data) < PACKET_SIZE:
+        # Backward compatible with a controller still running the OLD 9-byte
+        # firmware (grip, flex, buttons, accel_x, accel_y) -- the 5 new
+        # per-finger fields just fall back to duplicating the single legacy
+        # flex reading (today's behavior) instead of the whole packet being
+        # silently dropped and every sensor-based game freezing until the
+        # ESP32 is reflashed with the updated firmware.
+        if len(data) >= PACKET_SIZE:
+            self._last_packet = time.monotonic()
+            vals = struct.unpack_from(PACKET_FORMAT, data)
+            with self._lock:
+                self._latest = {
+                    "grip_raw":        vals[0],
+                    "flex_raw":        vals[1],
+                    "flex_thumb_raw":  vals[2],
+                    "flex_index_raw":  vals[3],
+                    "flex_middle_raw": vals[4],
+                    "flex_ring_raw":   vals[5],
+                    "flex_pinky_raw":  vals[6],
+                    "buttons":         vals[7],
+                    "accel_x":         vals[8],
+                    "accel_y":         vals[9],
+                }
             return
-        self._last_packet = time.monotonic()
-        vals = struct.unpack_from(PACKET_FORMAT, data)
-        with self._lock:
-            self._latest = {
-                "grip_raw": vals[0],
-                "flex_raw": vals[1],
-                "buttons":  vals[2],
-                "accel_x":  vals[3],
-                "accel_y":  vals[4],
-            }
+        if len(data) >= _LEGACY_PACKET_SIZE:
+            self._last_packet = time.monotonic()
+            grip_raw, flex_raw, buttons, accel_x, accel_y = \
+                struct.unpack_from(_LEGACY_PACKET_FORMAT, data)
+            with self._lock:
+                self._latest = {
+                    "grip_raw": grip_raw, "flex_raw": flex_raw,
+                    "flex_thumb_raw": flex_raw, "flex_index_raw": flex_raw,
+                    "flex_middle_raw": flex_raw, "flex_ring_raw": flex_raw,
+                    "flex_pinky_raw": flex_raw,
+                    "buttons": buttons, "accel_x": accel_x, "accel_y": accel_y,
+                }
 
     @staticmethod
     def _classify_error(exc) -> str:
