@@ -35,6 +35,7 @@ _GAME_BGM = {
     "Steady Aim":       "Steady Aim.mp3",
     "Key and Lock":     "Key and Lock.mp3",
     "Whack-a-Mole":     "whack-a-mole.mp3",
+    "Toy Factory":      "toy_factory.mp3",
 }
 
 

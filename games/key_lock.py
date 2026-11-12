@@ -18,24 +18,26 @@ Mechanic:
     the lock: a brief glow/animation plays, points are awarded exactly once,
     and the next round's lock+key pair is chosen.
 
-Visual key rotation: the key is treated as a flat 3D card spinning around
-its own LONGITUDINAL axis -- the vertical line running from tip to head,
-which is exactly where the art's tip already sits. Rotating a flat object
-around an axis that lies ON it means every point on that axis stays put
-(the tip never moves off the keyhole) while everything OFF that axis (the
-width of the shaft and head) visually foreshortens toward the viewer,
-collapsing to an edge-on sliver at 90/270 degrees and reappearing mirrored
-(the "back" of the key) past 90 degrees -- exactly how a real object looks
-when twisted around an axis pointing at the camera, and NOT a flat
-pygame.transform.rotate of the whole sprite (which would swing the tip
-away from the keyhole and never looks like a genuine twist). Implemented
-as a horizontal-only scale by cos(current_angle), with a horizontal flip
-once cos goes negative to show the mirrored "back" half; height (the
-tip-to-head extent, along the rotation axis) never changes. Gameplay's
-wrist range stays the existing calibrated +/-45 degrees (TARGET_ANGLE_RANGE,
-TOLERANCE, the gauge, etc. are all unchanged) -- the full 0-360 degree
-behaviour only shows up if current_angle is driven past that range (e.g.
-directly, for verification).
+Visual key rotation: the key is drawn procedurally (see _draw_key) rather
+than as a sprite, so it can show a genuine twist instead of a flat swing.
+It's treated as a flat 3D card spinning around its own LONGITUDINAL axis --
+the vertical line running from tip to bow, which is exactly where the key's
+local origin sits. Rotating a flat object around an axis that lies ON it
+means every point on that axis stays put (the tip never moves off the
+keyhole) while everything OFF that axis (the width of the shaft and bow)
+visually foreshortens toward the viewer, collapsing to an edge-on sliver at
+90/270 degrees and reappearing mirrored (the "back" of the key) past 90
+degrees -- exactly how a real object looks when twisted around an axis
+pointing at the camera, and NOT a flat pygame.transform.rotate of a whole
+sprite (which would swing the tip away from the keyhole and never looks
+like a genuine twist). Implemented as a horizontal-only scale by
+cos(current_angle) applied to every local point/circle before it's drawn
+(cos's own sign handles the mirror once it goes negative, with no separate
+flip needed); height (the tip-to-bow extent, along the rotation axis) never
+changes. Gameplay's wrist range is the calibrated +/-90 degrees set by
+MAX_DISPLAY_ANGLE (TARGET_ANGLE_RANGE/TOLERANCE are unaffected -- they're
+well within it) -- the full 0-360 degree behaviour only shows up if
+current_angle is driven past that range (e.g. directly, for verification).
 """
 
 import os
@@ -50,6 +52,7 @@ from audio import (play_success, play_click, play_completion, start_music, stop_
                     pause_music, resume_music, game_bgm_path)
 from constants import get_theme, is_dark_mode, GAME_W, GAME_H
 from games.game_header import draw_game_header, HEADER_BOTTOM
+from games.hud import draw_target_pill, TARGET_POS
 from games.round_complete import draw_round_complete_overlay
 
 # ── difficulty-scaled parameters ────────────────────────────────────────────
@@ -62,10 +65,10 @@ TEST_RAMP_RATE     = 0.5  # normalized units/second (-1..1 range) -- Keyboard Te
                            # LEFT/RIGHT ramp speed; reaches full deflection in ~2s of holding
 
 # Magnitude range (degrees) a turn's target angle is rolled from -- always
-# comfortably inside the +/-45 degree calibrated display range (see
+# comfortably inside the +/-90 degree calibrated display range (see
 # MAX_DISPLAY_ANGLE), so a generated target is never unreachable.
 TARGET_ANGLE_RANGE = {"Easy": (15, 28), "Medium": (20, 34), "Hard": (26, 42)}
-MAX_DISPLAY_ANGLE  = 45.0   # the gauge's own +/-45 degree span; also the degrees-per-normalized-unit scale
+MAX_DISPLAY_ANGLE  = 90.0   # the gauge's own +/-90 degree span; also the degrees-per-normalized-unit scale
 
 TURNS_REQUIRED = {
     "Easy":   {"normal": 1, "legendary": 3},
@@ -79,15 +82,29 @@ POINTS           = {"normal": 1, "legendary": 5}
 LEGENDARY_POPUP_DURATION = 1.8
 UNLOCK_ANIM_DURATION     = 1.3
 
-# (key asset, lock asset, color name) -- rolled once per Normal round.
+# (lock asset, color name) -- rolled once per Normal round. The key is no
+# longer an asset (see _draw_key) -- it's drawn procedurally, in the same
+# color as its matching lock.
 NORMAL_PAIRS = [
-    ("key1_key_and_lock.png", "lock1_key_and_lock.png", "Pink"),
-    ("key2_key_and_lock.png", "lock2_key_and_lock.png", "Green"),
-    ("key3_key_and_lock.png", "lock3_key_and_lock.png", "Blue"),
+    ("lock1_key_and_lock.png", "Pink"),
+    ("lock2_key_and_lock.png", "Green"),
+    ("lock3_key_and_lock.png", "Blue"),
 ]
-LEGENDARY_PAIR = ("legend_key_key_and_lock.png", "legend_lock_key_and_lock.png", "Purple")
+LEGENDARY_PAIR = ("legend_lock_key_and_lock.png", "Purple")
 
-KEY_BOX  = (190, 290)
+# Procedural key colors -- brushed-gold metal (matching the lock art) plus a
+# color-coded gem, same pairing as the original key sprites.
+KEY_GOLD        = (235, 185, 55)
+KEY_GOLD_LIGHT  = (255, 225, 140)
+KEY_GOLD_DARK   = (62, 40, 8)   # darker + thicker outline -- see _draw_key
+KEY_SHINE       = (255, 250, 225)  # small specular highlights -- "shines like the lock"
+KEY_GEM_COLORS  = {
+    "Pink":   (255, 45, 165),
+    "Green":  (35, 235, 110),
+    "Blue":   (40, 150, 255),
+    "Purple": (190, 80, 255),
+}
+
 LOCK_BOX = (320, 460)
 
 LOCK_X = GAME_W // 2
@@ -99,8 +116,9 @@ LOCK_Y = HEADER_BOTTOM + 95
 # Key rotation (see module docstring) -- the art's own tip-to-head axis
 # IS the longitudinal rotation axis, so no base re-orientation is needed.
 
-GAUGE_CENTER = (GAME_W // 2, GAME_H - 120)
-GAUGE_RADIUS = 110
+GAUGE_CENTER = (GAME_W // 2, GAME_H - 90)   # lower on screen -- more breathing
+                                             # room above it (see _draw_gauge)
+GAUGE_RADIUS = 145
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _img_cache = {}
@@ -170,34 +188,6 @@ def _keyhole_center_frac(name):
     return frac
 
 
-def _key_tip_frac(name):
-    """Horizontal fraction (0-1) across the key's own cropped bounding box
-    where its tip -- the topmost few rows of opaque content, the end that
-    inserts into the keyhole -- actually sits. Measured directly from the
-    art rather than assumed to be the bounding box's horizontal centre,
-    since the much wider ornate bow at the other end can pull the overall
-    bounding box off-centre relative to the narrow shaft/tip."""
-    key = ("keytip", name)
-    if key in _img_cache:
-        return _img_cache[key]
-    try:
-        raw = pygame.image.load(os.path.join(_ROOT, "assets", "images", name)).convert_alpha()
-        br = raw.get_bounding_rect(min_alpha=10)
-        w, h = br.width, br.height
-        xs = []
-        rows = max(1, int(h * 0.02))
-        for y in range(rows):
-            for x in range(w):
-                r, g, b, a = raw.get_at((br.x + x, br.y + y))
-                if a > 120:
-                    xs.append(x)
-        frac = (sum(xs) / len(xs) / w) if xs else 0.5
-    except Exception:
-        frac = 0.5
-    _img_cache[key] = frac
-    return frac
-
-
 class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
     def on_enter(self, data):
         self.account_id = data.get("account_id")
@@ -224,11 +214,12 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self.vol_active = False
         self.pause_vol  = 0.4
         self._font_hud     = pygame.font.SysFont("monospace", 34, bold=True)
+        self._font_target  = pygame.font.SysFont("monospace", 54, bold=True)
         self._font_sm      = pygame.font.SysFont("monospace", 24)
         self._font_fb      = pygame.font.SysFont("monospace", 46, bold=True)
-        self._font_gauge   = pygame.font.SysFont("monospace", 22, bold=True)
-        self._font_panel_l = pygame.font.SysFont("monospace", 20, bold=True)
-        self._font_panel_n = pygame.font.SysFont("monospace", 30, bold=True)
+        self._font_gauge   = pygame.font.SysFont("monospace", 40, bold=True)
+        self._font_panel_l = pygame.font.SysFont("monospace", 30, bold=True)
+        self._font_panel_n = pygame.font.SysFont("monospace", 44, bold=True)
 
         self._bg_img = _load_image_cover("bg_key_and_lock.png", GAME_W, GAME_H)
         self._legendary_popup_img = _load_image_fit("legendary_key_and_lock.png", 760, 260)
@@ -268,7 +259,7 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
     def _spawn_round(self):
         if random.random() < LEGENDARY_CHANCE:
-            key_name, lock_name, color = LEGENDARY_PAIR
+            lock_name, color = LEGENDARY_PAIR
             self.lock_type = "legendary"
         else:
             idx = random.randrange(len(NORMAL_PAIRS))
@@ -276,13 +267,11 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
                 while idx == self._last_pair_idx:
                     idx = random.randrange(len(NORMAL_PAIRS))
             self._last_pair_idx = idx
-            key_name, lock_name, color = NORMAL_PAIRS[idx]
+            lock_name, color = NORMAL_PAIRS[idx]
             self.lock_type = "normal"
 
         self.color_name  = color
-        self._key_img  = _load_image_fit(key_name, *KEY_BOX)
         self._lock_img = _load_image_fit(lock_name, *LOCK_BOX)
-        self._key_tip_frac = _key_tip_frac(key_name)
         kf = _keyhole_center_frac(lock_name)
         lock_rect = self._lock_img.get_rect(midtop=(LOCK_X, LOCK_Y)) if self._lock_img is not None \
             else pygame.Rect(0, 0, *LOCK_BOX)
@@ -548,7 +537,6 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
         if self.phase == "playing":
             self._draw_angle_panels(surface)
-            self._draw_arrows(surface)
             self._draw_gauge(surface)
             self._draw_hold_indicator(surface)
 
@@ -559,12 +547,12 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
         draw_game_header(surface, "Key and Lock", self.difficulty,
                           self._session_header_time(), self.score, GAME_W, GAME_H)
 
-        prog_s = font_sm.render(self._session_progress_text("locks"), True, T["TEXT"])
-        surface.blit(prog_s, (int(40 * GAME_W / 1920), HEADER_BOTTOM + int(20 * GAME_H / 1080)))
+        prog_bg = draw_target_pill(surface, self._session_progress_text("locks"),
+                                    TARGET_POS, T["ACCENT"], self._font_target)
 
         if self.streak >= 2:
             streak_s = font_sm.render(f"{self.streak}-Lock Streak", True, T["YELLOW"])
-            surface.blit(streak_s, (int(40 * GAME_W / 1920), HEADER_BOTTOM + int(50 * GAME_H / 1080)))
+            surface.blit(streak_s, (prog_bg.left, prog_bg.bottom + 10))
 
         # Pause button — two solid bars
         pb     = self._pause_btn_rect
@@ -581,10 +569,6 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
         if self.feedback:
             msg = self._font_fb.render(self.feedback[0], True, self.feedback[1])
             surface.blit(msg, msg.get_rect(center=(self.lock_rect.centerx, self.lock_rect.top - 40)))
-
-        surface.blit(font_sm.render(
-            "Tilt wrist LEFT/RIGHT to turn the key — hold on target to unlock",
-            True, T["GRAY"]), (GAME_W // 2 - 340, GAME_H - 44))
 
         if self.paused: self._draw_pause(surface)
         self._draw_fatigue_overlay(surface)
@@ -627,49 +611,103 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
         surface.blit(self._lock_img, self._lock_img.get_rect(center=self.lock_rect.center))
 
+    # Procedural key -- replaces the old key1/2/3/legend_key sprites so the
+    # key can show genuine foreshortening (see module docstring) instead of
+    # a rigid sprite swing. Drawn fresh every frame as plain gold shapes in
+    # the key's own LOCAL coordinates (origin = the tip, +y running down
+    # the shaft toward the bow, exactly the sprites' own layout/angle), each
+    # point/circle transformed by the same screen-space rule: x compresses
+    # by cos(current_angle) (the shaft/bow's width, perpendicular to the
+    # rotation axis) while y (along the axis) never changes, and the tip
+    # (local 0,0) always lands exactly on self.keyhole_pos. Because it's
+    # redrawn from this fixed local model every frame rather than rotating a
+    # pre-lit bitmap, there's no baked-in highlight to look wrong at an
+    # angle -- the shaft's sheen stripe is just part of the same rotating
+    # geometry, so it reads as real metal turning in place.
     def _draw_key(self, surface):
-        if self._key_img is None:
-            return
-        # Rigid rotation, pivoted at the tip -- see module docstring. This
-        # is pygame.transform.rotate() on the unmodified sprite (its shape,
-        # width and length are never altered -- no scaling, no squashing,
-        # no flipping), just pivoted at the key's own measured tip point
-        # instead of its centre, so that point -- and only that point --
-        # stays fixed at the keyhole through the entire rotation while the
-        # rest of the key (the head) swings around it.
-        w, h = self._key_img.get_size()
-        tip_local = (self._key_tip_frac * w, 0.0)   # tip sits at the top row
-        offset = pygame.math.Vector2(w / 2 - tip_local[0], h / 2 - tip_local[1])
-        rotated_offset = offset.rotate(self.current_angle)
-        rotated = pygame.transform.rotate(self._key_img, -self.current_angle)
-        rect = rotated.get_rect(center=(self.keyhole_pos[0] + rotated_offset.x,
-                                         self.keyhole_pos[1] + rotated_offset.y))
-        surface.blit(rotated, rect)
+        cs = math.cos(math.radians(self.current_angle))
+        kx, ky = self.keyhole_pos
 
-    def _draw_arrows(self, surface):
-        T = get_theme()
-        cy = self.lock_rect.centery
-        want_right = self.target_angle > 0 and self.phase == "playing"
-        want_left  = self.target_angle < 0 and self.phase == "playing"
+        def pt(x, y):
+            return (kx + x * cs, ky + y)
 
-        for side, cx, active in (("L", self.lock_rect.left - 50, want_left),
-                                   ("R", self.lock_rect.right + 50, want_right)):
-            col = T["GREEN"] if active else T["GRAY"]
-            width = 8 if active else 3
-            rect = pygame.Rect(0, 0, 100, 100)
-            rect.center = (cx, cy)
-            start = -0.9 if side == "L" else math.pi - 2.2
-            end   = 0.9 if side == "L" else math.pi + 2.2
-            try:
-                pygame.draw.arc(surface, col, rect, start, end, width)
-            except Exception:
-                pass
-            tip_angle = end if side == "L" else start
-            tip = (cx + 50 * math.cos(tip_angle), cy + 50 * math.sin(tip_angle))
-            perp = tip_angle + (math.pi / 2 if side == "L" else -math.pi / 2)
-            p2 = (tip[0] + 14 * math.cos(perp), tip[1] + 14 * math.sin(perp))
-            p3 = (tip[0] - 14 * math.cos(perp), tip[1] - 14 * math.sin(perp))
-            pygame.draw.polygon(surface, col, [tip, p2, p3])
+        def poly(points, fill, outline=None, owidth=6):
+            p = [pt(x, y) for x, y in points]
+            pygame.draw.polygon(surface, fill, p)
+            if outline:
+                pygame.draw.polygon(surface, outline, p, owidth)
+
+        def circle(cx_, cy_, r, fill=None, owidth=0, ring=0):
+            w = max(2, int(round(2 * r * abs(cs))))
+            h = int(round(2 * r))
+            rect = pygame.Rect(0, 0, w, h)
+            rect.center = pt(cx_, cy_)
+            if ring:
+                pygame.draw.ellipse(surface, fill, rect, ring)
+                # Outline both edges of the ring (not just the flat fill) so
+                # it reads as a distinct outlined band, not a soft blob.
+                pygame.draw.ellipse(surface, KEY_GOLD_DARK, rect, 5)
+                inner = rect.inflate(-2 * ring, -2 * ring)
+                if inner.width > 2 and inner.height > 2:
+                    pygame.draw.ellipse(surface, KEY_GOLD_DARK, inner, 5)
+            else:
+                pygame.draw.ellipse(surface, fill, rect)
+                if owidth:
+                    pygame.draw.ellipse(surface, KEY_GOLD_DARK, rect, owidth)
+
+        def shine(cx_, cy_, w_, h_, ang_deg=-35):
+            # A small bright specular streak -- a thin rotated ellipse --
+            # the same "glossy highlight" trick the lock's own art already
+            # uses, so the procedural key reads as shiny metal too, not
+            # flat paint. Width compresses with the key's own foreshortening
+            # (abs(cs)) like every other shape here.
+            w_ = max(2, int(round(w_ * abs(cs))))
+            surf = pygame.Surface((w_, h_), pygame.SRCALPHA)
+            pygame.draw.ellipse(surf, (*KEY_SHINE, 235), surf.get_rect())
+            surf = pygame.transform.rotate(surf, ang_deg)
+            r = surf.get_rect(center=pt(cx_, cy_))
+            surface.blit(surf, r)
+
+        gem = KEY_GEM_COLORS.get(self.color_name, KEY_GOLD_LIGHT)
+
+        if self.lock_type == "legendary":
+            for r, a in ((95, 35), (72, 55), (50, 80)):
+                w = max(2, int(round(2 * r * abs(cs))))
+                h = int(round(2 * r))
+                glow = pygame.Surface((w, h), pygame.SRCALPHA)
+                pygame.draw.ellipse(glow, (*gem, a), glow.get_rect())
+                surface.blit(glow, glow.get_rect(center=pt(0, 150)))
+
+        SHAFT_W = 15
+        # shaft + rounded tip cap
+        poly([(-SHAFT_W, 0), (SHAFT_W, 0), (SHAFT_W, 150), (-SHAFT_W, 150)],
+             KEY_GOLD, KEY_GOLD_DARK)
+        poly([(-4, 0), (2, 0), (2, 150), (-4, 150)], KEY_GOLD_LIGHT)   # sheen stripe
+        circle(0, 10, 16, KEY_GOLD, owidth=6)
+        shine(-5, 3, 10, 16)
+
+        # single flag-like tooth/bit, sticking left off the shaft
+        poly([(-SHAFT_W, 48), (-33, 48), (-33, 66), (-SHAFT_W, 66)], KEY_GOLD, KEY_GOLD_DARK)
+        poly([(-SHAFT_W, 70), (-26, 70), (-26, 85), (-SHAFT_W, 85)], KEY_GOLD, KEY_GOLD_DARK)
+
+        # small gem collar above the bow
+        poly([(0, 93), (20, 112), (0, 131), (-20, 112)], gem, KEY_GOLD_DARK, owidth=5)
+        shine(-6, 105, 8, 12)
+        circle(0, 145, 23, KEY_GOLD, ring=16)
+        shine(-10, 136, 12, 18)
+
+        # ornate bow -- three gold rings (quatrefoil-ish) + bead accents +
+        # a larger central gem, echoing the original art's bow shape
+        circle(-39, 206, 38, KEY_GOLD, ring=22)
+        shine(-50, 192, 16, 22)
+        circle(39, 206, 38, KEY_GOLD, ring=22)
+        shine(28, 192, 16, 22)
+        circle(0, 245, 31, KEY_GOLD, ring=18)
+        shine(-10, 235, 12, 16)
+        for bx, by, r in ((-20, 172, 9), (20, 172, 9), (0, 157, 9), (-20, 242, 8), (20, 242, 8)):
+            circle(bx, by, r, KEY_GOLD, owidth=4)
+        poly([(0, 173), (33, 206), (0, 239), (-33, 206)], gem, KEY_GOLD_DARK, owidth=6)
+        shine(-8, 196, 10, 14)
 
     def _draw_angle_panels(self, surface):
         """Current Angle (left of the lock) / Target Angle (right) -- kept
@@ -686,34 +724,39 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
         cy = self.lock_rect.centery
 
         def panel(cx, label, value, val_col):
-            lbl_s = self._font_panel_l.render(label, True, T["TEXT"])
+            # The label always sits on a fixed dark-navy chip background
+            # regardless of theme (so it reads against any background art),
+            # so its own color must be fixed-light too -- T["TEXT"] is
+            # near-black in Light theme (the product default) and was
+            # nearly invisible here.
+            lbl_s = self._font_panel_l.render(label, True, (225, 232, 245))
             val_s = self._font_panel_n.render(value, True, val_col)
-            w = max(lbl_s.get_width(), val_s.get_width()) + 32
-            h = lbl_s.get_height() + val_s.get_height() + 22
+            w = max(lbl_s.get_width(), val_s.get_width()) + 36
+            h = lbl_s.get_height() + val_s.get_height() + 26
             box = pygame.Surface((w, h), pygame.SRCALPHA)
-            pygame.draw.rect(box, (15, 20, 36, 195), box.get_rect(), border_radius=12)
-            pygame.draw.rect(box, T["ACCENT"], box.get_rect(), 2, border_radius=12)
-            box.blit(lbl_s, lbl_s.get_rect(centerx=w // 2, top=10))
-            box.blit(val_s, val_s.get_rect(centerx=w // 2, top=14 + lbl_s.get_height()))
+            pygame.draw.rect(box, (15, 20, 36, 195), box.get_rect(), border_radius=14)
+            pygame.draw.rect(box, T["ACCENT"], box.get_rect(), 4, border_radius=14)
+            box.blit(lbl_s, lbl_s.get_rect(centerx=w // 2, top=12))
+            box.blit(val_s, val_s.get_rect(centerx=w // 2, top=16 + lbl_s.get_height()))
             surface.blit(box, box.get_rect(center=(cx, cy)))
 
-        panel(self.lock_rect.left - 170, "Current Angle", f"{self.current_angle:+.0f}°", cur_col)
-        panel(self.lock_rect.right + 170, "Target Angle", f"{self.target_angle:+.0f}°", T["YELLOW"])
+        panel(self.lock_rect.left - 190, "Current Angle", f"{self.current_angle:+.0f}°", cur_col)
+        panel(self.lock_rect.right + 190, "Target Angle", f"{self.target_angle:+.0f}°", T["YELLOW"])
 
     def _draw_turn_progress(self, surface):
         T = get_theme()
         n = self.turns_required
-        r = 11
-        gap = 12
+        r = 16
+        gap = 16
         total_w = n * (r * 2) + (n - 1) * gap
         x0 = self.lock_rect.centerx - total_w // 2
-        y = self.lock_rect.top - 30
+        y = self.lock_rect.top - 38
         for i in range(n):
             cx = x0 + r + i * (r * 2 + gap)
             done = i < self.turns_done
             col = T["GREEN"] if done else T["PANEL"]
             pygame.draw.circle(surface, col, (cx, y), r)
-            pygame.draw.circle(surface, T["ACCENT"], (cx, y), r, 2)
+            pygame.draw.circle(surface, T["ACCENT"], (cx, y), r, 4)
         lbl = self._font_panel_l.render(f"{self.turns_done} / {n} Turns", True, T["TEXT"])
         surface.blit(lbl, lbl.get_rect(centerx=self.lock_rect.centerx, bottom=y - r - 4))
 
@@ -723,24 +766,44 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
         r = GAUGE_RADIUS
 
         def ang_to_pt(deg, radius):
-            # -45 at left, 0 at top, +45 at right (matches the reference gauge)
+            # -90 at left, 0 at top, +90 at right
             a = math.radians(-90 + deg)
             return (cx + radius * math.cos(a), cy + radius * math.sin(a))
 
-        pygame.draw.arc(surface, T["ACCENT"],
-                         pygame.Rect(cx - r, cy - r, r * 2, r * 2),
-                         math.radians(-135), math.radians(-45), 4)
+        # Dark backing panel -- the dial used to sit directly on the (often
+        # busy) background art with nothing behind it; a fixed-dark card,
+        # same family as the angle panels/HUD pill elsewhere, makes the
+        # whole gauge read as one deliberate instrument instead of loose
+        # lines floating over the scene.
+        pad_x, pad_top, pad_bot = 110, 95, 35
+        panel = pygame.Rect(cx - r - pad_x, cy - r - pad_top, 2 * (r + pad_x), r + pad_top + pad_bot)
+        panel_s = pygame.Surface(panel.size, pygame.SRCALPHA)
+        pygame.draw.rect(panel_s, (15, 20, 36, 200), panel_s.get_rect(), border_radius=24)
+        surface.blit(panel_s, panel.topleft)
+        pygame.draw.rect(surface, KEY_GOLD_DARK, panel, 4, border_radius=24)
+
+        # Background track -- the dial's full -90..+90 sweep, drawn via the
+        # same ang_to_pt mapping as everything else on this gauge (NOT
+        # pygame.draw.arc's own angle convention, which sweeps the opposite
+        # half of the circle and used to render a disconnected sliver below
+        # the dial instead of the track actually under the numbers/needle).
+        # Gold, not a generic gray -- matches the key/lock's own metal, and
+        # thick enough (18px, a dark-gold base stroke under a slightly
+        # narrower bright-gold one) to read as a real dial groove.
+        track_pts = [ang_to_pt(d, r) for d in range(-90, 91, 2)]
+        pygame.draw.lines(surface, KEY_GOLD_DARK, False, track_pts, 18)
+        pygame.draw.lines(surface, KEY_GOLD, False, track_pts, 12)
 
         # acceptable tolerance band around the target
         band_pts = [ang_to_pt(d, r) for d in
                     range(int(self.target_angle - self.tolerance), int(self.target_angle + self.tolerance) + 1)]
         if len(band_pts) > 1:
-            pygame.draw.lines(surface, T["YELLOW"], False, band_pts, 8)
+            pygame.draw.lines(surface, T["YELLOW"], False, band_pts, 14)
 
         # target marker
         tx, ty = ang_to_pt(self.target_angle, r)
-        pygame.draw.circle(surface, T["YELLOW"], (int(tx), int(ty)), 8)
-        pygame.draw.circle(surface, (20, 20, 20), (int(tx), int(ty)), 8, 2)
+        pygame.draw.circle(surface, T["YELLOW"], (int(tx), int(ty)), 14)
+        pygame.draw.circle(surface, KEY_GOLD_DARK, (int(tx), int(ty)), 14, 4)
 
         dist = abs(self.current_angle - self.target_angle)
         if dist <= self.tolerance:
@@ -750,109 +813,83 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
         else:
             cur_col = T["ACCENT"]
 
-        # current-angle needle
-        nx, ny = ang_to_pt(max(-45, min(45, self.current_angle)), r - 12)
-        pygame.draw.line(surface, cur_col, (cx, cy), (int(nx), int(ny)), 5)
-        pygame.draw.circle(surface, cur_col, (cx, cy), 7)
+        # current-angle needle -- thicker, gold-outlined shaft with a small
+        # diamond tip ornament (echoing the key's own gem motifs) instead of
+        # a plain line, and a gold-rimmed hub.
+        nx, ny = ang_to_pt(max(-90, min(90, self.current_angle)), r - 16)
+        pygame.draw.line(surface, KEY_GOLD_DARK, (cx, cy), (int(nx), int(ny)), 16)
+        pygame.draw.line(surface, cur_col, (cx, cy), (int(nx), int(ny)), 10)
+        ang = math.atan2(ny - cy, nx - cx)
+        tip_len = 16
+        px, py = -math.sin(ang), math.cos(ang)
+        diamond = [(nx + tip_len * math.cos(ang), ny + tip_len * math.sin(ang)),
+                   (nx + 8 * px, ny + 8 * py),
+                   (nx - tip_len * 0.4 * math.cos(ang), ny - tip_len * 0.4 * math.sin(ang)),
+                   (nx - 8 * px, ny - 8 * py)]
+        pygame.draw.polygon(surface, cur_col, diamond)
+        pygame.draw.polygon(surface, KEY_GOLD_DARK, diamond, 3)
+        pygame.draw.circle(surface, cur_col, (cx, cy), 14)
+        pygame.draw.circle(surface, KEY_GOLD_DARK, (cx, cy), 14, 4)
 
-        for deg, lbl in ((-45, "-45°"), (0, "0°"), (45, "+45°")):
-            lx, ly = ang_to_pt(deg, r + 22)
-            s = self._font_gauge.render(lbl, True, T["GRAY"])
+        for deg, lbl in ((-90, "-90°"), (0, "0°"), (90, "+90°")):
+            lx, ly = ang_to_pt(deg, r + 30)
+            s = self._font_gauge.render(lbl, True, (225, 232, 245))
             surface.blit(s, s.get_rect(center=(int(lx), int(ly))))
-
-        # Live current-angle readout, directly below the gauge (which sits
-        # below the key) -- the -45/0/+45 ticks above are fixed reference
-        # points only, this is the actual moving value, large and
-        # high-contrast so it's never mistaken for decoration.
-        val_s = self._font_panel_n.render(f"{self.current_angle:+.0f}°", True, cur_col)
-        chip = pygame.Surface((val_s.get_width() + 24, val_s.get_height() + 14), pygame.SRCALPHA)
-        pygame.draw.rect(chip, (15, 20, 36, 200), chip.get_rect(), border_radius=10)
-        pygame.draw.rect(chip, cur_col, chip.get_rect(), 2, border_radius=10)
-        chip.blit(val_s, (12, 7))
-        surface.blit(chip, chip.get_rect(centerx=cx, bottom=cy - r - 50))
 
     def _draw_hold_indicator(self, surface):
         T = get_theme()
-        cx, cy = GAUGE_CENTER[0] + GAUGE_RADIUS + 180, GAUGE_CENTER[1] - 40
-        ring_r = 46
+        cx, cy = GAUGE_CENTER[0] + GAUGE_RADIUS + 200, GAUGE_CENTER[1] - 90
+        ring_r = 60
         dist = abs(self.current_angle - self.target_angle)
         aligned = dist <= self.tolerance and not self._need_neutral
 
-        pygame.draw.circle(surface, T["PANEL"], (cx, cy), ring_r, 6)
+        pygame.draw.circle(surface, T["PANEL"], (cx, cy), ring_r, 9)
         if aligned:
             prog = min(1.0, self.hold_timer / self.hold_time)
             if prog > 0:
                 arc_rect = pygame.Rect(cx - ring_r, cy - ring_r, ring_r * 2, ring_r * 2)
                 end_angle = -math.pi / 2 + 2 * math.pi * prog
-                pygame.draw.arc(surface, T["GREEN"], arc_rect, -math.pi / 2, end_angle, 6)
+                pygame.draw.arc(surface, T["GREEN"], arc_rect, -math.pi / 2, end_angle, 9)
             label = "Hold Steady"
             timer_s = f"{self.hold_timer:0.1f} / {self.hold_time:0.1f}s"
         elif self._need_neutral:
             label, timer_s = "Return to Neutral", None
         else:
-            label, timer_s = "Align to Target", None
+            label, timer_s = "Hold", None
 
         lines = [self._font_panel_l.render(label, True, (255, 255, 255))]
         if timer_s:
             lines.append(self._font_panel_l.render(timer_s, True, (225, 225, 225)))
-        chip_w = max(s.get_width() for s in lines) + 24
-        chip_h = sum(s.get_height() for s in lines) + 14
+        chip_w = max(s.get_width() for s in lines) + 30
+        chip_h = sum(s.get_height() for s in lines) + 18
         chip = pygame.Surface((chip_w, chip_h), pygame.SRCALPHA)
-        pygame.draw.rect(chip, (15, 20, 36, 190), chip.get_rect(), border_radius=10)
-        yy = 6
+        pygame.draw.rect(chip, (15, 20, 36, 200), chip.get_rect(), border_radius=12)
+        pygame.draw.rect(chip, T["ACCENT"], chip.get_rect(), 3, border_radius=12)
+        yy = 9
         for s in lines:
             chip.blit(s, s.get_rect(centerx=chip_w // 2, top=yy))
             yy += s.get_height() + 2
-        surface.blit(chip, chip.get_rect(centerx=cx, top=cy + ring_r + 10))
+        surface.blit(chip, chip.get_rect(centerx=cx, top=cy + ring_r + 14))
 
     def _draw_instructions(self, surface):
-        T = get_theme()
         ov = pygame.Surface((GAME_W, GAME_H), pygame.SRCALPHA)
         ov.fill((0, 0, 0, 210))
         surface.blit(ov, (0, 0))
 
-        pw, ph = 900, 620
-        px, py = (GAME_W - pw) // 2, (GAME_H - ph) // 2
-        bg = pygame.Surface((pw, ph), pygame.SRCALPHA)
-        pygame.draw.rect(bg, T["PANEL"] + (252,), (0, 0, pw, ph), border_radius=16)
-        surface.blit(bg, (px, py))
-        pygame.draw.rect(surface, T["ACCENT"], pygame.Rect(px, py, pw, ph), 2, border_radius=16)
-
-        f_title = pygame.font.SysFont("monospace", 36, bold=True)
-        f_head  = pygame.font.SysFont("monospace", 22, bold=True)
-        f_body  = pygame.font.SysFont("monospace", 19)
-
-        diff_col = {"Easy": T["GREEN"], "Medium": T["YELLOW"], "Hard": T["RED"]}[self.difficulty]
-        title = f_title.render("How to Play", True, diff_col)
-        surface.blit(title, title.get_rect(centerx=GAME_W // 2, top=py + 26))
-        pygame.draw.line(surface, T["ACCENT"], (px + 40, py + 78), (px + pw - 40, py + 78), 1)
-
-        y = py + 96
-        for header, lines in [
-            ("OBJECTIVE", [
-                "Turn the key to the target angle and hold steady to complete a turn.",
-                "Open every required turn to unlock the lock and score.",
-                "Normal lock +1  •  Legendary lock (20% chance) +5",
-            ]),
-            ("CONTROLS", [
-                "Tilt wrist RIGHT to turn the key clockwise.",
-                "Tilt wrist LEFT to turn the key counterclockwise.",
-                "Return to neutral between turns before the next one can start.",
-            ]),
-            ("THIS SESSION", [
-                f"Hold time: {self.hold_time:.1f} seconds",
-                (f"Goal:       Open {self.goal} locks" if self.session_mode == "target" else
-                 f"Duration:   {int(self.timed_duration)} seconds"),
-                f"Difficulty: {self.difficulty}",
-            ]),
-        ]:
-            surface.blit(f_head.render(header, True, T["ACCENT"]), (px + 48, y))
-            y += 30
-            for line in lines:
-                surface.blit(f_body.render(line, True, T["TEXT"]), (px + 64, y))
-                y += 26
-            y += 14
-        # No "press any key" prompt -- the patient never starts the game
+        # Fully designed "How To Play" card art (title, numbered steps, tip
+        # banner all baked in) -- replaces the hand-drawn panel. Per-theme,
+        # cropped to its own opaque content then fit preserving aspect
+        # ratio. Same outer card box (position + max size) as _draw_results'
+        # Round Complete card -- the two screens read as stages of one
+        # interface rather than two differently-proportioned popups.
+        card_name = f"key_and_lock_how_to_play_{'dark' if is_dark_mode() else 'light'}.png"
+        top_margin, bottom_reserved = int(GAME_H * 0.05), int(GAME_H * 0.17)
+        card = _load_image_fit(card_name, int(GAME_W * 0.50), GAME_H - top_margin - bottom_reserved)
+        if card is not None:
+            cr = card.get_rect(center=(GAME_W // 2, GAME_H // 2))
+            surface.blit(card, cr)
+        # Just the card, centered -- no extra text/descriptions. No "press
+        # any key" prompt either -- the patient never starts the game
         # themselves, only the therapist's own START control does.
 
     def _draw_results(self, surface):

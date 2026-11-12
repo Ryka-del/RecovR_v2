@@ -218,7 +218,7 @@ from games.steady_aim     import SteadyAimGame
 from games.basketball     import BasketballGame
 from games.piano_tiles    import PianoTilesGame
 from games.catchingapple  import AppleCatchingGame
-from games.catch_object   import CatchObjectGame
+from games.toy_factory    import ToyFactoryGame
 from games.key_lock       import KeyLockGame
 from games.lemonade       import LemonadeGame
 from games.feed_the_cat   import FeedTheCatGame
@@ -235,7 +235,7 @@ SCENES = {
     "basketball"         : make_game_scene(BasketballGame),
     "piano_tiles"        : make_game_scene(PianoTilesGame),
     "catchingapple"      : make_game_scene(AppleCatchingGame),
-    "catch_object"       : make_game_scene(CatchObjectGame),
+    "toy_factory"        : make_game_scene(ToyFactoryGame),
     "key_lock"           : make_game_scene(KeyLockGame),
     "lemonade"           : make_game_scene(LemonadeGame),
     "feed_the_cat"       : make_game_scene(FeedTheCatGame),
@@ -270,7 +270,7 @@ def _draw_confirm_dialog():
 # --- STARTING SCENE ---
 _current_scene_name = "therapist_welcome"
 _game_scene_names   = {"basketball", "steady_aim", "piano_tiles",
-                        "catchingapple", "catch_object", "key_lock",
+                        "catchingapple", "toy_factory", "key_lock",
                         "feed_the_cat", "plant_the_garden"}
 current_scene = TherapistWelcomeScene(screen, WIDTH, HEIGHT)
 

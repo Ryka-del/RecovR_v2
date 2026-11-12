@@ -40,6 +40,7 @@ from audio import (play_success, play_completion, start_music, stop_music,
                     pause_music, resume_music, game_bgm_path, play_click)
 from constants import get_theme, is_dark_mode, GAME_W, GAME_H
 from games.game_header import draw_game_header, HEADER_BOTTOM
+from games.hud import draw_target_pill, TARGET_POS
 from games.round_complete import draw_round_complete_overlay
 
 # Real MPU6050 Y-axis tilt (accel_y) -- the firmware already transmits it
@@ -251,7 +252,7 @@ class SteadyAimGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self.vol_active = False
         self.pause_vol  = 0.4
         self._font_hud  = pygame.font.SysFont("monospace", 34, bold=True)
-        self._font_sm   = pygame.font.SysFont("monospace", 24)
+        self._font_target = pygame.font.SysFont("monospace", 54, bold=True)
         self._font_fb   = pygame.font.SysFont("monospace", 52, bold=True)
         self._font_hold = pygame.font.SysFont("monospace", 20, bold=True)
         self._font_counter_lbl = pygame.font.SysFont("monospace", 20, bold=True)
@@ -594,8 +595,6 @@ class SteadyAimGame(SessionModeMixin, FatigueMixin, BaseScreen):
             self._draw_instructions(surface)
             return
 
-        font_sm = self._font_sm
-
         # Beam
         if self._beam_img is not None:
             r = self._beam_img.get_rect(center=(BEAM_X, BEAM_Y))
@@ -629,8 +628,8 @@ class SteadyAimGame(SessionModeMixin, FatigueMixin, BaseScreen):
         draw_game_header(surface, "Steady Aim", self.difficulty,
                           self._session_header_time(), self.score, GAME_W, GAME_H)
 
-        prog_s = font_sm.render(self._session_progress_text("shots"), True, T["TEXT"])
-        surface.blit(prog_s, (int(40 * GAME_W / 1920), HEADER_BOTTOM + int(20 * GAME_H / 1080)))
+        draw_target_pill(surface, self._session_progress_text("shots"),
+                          TARGET_POS, T["ACCENT"], self._font_target)
 
         # Pause button — two solid bars
         pb     = self._pause_btn_rect
@@ -651,10 +650,6 @@ class SteadyAimGame(SessionModeMixin, FatigueMixin, BaseScreen):
             fx, fy = (self.target.x, self.target.face_cy - self.target.face_r - 50)
             msg = self._font_fb.render(self.feedback[0], True, self.feedback[1])
             surface.blit(msg, msg.get_rect(center=(int(fx), int(fy))))
-
-        surface.blit(font_sm.render(
-            "Tilt wrist to aim — hold steady on the target to fire",
-            True, T["GRAY"]), (80, GAME_H - 44))
 
         if self.paused: self._draw_pause(surface)
         self._draw_fatigue_overlay(surface)
@@ -772,55 +767,24 @@ class SteadyAimGame(SessionModeMixin, FatigueMixin, BaseScreen):
         surface.blit(num_s, num_s.get_rect(centerx=counter_cx, top=counter_y + 22))
 
     def _draw_instructions(self, surface):
-        T = get_theme()
         ov = pygame.Surface((GAME_W, GAME_H), pygame.SRCALPHA)
         ov.fill((0, 0, 0, 210))
         surface.blit(ov, (0, 0))
 
-        pw, ph = 880, 600
-        px, py = (GAME_W - pw) // 2, (GAME_H - ph) // 2
-        bg = pygame.Surface((pw, ph), pygame.SRCALPHA)
-        pygame.draw.rect(bg, T["PANEL"] + (252,), (0, 0, pw, ph), border_radius=16)
-        surface.blit(bg, (px, py))
-        pygame.draw.rect(surface, T["ACCENT"], pygame.Rect(px, py, pw, ph), 2, border_radius=16)
-
-        f_title = pygame.font.SysFont("monospace", 36, bold=True)
-        f_head  = pygame.font.SysFont("monospace", 22, bold=True)
-        f_body  = pygame.font.SysFont("monospace", 19)
-
-        diff_col = {"Easy": T["GREEN"], "Medium": T["YELLOW"], "Hard": T["RED"]}[self.difficulty]
-        title = f_title.render("How to Play", True, diff_col)
-        surface.blit(title, title.get_rect(centerx=GAME_W // 2, top=py + 26))
-        pygame.draw.line(surface, T["ACCENT"], (px + 40, py + 78), (px + pw - 40, py + 78), 1)
-
-        y = py + 96
-        for header, lines in [
-            ("OBJECTIVE", [
-                "Aim at the hanging target and hold steady to fire an arrow.",
-                "Score depends on exactly where the arrow lands on the target's rings:",
-                "Yellow +7  •  Red/Blue +3  •  Black/White +1  •  Outside +0",
-            ]),
-            ("CONTROLS", [
-                "Tilt wrist LEFT / RIGHT to aim horizontally.",
-                "Tilt wrist UP / DOWN to aim vertically.",
-                "Hold the crosshair on the target until the ring fills -- it fires",
-                "automatically.",
-            ]),
-            ("THIS SESSION", [
-                f"Hold time:  {self.hold_time:.1f} seconds",
-                f"Arrows:     {self.arrows_allowance}",
-                (f"Goal:       {self.goal} shots" if self.session_mode == "target" else
-                 f"Duration:   {int(self.timed_duration)} seconds"),
-                f"Difficulty: {self.difficulty}",
-            ]),
-        ]:
-            surface.blit(f_head.render(header, True, T["ACCENT"]), (px + 48, y))
-            y += 30
-            for line in lines:
-                surface.blit(f_body.render(line, True, T["TEXT"]), (px + 64, y))
-                y += 26
-            y += 14
-        # No "press any key" prompt -- the patient never starts the game
+        # Fully designed "How To Play" card art (title, numbered steps, tip
+        # banner all baked in) -- replaces the hand-drawn panel. Per-theme,
+        # cropped to its own opaque content then fit preserving aspect
+        # ratio. Same outer card box (position + max size) as _draw_results'
+        # Round Complete card -- the two screens read as stages of one
+        # interface rather than two differently-proportioned popups.
+        card_name = f"steady_aim_how_to_play_{'dark' if is_dark_mode() else 'light'}.png"
+        top_margin, bottom_reserved = int(GAME_H * 0.05), int(GAME_H * 0.17)
+        card = _load_image_fit(card_name, int(GAME_W * 0.50), GAME_H - top_margin - bottom_reserved)
+        if card is not None:
+            cr = card.get_rect(center=(GAME_W // 2, GAME_H // 2))
+            surface.blit(card, cr)
+        # Just the card, centered -- no extra text/descriptions. No "press
+        # any key" prompt either -- the patient never starts the game
         # themselves, only the therapist's own START control does.
 
     def _draw_results(self, surface):

@@ -35,6 +35,7 @@ from audio import (start_music, stop_music, pause_music, resume_music,
                     game_bgm_path, play_completion, play_click, play_success)
 from constants import get_theme, is_dark_mode, GAME_W, GAME_H
 from games.game_header import draw_game_header, HEADER_BOTTOM
+from games.hud import draw_target_pill, TARGET_POS
 from games.round_complete import draw_round_complete_overlay
 
 # Real MPU6050 Y-axis tilt (accel_y) -- the firmware already transmits it
@@ -250,33 +251,6 @@ def _load_image_cover(name, w, h):
     return _img_cache[key]
 
 
-def _draw_counter_box(surface, x, y, w, h, font_lbl, font_num, label, value):
-    """"Plants grown" counter -- a rounded purple-to-blue gradient card,
-    matching the same counter style Feed the Cat already established."""
-    grad = pygame.Surface((w, h), pygame.SRCALPHA)
-    top_col, bot_col = (124, 92, 226), (70, 150, 221)
-    for yy in range(h):
-        t = yy / max(1, h - 1)
-        col = (int(top_col[0] + (bot_col[0] - top_col[0]) * t),
-               int(top_col[1] + (bot_col[1] - top_col[1]) * t),
-               int(top_col[2] + (bot_col[2] - top_col[2]) * t), 255)
-        pygame.draw.line(grad, col, (0, yy), (w, yy))
-    mask = pygame.Surface((w, h), pygame.SRCALPHA)
-    pygame.draw.rect(mask, (255, 255, 255, 255), mask.get_rect(), border_radius=24)
-    grad.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-    surface.blit(grad, (x, y))
-
-    lbl_s = font_lbl.render(label, True, (255, 255, 255))
-    max_lbl_w = int(w * 0.88)
-    if lbl_s.get_width() > max_lbl_w:
-        scale = max_lbl_w / lbl_s.get_width()
-        lbl_s = pygame.transform.smoothscale(
-            lbl_s, (max(1, int(lbl_s.get_width() * scale)),
-                    max(1, int(lbl_s.get_height() * scale))))
-    num_s = font_num.render(f"{value:02d}", True, (255, 255, 255))
-    surface.blit(lbl_s, lbl_s.get_rect(centerx=x + w // 2, y=y + int(h * 0.22)))
-    surface.blit(num_s, num_s.get_rect(centerx=x + w // 2, y=y + int(h * 0.48)))
-
 
 class Plot:
     """One of the 5 planting plots. state: "empty" | "planted" | "watered_once" | "grown"."""
@@ -348,17 +322,8 @@ class PlantTheGardenGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self._grown_imgs = {name: _load_image_fit(fname, *PLANT_BOX) for name, fname in _GROWN_ASSET.items()}
 
         self._font_hud = pygame.font.SysFont("monospace", 34, bold=True)
-        self._font_sm  = pygame.font.SysFont("monospace", 24)
         self._font_fb  = pygame.font.SysFont("monospace", 44, bold=True)
-        font_path = os.path.join(_ROOT, "assets", "font", "Fredoka-Regular.ttf")
-        try:
-            self._font_counter_lbl = pygame.font.Font(font_path, 30)
-            self._font_counter_lbl.set_bold(True)
-            self._font_counter_num = pygame.font.Font(font_path, 52)
-            self._font_counter_num.set_bold(True)
-        except Exception:
-            self._font_counter_lbl = pygame.font.SysFont("arial", 30, bold=True)
-            self._font_counter_num = pygame.font.SysFont("arial", 52, bold=True)
+        self._font_target = pygame.font.SysFont("monospace", 54, bold=True)
 
         self.vol_active = False
         try:
@@ -770,8 +735,6 @@ class PlantTheGardenGame(SessionModeMixin, FatigueMixin, BaseScreen):
             self._draw_instructions(surface)
             return
 
-        font_sm = self._font_sm
-
         # Watering can, resting -- hidden while carried
         if self.carrying != "can" and self._can_img is not None:
             r = self._can_img.get_rect(midbottom=(int(CAN_X), GROUND_Y))
@@ -831,32 +794,15 @@ class PlantTheGardenGame(SessionModeMixin, FatigueMixin, BaseScreen):
         if DEBUG_HITBOXES:
             self._draw_debug_hitboxes(surface)
 
-        # Plants grown counter (top-left, below the header)
-        cx = int(40 * GAME_W / 1920)
-        cy = HEADER_BOTTOM + int(20 * GAME_H / 1080)
-        cw = int(240 * GAME_W / 1920)
-        ch = int(190 * GAME_H / 1080)
-        _draw_counter_box(surface, cx, cy, cw, ch,
-                          self._font_counter_lbl, self._font_counter_num,
-                          "Plants grown", self.reps)
-
         draw_game_header(surface, "Plant the Garden", self.difficulty,
                           self._session_header_time(), self.score, GAME_W, GAME_H)
 
-        prog_s = font_sm.render(self._session_progress_text("plants"), True, T["TEXT"])
-        surface.blit(prog_s, (cx, cy + ch + int(10 * GAME_H / 1080)))
+        draw_target_pill(surface, self._session_progress_text("plants"),
+                          TARGET_POS, T["ACCENT"], self._font_target)
 
         if self.feedback:
             msg = self._font_fb.render(self.feedback[0], True, self.feedback[1])
             surface.blit(msg, (GAME_W // 2 - msg.get_width() // 2, int(GAME_H * 0.12)))
-
-        hints = {
-            "Easy":   "Tilt wrist to move   •   Flex to plant, squeeze to water",
-            "Medium": "Tilt wrist to move   •   Water twice — release grip between waterings",
-            "Hard":   "Tilt wrist to move   •   Precise positioning + sustained grip required",
-        }
-        surface.blit(font_sm.render(hints[self.difficulty], True, T["GRAY"]),
-                     (GAME_W // 2 - 380, GAME_H - 44))
 
         # Pause button — two solid bars (same as every other game)
         pb     = self._pause_btn_rect
@@ -892,7 +838,6 @@ class PlantTheGardenGame(SessionModeMixin, FatigueMixin, BaseScreen):
             pygame.draw.rect(surface, (255, 0, 255), self._crate_plant_rect(i), 2)
 
     def _draw_instructions(self, surface):
-        T = get_theme()
         ov = pygame.Surface((GAME_W, GAME_H), pygame.SRCALPHA)
         ov.fill((0, 0, 0, 210))
         surface.blit(ov, (0, 0))
@@ -902,20 +847,12 @@ class PlantTheGardenGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # two screens read as stages of one interface.
         top_margin, bottom_reserved = int(GAME_H * 0.05), int(GAME_H * 0.17)
         card = _load_image_fit(card_name, int(GAME_W * 0.50), GAME_H - top_margin - bottom_reserved)
-        bottom_y = GAME_H // 2
         if card is not None:
-            cr = card.get_rect(midtop=(GAME_W // 2, top_margin))
+            cr = card.get_rect(center=(GAME_W // 2, GAME_H // 2))
             surface.blit(card, cr)
-            bottom_y = cr.bottom
-
-        # No "press any key" prompt -- the patient never starts the game
+        # Just the card, centered -- no extra text/descriptions. No "press
+        # any key" prompt either -- the patient never starts the game
         # themselves, only the therapist's own START control does.
-        f_info = pygame.font.SysFont("monospace", 22, bold=True)
-        sess_txt = (f"Goal: Grow {self.goal} plants" if self.session_mode == "target" else
-                    f"Duration: {int(self.timed_duration)}s — grow as many plants as you can")
-        info = f_info.render(f"{sess_txt}   ·   Difficulty: {self.difficulty}", True, T["WHITE"])
-        info_r = info.get_rect(centerx=GAME_W // 2, top=bottom_y + 14)
-        surface.blit(info, info_r)
 
     def _draw_results(self, surface):
         T = get_theme()

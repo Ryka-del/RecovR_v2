@@ -99,12 +99,12 @@ SENSOR_CFG = {
     },
 }
 
-# Whack-a-Mole calibrates its 5 fingers independently (one multi-sensor
-# pass per finger, reusing the exact same sensitivity/countdown/recording/
-# trial_done engine as every other sensor -- see MULTI_SENSOR_CALIBRATION
-# below) instead of sharing the single generic "Finger Flexion" entry every
-# other finger-flex game (Piano Tiles, Plant the Garden, Steady Aim) uses,
-# so adding it can never change those games' calibration.
+# Whack-a-Mole and Piano Tiles each calibrate their 5 fingers independently
+# (one multi-sensor pass per finger, reusing the exact same sensitivity/
+# countdown/recording/trial_done engine as every other sensor -- see
+# MULTI_SENSOR_CALIBRATION below) instead of sharing the single generic
+# "Finger Flexion" entry Plant the Garden/Steady Aim still use, so adding it
+# can never change those two games' calibration.
 _FINGER_FLEX_KEYS = [
     "Thumb Flexion", "Index Flexion", "Middle Flexion", "Ring Flexion", "Pinky Flexion",
 ]
@@ -115,6 +115,41 @@ for _i, _key in enumerate(_FINGER_FLEX_KEYS):
         "read":        (lambda s, _i=_i: s["finger_flex"][_i]),
     }
 del _i, _key
+
+
+def _toy_factory_vertical_read(s):
+    """Toy Factory's "Wrist Vertical" calibration pass -- GENUINE MPU6050 Y
+    axis on real hardware, never input_handler's own state["tilt_y"] (which
+    carries the Flex Sensor there -- see games/steady_aim.py's own
+    _vertical_raw(), duplicated here since this module shares no import
+    point with games/*.py). In Test Mode (no BLE), state["tilt_y"] IS
+    legitimately driven by the UP/DOWN arrow keys (see
+    sensors/input_handler.py's _update_keyboard()), so that path is used
+    as-is."""
+    if input_handler.connected:
+        try:
+            from sensors.ble_receiver import ble_receiver as _ble_v
+            return abs(_ble_v.get_latest()["accel_y"] / 16384.0)
+        except Exception:
+            return 0.0
+    return abs(s.get("tilt_y", 0.0))
+
+
+# Toy Factory calibrates its two wrist axes independently -- NOT the single
+# shared "Wrist Rotation" entry Key & Lock/Apple Catching/Steady Aim use, so
+# none of those games' calibration is affected. "Wrist Horizontal" reads the
+# exact same abs(tilt_x) "Wrist Rotation" already does; "Wrist Vertical"
+# needs the genuine-accel_y helper above.
+SENSOR_CFG["Wrist Horizontal"] = {
+    "sensor_name": "Motion Sensor (Horizontal)",
+    "key_hint":    "[ Hold LEFT / RIGHT arrow to simulate wrist movement ]",
+    "read":        lambda s: abs(s["tilt_x"]),
+}
+SENSOR_CFG["Wrist Vertical"] = {
+    "sensor_name": "Motion Sensor (Vertical)",
+    "key_hint":    "[ Hold UP / DOWN arrow to simulate wrist movement ]",
+    "read":        _toy_factory_vertical_read,
+}
 
 # Difficulty presets — threshold_pct is applied to the calibrated average
 DIFFICULTY_PRESETS = {
@@ -189,9 +224,16 @@ GAME_PARAM_SCHEMA = {
         {"key": "pt_goal",            "label": "Tiles Required",            "unit": "tiles", "is_goal": True,
          "min": 10,  "max": 80,  "step": 1,
          "presets": {"Easy": 20,    "Medium": 30,   "Hard": 40}},
-        {"key": "pt_flex_threshold",  "label": "Finger Flexion Threshold",  "unit": "%",
-         "min": 15,  "max": 85,  "step": 1, "scale": 0.01,
-         "presets": {"Easy": 35,    "Medium": 50,   "Hard": 65}},
+        # No "Finger Flexion Threshold" slider here any more -- Piano Tiles
+        # now calibrates its 5 fingers independently (see
+        # MULTI_SENSOR_CALIBRATION in scenes/therapist_dashboard.py), same
+        # as Whack-a-Mole, which never had a single shared-threshold
+        # Advanced Setting either. GAME_PARAM_SCHEMA always supplies a
+        # preset value for every key it lists (see ToyFactoryGame.on_enter's
+        # own note on this same trap) -- keeping a single-value override
+        # here would silently collide with 5 independent per-finger
+        # calibrated values every session, not just when a therapist
+        # actually customizes it.
         {"key": "pt_spawn_rate",      "label": "Tile Spawn Interval",       "unit": "s",
          "min": 0.2, "max": 2.0, "step": 0.05,
          "presets": {"Easy": 1.0,  "Medium": 0.7,  "Hard": 0.45}},
@@ -220,10 +262,27 @@ GAME_PARAM_SCHEMA = {
          # still overridable here.
          "presets": {"Easy": 2.0,  "Medium": 2.0,  "Hard": 2.0}},
     ],
-    "Catch 'n Grab": [
-        {"key": "cg_goal", "label": "Objects Required", "unit": "objects", "is_goal": True,
-         "min": 5,  "max": 60,  "step": 1,
-         "presets": {"Easy": 15,   "Medium": 25,   "Hard": 35}},
+    # Grip threshold and both wrist-movement requirements are deliberately
+    # NOT schema'd here -- they come straight from the patient's own
+    # calibration (see games/toy_factory.py's on_enter()). GAME_PARAM_SCHEMA
+    # always supplies a preset value for every key it lists (see
+    # _apply_preset below), which would silently override real per-patient
+    # calibration data every session instead of only when the therapist
+    # explicitly customizes it -- these rows cover only the pure gameplay
+    # dials that have no calibration source of their own.
+    "Toy Factory": [
+        {"key": "tf_goal", "label": "Toys to Sort", "unit": "toys", "is_goal": True,
+         "min": 5,   "max": 50,  "step": 1,
+         "presets": {"Easy": 15,   "Medium": 20,   "Hard": 25}},
+        {"key": "tf_conveyor_speed",   "label": "Conveyor Speed",          "unit": "px/s",
+         "min": 60,  "max": 260, "step": 10,
+         "presets": {"Easy": 90,    "Medium": 140,  "Hard": 200}},
+        {"key": "tf_pickup_tolerance", "label": "Pickup Tolerance",        "unit": "px",
+         "min": 40,  "max": 160, "step": 5,
+         "presets": {"Easy": 110,   "Medium": 85,   "Hard": 65}},
+        {"key": "tf_box_tolerance",    "label": "Box-Placement Tolerance", "unit": "%",
+         "min": 50,  "max": 150, "step": 5, "scale": 0.01,
+         "presets": {"Easy": 125,   "Medium": 100,  "Hard": 80}},
     ],
     "Steady Aim": [
         {"key": "sa_goal",       "label": "Target Shots Required",  "unit": "shots", "is_goal": True,

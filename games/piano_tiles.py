@@ -28,14 +28,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pygame
 import random
-import math
 from screens.base import BaseScreen
 from games.fatigue import FatigueMixin
 from games.session_mode import SessionModeMixin
-from sensors.input_handler import input_handler
+from sensors.input_handler import input_handler, FINGER_NAMES
 from audio import play_success, play_completion, start_music, stop_music, game_music_path, play_click
 from constants import get_theme, is_dark_mode, GAME_W, GAME_H
 from games.game_header import draw_game_header, HEADER_BOTTOM
+from games.hud import draw_target_pill, TARGET_POS
 from games.round_complete import draw_round_complete_overlay
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -79,19 +79,23 @@ def _load_image_cover(name, w, h):
     return _img_cache[key]
 
 
-FINGER_NAMES   = ["Thumb", "Index", "Middle", "Ring", "Pinky"]
 _FLEX_TEST_KEYS = [pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5]
 
 # ── difficulty tuning ────────────────────────────────────────────────────
 # The primary difficulty axis is the required finger-flexion INTENSITY
 # (flex threshold), not reaction speed -- fall speed only varies modestly
 # across tiers so the game stays a flexion exercise, not a twitch test.
-# The threshold below is shared across all five fingers for now -- true
-# per-finger calibration is part of the pending five-sensor architecture
-# (not yet built); once that lands, this becomes a per-finger value read
-# from calibration instead of one shared constant.
+# Per-finger calibrated press threshold now comes from the 5 independent
+# "<Finger> Flexion" calibration passes -- same concept as games/
+# whack_mole.py's own self.press_threshold (see MULTI_SENSOR_CALIBRATION in
+# scenes/therapist_dashboard.py / SENSOR_CFG in scenes/calibration_window.py)
+# -- FLEX_THRESHOLD below is now only the per-finger fallback default for
+# whichever finger was never actually calibrated, exactly like
+# whack_mole.py's own DEFAULT_THRESHOLD.
 BASE_SPEED     = {"Easy": 260, "Medium": 340, "Hard": 420}   # px/s
 FLEX_THRESHOLD = {"Easy": 0.35, "Medium": 0.50, "Hard": 0.65}  # calibrated flex (0-1) to register a tap
+PT_RELEASE_MARGIN = 0.65  # release threshold = press threshold * this -- same hysteresis concept as
+                          # games/whack_mole.py's own RELEASE_MARGIN (must release below it to re-arm)
 HIT_WINDOW     = {"Easy": 130, "Medium": 95,  "Hard": 65}     # px, +/- around the hit line
 SPAWN_GAP      = {"Easy": 1.0,  "Medium": 0.7,  "Hard": 0.45}  # pause after a tile resolves before the next spawns
 TILE_GOAL      = {"Easy": 20,  "Medium": 30,  "Hard": 40}     # Target Mode: tiles to hit to complete
@@ -102,24 +106,21 @@ HIT_FADE_DURATION  = 0.22   # shrink/fade-out that follows the hold
 MISS_FADE_DURATION = 0.18   # tile shrink/fade-out after a miss (no hold, no colour change)
 
 # ── layout ───────────────────────────────────────────────────────────────
-# Sized from actually-measured rendered text at the font sizes used below
-# (not guessed), so the largest string in each container ("Active Finger:
-# Middle", "FLEXION THRESHOLD", "Awaiting Release", ...) fits with real
-# padding -- see the panel draw methods for the exact font sizes.
 LANE_COUNT     = 5
-LEFT_PANEL_W   = 310    # Flexion Threshold + Combo indicators
-RIGHT_PANEL_W  = 420    # Flex Sensor monitoring panel
+LEFT_PANEL_W   = 310    # side margin (the Flexion Threshold/Combo cards that used to live here were removed)
+RIGHT_PANEL_W  = 420    # side margin (the Flex Sensor monitoring panel that used to live here was removed)
 PLAYFIELD_X0   = LEFT_PANEL_W
 PLAYFIELD_X1   = GAME_W - RIGHT_PANEL_W
 PLAYFIELD_W    = PLAYFIELD_X1 - PLAYFIELD_X0
 LANE_W         = PLAYFIELD_W // LANE_COUNT
 PLAYFIELD_TOP  = HEADER_BOTTOM + 20
 
-# Bottom-up: a real margin below the screen edge, then the (now larger)
-# finger-name row, then the tap zones, then the hit line -- each with
-# enough clearance that the bigger fonts below can never run off-screen.
+# Bottom-up: a real margin below the screen edge, then a reserved row (the
+# per-lane Thumb/Index/.../Pinky labels that used to live here were
+# removed), then the tap zones, then the hit line -- each with enough
+# clearance that the fonts below can never run off-screen.
 SCREEN_BOTTOM_MARGIN = 16
-FINGER_LABEL_H  = 34    # row height reserved for the Thumb/Index/.../Pinky labels
+FINGER_LABEL_H  = 34
 TAP_ZONE_H      = 120
 ROW_GAP         = 10
 TAP_ZONE_Y      = GAME_H - SCREEN_BOTTOM_MARGIN - FINGER_LABEL_H - ROW_GAP - TAP_ZONE_H
@@ -239,12 +240,28 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
         _spd_map   = {"Slow": 260, "Normal": 340, "Fast": 420}
         self.speed = _spd_map.get(data.get("speed", "Normal"), 340)
 
-        # Calibrated flexion threshold (shared across fingers for now --
-        # see module docstring) + spawn gap, with Advanced Settings
-        # overrides taking priority over the difficulty presets.
+        # Per-finger calibrated press threshold, from the 5 independent
+        # "<Finger> Flexion" calibration passes (see MULTI_SENSOR_CALIBRATION
+        # in scenes/therapist_dashboard.py / SENSOR_CFG in
+        # scenes/calibration_window.py) -- same concept as games/
+        # whack_mole.py's own self.press_threshold, and deliberately NOT
+        # also overridable via a single GAME_PARAM_SCHEMA slider (that
+        # mechanism always supplies a preset value for every schema'd key,
+        # which would silently collide with 5 independent per-finger
+        # calibrated values every session -- see calibration_window.py's
+        # own note by the (now-removed) "pt_flex_threshold" entry). Falls
+        # back to the difficulty preset for any finger never actually
+        # calibrated.
         cal_params = (data.get("calibration") or {}).get("params", {})
         cal_diff   = cal_params.get("difficulty", self.difficulty)
-        self.flex_threshold = cal_params.get("pt_flex_threshold", FLEX_THRESHOLD.get(cal_diff, 0.5))
+        default_thr = FLEX_THRESHOLD.get(cal_diff, 0.5)
+        sensors_cal = (data.get("calibration") or {}).get("sensors", {})
+        self.press_threshold = []
+        for name in FINGER_NAMES:
+            entry = sensors_cal.get(f"{name} Flexion")
+            thr = entry.get("threshold") if entry else None
+            self.press_threshold.append(thr if thr and thr > 0 else default_thr)
+        self.release_threshold = [t * PT_RELEASE_MARGIN for t in self.press_threshold]
         self.spawn_gap      = cal_params.get("pt_spawn_rate",     SPAWN_GAP.get(cal_diff, 0.7))
         self.hit_window     = HIT_WINDOW[self.difficulty]
 
@@ -262,11 +279,8 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self.pause_vol  = 0.4
         self._pause_btn_rect = pygame.Rect(GAME_W - 90, HEADER_BOTTOM + 14, 70, 46)
 
-        self._font_panel_h  = pygame.font.SysFont("monospace", 22, bold=True)   # card/panel titles
-        self._font_panel_v  = pygame.font.SysFont("monospace", 38, bold=True)   # big values (threshold %, combo, status)
-        self._font_panel_s  = pygame.font.SysFont("monospace", 24, bold=True)   # body rows (Active Finger, Flexion, ...)
-        self._font_finger   = pygame.font.SysFont("monospace", 24, bold=True)   # Thumb/Index/.../Pinky labels
-        self._font_tiles    = pygame.font.SysFont("monospace", 28, bold=True)   # tiles-hit counter
+        self._font_panel_h  = pygame.font.SysFont("monospace", 22, bold=True)   # HIT LINE chip label
+        self._font_tiles    = pygame.font.SysFont("monospace", 54, bold=True)   # tiles-hit counter
 
         self._bg_img         = _load_image_cover("bg_piano_tiles.png", GAME_W, GAME_H)
         self._tile_img_black = _load_image_fit("black_tile_piano.png", TILE_W_BOX, TILE_H_BOX)
@@ -291,7 +305,8 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self._finger_tap_flash_t  = [0.0] * LANE_COUNT
         self.flex_vals   = [0.0] * LANE_COUNT
         self.five_finger_ready = True
-        self._state      = {"grip": 0.0, "tilt_x": 0.0, "tilt_y": 0.0, "fingers": [False] * 5}
+        self._state      = {"grip": 0.0, "tilt_x": 0.0, "tilt_y": 0.0, "fingers": [False] * 5,
+                            "finger_flex": [0.0] * LANE_COUNT}
         self._session_reset()
         self.start_time  = pygame.time.get_ticks()
 
@@ -399,6 +414,14 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
         keys = pygame.key.get_pressed()
         return True, [1.0 if keys[k] else 0.0 for k in _FLEX_TEST_KEYS]
 
+    def _normalize_finger(self, index, raw):
+        """Used by recovr/patient_app/games/generic_adapter.py's therapist
+        telemetry -- "calibrated" is whether THIS finger is currently above
+        ITS OWN calibrated threshold, the same value the press/release state
+        machine itself acts on. Same concept as games/whack_mole.py's own
+        _normalize_finger()."""
+        return 1.0 if raw >= self.press_threshold[index] else 0.0
+
     def _try_flex_tap(self, finger_idx):
         """Called on a FALSE -> TRUE edge for `finger_idx`. Scores the
         active tile only if it exists, hasn't already resolved, sits in
@@ -417,19 +440,6 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
                 if self._session_target_reached():
                     self._end_game()
 
-    def _active_finger(self):
-        """(index, status) for whichever finger the current tile needs, or
-        (None, "ready") when no tile is active. status is one of
-        'ready' / 'tap' / 'release', for the monitoring panel."""
-        if self.tile is None:
-            return None, "ready"
-        i = self.tile.lane
-        if self._finger_tap_flash_t[i] > 0:
-            return i, "tap"
-        elif self._finger_need_release[i]:
-            return i, "release"
-        return i, "ready"
-
     # ── update ─────────────────────────────────────────────────────────
 
     def update(self, dt):
@@ -446,15 +456,32 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
         ready, flex_vals = self._read_fingers()
         self.five_finger_ready = ready
         self.flex_vals = flex_vals
+        # Exposed for therapist-side 5-independent-finger monitoring (see
+        # recovr/patient_app/games/generic_adapter.py's _sensor_telemetry,
+        # which reads state["finger_flex"] + self._normalize_finger exactly
+        # like it already does for games/whack_mole.py) -- harmless zeros
+        # while real BLE hardware is connected (ready=False), same as
+        # everywhere else this not-yet-available reading is handled.
+        self._state["finger_flex"] = flex_vals
         if not ready:
             return   # real BLE hardware connected -- see draw()'s notice; gameplay fully paused
 
+        # Per-finger press/release hysteresis -- same concept as games/
+        # whack_mole.py's own _update_fingers(): a press only fires on the
+        # armed->pressed edge (crossing ITS OWN calibrated press_threshold),
+        # and that finger can't re-fire until it drops back below its own
+        # (lower) release_threshold, so sensor noise right at the threshold
+        # can't chatter a repeated tap.
         for i in range(LANE_COUNT):
-            pressed = flex_vals[i] >= self.flex_threshold and not self._finger_need_release[i]
-            self._finger_need_release[i] = flex_vals[i] >= self.flex_threshold
-            if pressed:
-                self._try_flex_tap(i)
-            if flex_vals[i] >= self.flex_threshold:
+            f = flex_vals[i]
+            if not self._finger_need_release[i]:
+                if f >= self.press_threshold[i]:
+                    self._finger_need_release[i] = True
+                    self._try_flex_tap(i)
+            else:
+                if f <= self.release_threshold[i]:
+                    self._finger_need_release[i] = False
+            if f >= self.press_threshold[i]:
                 self.fatigue_timer = 0.0   # counts as activity so Take a Break doesn't trigger mid-game
 
         if self._session_tick(dt):
@@ -548,11 +575,8 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
         draw_game_header(surface, "Piano Tiles", self.difficulty,
                           self._session_header_time(), self.score, GAME_W, GAME_H)
 
-        prog_s = self._font_tiles.render(self._session_progress_text("tiles"), True, T["TEXT"])
-        surface.blit(prog_s, (24, HEADER_BOTTOM + 16))
-
-        self._draw_left_panel(surface)
-        self._draw_right_panel(surface)
+        draw_target_pill(surface, self._session_progress_text("tiles"),
+                          TARGET_POS, T["ACCENT"], self._font_tiles)
 
         # Pause button — two solid bars (identical to Basketball / Steady Aim)
         pb     = self._pause_btn_rect
@@ -588,16 +612,6 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
         for i in range(LANE_COUNT + 1):
             lx = PLAYFIELD_X0 + i * LANE_W
             pygame.draw.line(surface, DIVIDER_COLOR, (lx, top), (lx, bottom), 2)
-
-        # Finger name under each key, so the 5 lanes read as 5 distinct keys.
-        # Row geometry (ROW_GAP below the zones, within FINGER_LABEL_H, with
-        # SCREEN_BOTTOM_MARGIN still clear below) is sized precisely for
-        # this font so it can never run off the bottom of the screen.
-        label_y = bottom + ROW_GAP
-        for i in range(LANE_COUNT):
-            lx = PLAYFIELD_X0 + i * LANE_W
-            s = self._font_finger.render(FINGER_NAMES[i], True, DIVIDER_COLOR)
-            surface.blit(s, (lx + LANE_W // 2 - s.get_width() // 2, label_y))
 
     def _draw_hit_line(self, surface):
         T = get_theme()
@@ -655,127 +669,6 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
                 pygame.draw.rect(ov, flash_col + (a,), ov.get_rect(), border_radius=14)
                 surface.blit(ov, rect.topleft)
 
-    def _draw_left_panel(self, surface):
-        T = get_theme()
-        x = 20
-        y = HEADER_BOTTOM + 70
-        w = LEFT_PANEL_W - 40
-        card_h = 112
-        pad = 16
-
-        # Flexion Threshold indicator
-        card1 = pygame.Rect(x, y, w, card_h)
-        bg = pygame.Surface(card1.size, pygame.SRCALPHA)
-        pygame.draw.rect(bg, T["PANEL"] + (235,), bg.get_rect(), border_radius=14)
-        surface.blit(bg, card1.topleft)
-        pygame.draw.rect(surface, T["ACCENT"], card1, 2, border_radius=14)
-        lbl = self._font_panel_h.render("FLEXION THRESHOLD", True, T["GRAY"])
-        surface.blit(lbl, (card1.x + pad, card1.y + pad))
-        val = self._font_panel_v.render(f"≥ {int(round(self.flex_threshold * 100))}%", True, T["ACCENT"])
-        surface.blit(val, (card1.x + pad, card1.y + pad + lbl.get_height() + 8))
-
-        # Combo indicator
-        y2 = card1.bottom + 20
-        card2 = pygame.Rect(x, y2, w, card_h)
-        pulse = self.combo_flash_t > 0
-        glow_a = int(160 * max(0.0, self.combo_flash_t / 0.6)) if pulse else 0
-        bg2 = pygame.Surface(card2.size, pygame.SRCALPHA)
-        pygame.draw.rect(bg2, T["PANEL"] + (235,), bg2.get_rect(), border_radius=14)
-        surface.blit(bg2, card2.topleft)
-        if glow_a > 0:
-            glow_surf = pygame.Surface(card2.inflate(10, 10).size, pygame.SRCALPHA)
-            pygame.draw.rect(glow_surf, T["YELLOW"] + (glow_a,), glow_surf.get_rect(), border_radius=18)
-            surface.blit(glow_surf, (card2.x - 5, card2.y - 5))
-        pygame.draw.rect(surface, T["YELLOW"] if pulse else T["ACCENT"], card2, 2, border_radius=14)
-        lbl2 = self._font_panel_h.render("COMBO", True, T["GRAY"])
-        surface.blit(lbl2, (card2.x + pad, card2.y + pad))
-        val2 = self._font_panel_v.render(f"×{self.combo}", True,
-                                          T["YELLOW"] if pulse else T["TEXT"])
-        surface.blit(val2, (card2.x + pad, card2.y + pad + lbl2.get_height() + 8))
-
-    def _draw_finger_icon(self, surface, cx, cy, flex_frac, color):
-        seg = 20
-        base_end = (cx, cy + seg)
-        ang = math.radians(75 * max(0.0, min(1.0, flex_frac)))
-        tip_end = (base_end[0] + seg * math.sin(ang), base_end[1] + seg * math.cos(ang))
-        pygame.draw.line(surface, color, (cx, cy - 4), base_end, 6)
-        pygame.draw.line(surface, color, base_end, tip_end, 6)
-        pygame.draw.circle(surface, color, (int(cx), int(cy - 4)), 6)
-        pygame.draw.circle(surface, color, (int(tip_end[0]), int(tip_end[1])), 5)
-
-    def _draw_right_panel(self, surface):
-        T = get_theme()
-        pad = 18
-        x = PLAYFIELD_X1 + 18
-        y = HEADER_BOTTOM + 70
-        w = RIGHT_PANEL_W - 38
-
-        active_i, status = self._active_finger()
-        finger_name = FINGER_NAMES[active_i] if active_i is not None else "—"
-        flex_raw = self.flex_vals[active_i] if active_i is not None else 0.0
-        need_release = self._finger_need_release[active_i] if active_i is not None else False
-
-        status_col = {"ready": T["GRAY"], "tap": T["YELLOW"], "release": T["ACCENT"]}[status]
-        status_lbl = {"ready": "Ready", "tap": "Tap!", "release": "Release"}[status]
-        pct     = int(round(flex_raw * 100))
-        thr_pct = int(round(self.flex_threshold * 100))
-
-        # Flow layout: every row's y is the previous row's bottom + a gap,
-        # so the panel's own height is derived from its actual content at
-        # the real font sizes below, not a guessed constant -- it can never
-        # under-size and clip the last row.
-        title_s  = self._font_panel_h.render("FLEX SENSOR", True, T["GRAY"])
-        status_s = self._font_panel_v.render(status_lbl, True, status_col)
-        fin_s    = self._font_panel_s.render(f"Active Finger: {finger_name}", True, T["TEXT"])
-        fx_s     = self._font_panel_s.render(f"Flexion: {pct}%", True, T["TEXT"])
-        bar_h    = 32
-        thr_s    = self._font_panel_s.render(f"Threshold: {thr_pct}%", True, T["GRAY"])
-        gate_s   = self._font_panel_s.render(
-            "Armed" if not need_release else "Awaiting Release",
-            True, T["GREEN"] if not need_release else T["ORANGE"])
-
-        rows_h = (title_s.get_height() + 14 + status_s.get_height() + 18 +
-                  fin_s.get_height() + 10 + fx_s.get_height() + 10 + bar_h + 14 +
-                  thr_s.get_height() + 10 + gate_s.get_height())
-        h = pad * 2 + rows_h
-        panel = pygame.Rect(x, y, w, h)
-
-        bg = pygame.Surface(panel.size, pygame.SRCALPHA)
-        pygame.draw.rect(bg, T["PANEL"] + (235,), bg.get_rect(), border_radius=16)
-        surface.blit(bg, panel.topleft)
-        pygame.draw.rect(surface, T["ACCENT"], panel, 2, border_radius=16)
-
-        cy = panel.y + pad
-        surface.blit(title_s, (panel.x + pad, cy))
-        cy += title_s.get_height() + 14
-
-        icon_cx, icon_cy = panel.x + pad + 16, cy + status_s.get_height() // 2
-        self._draw_finger_icon(surface, icon_cx, icon_cy, flex_raw, status_col)
-        surface.blit(status_s, (panel.x + pad + 48, cy))
-        cy += status_s.get_height() + 18
-
-        surface.blit(fin_s, (panel.x + pad, cy))
-        cy += fin_s.get_height() + 10
-
-        surface.blit(fx_s, (panel.x + pad, cy))
-        cy += fx_s.get_height() + 10
-
-        bar = pygame.Rect(panel.x + pad, cy, w - pad * 2, bar_h)
-        pygame.draw.rect(surface, T["BG"], bar, border_radius=10)
-        fill_w = int(bar.width * flex_raw)
-        if fill_w > 0:
-            fill_col = T["GREEN"] if flex_raw >= self.flex_threshold else T["ACCENT"]
-            pygame.draw.rect(surface, fill_col, (bar.x, bar.y, fill_w, bar.height), border_radius=10)
-        pygame.draw.rect(surface, T["WHITE"], bar, 2, border_radius=10)
-        thr_x = bar.x + int(bar.width * self.flex_threshold)
-        pygame.draw.line(surface, T["RED"], (thr_x, bar.y - 6), (thr_x, bar.bottom + 6), 4)
-        cy += bar_h + 14
-
-        surface.blit(thr_s, (panel.x + pad, cy))
-        cy += thr_s.get_height() + 10
-
-        surface.blit(gate_s, (panel.x + pad, cy))
-
     def _draw_hw_unsupported(self, surface):
         """Shown instead of normal play when a real BLE controller is
         connected -- see module docstring: genuine five-finger hardware
@@ -815,7 +708,6 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
     # ── How To Play ────────────────────────────────────────────────────
 
     def _draw_instructions(self, surface):
-        T = get_theme()
         ov = pygame.Surface((GAME_W, GAME_H), pygame.SRCALPHA)
         ov.fill((0, 0, 0, 210))
         surface.blit(ov, (0, 0))
@@ -825,23 +717,12 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # two screens read as stages of one interface.
         top_margin, bottom_reserved = int(GAME_H * 0.05), int(GAME_H * 0.17)
         card = _load_image_fit(card_name, int(GAME_W * 0.50), GAME_H - top_margin - bottom_reserved)
-        bottom_y = GAME_H // 2
         if card is not None:
-            cr = card.get_rect(midtop=(GAME_W // 2, top_margin))
+            cr = card.get_rect(center=(GAME_W // 2, GAME_H // 2))
             surface.blit(card, cr)
-            bottom_y = cr.bottom
-
-        # No "press any key" prompt -- the patient never starts the game
+        # Just the card, centered -- no extra text/descriptions. No "press
+        # any key" prompt either -- the patient never starts the game
         # themselves, only the therapist's own START control does.
-        f_info = pygame.font.SysFont("monospace", 22, bold=True)
-        sess_txt = (f"Goal: Hit {self.goal} tiles" if self.session_mode == "target" else
-                    f"Duration: {int(self.timed_duration)}s — hit as many tiles as you can")
-        info = f_info.render(
-            f"{sess_txt}   ·   Difficulty: {self.difficulty}"
-            f"   ·   Flex Threshold: {int(round(self.flex_threshold * 100))}%",
-            True, T["WHITE"])
-        info_r = info.get_rect(centerx=GAME_W // 2, top=bottom_y + 14)
-        surface.blit(info, info_r)
 
     # ── Session Complete ───────────────────────────────────────────────
 

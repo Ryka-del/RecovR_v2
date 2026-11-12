@@ -28,6 +28,11 @@ from constants import GAME_W, GAME_H
 from recovr.shared import protocol
 from recovr.patient_app.scenes.countdown import CountdownScreen, TOTAL_SEC as COUNTDOWN_TOTAL_SEC
 
+# How long the "How to Play" card takes to fade to black once the therapist
+# clicks the real START button (panel 7), before the 3-2-1 countdown takes
+# over -- see begin_countdown()/update()/draw() below.
+FADE_TOTAL_SEC = 0.6
+
 
 # ---------------------------------------------------------------------------
 #  Registry
@@ -48,11 +53,11 @@ _REAL_GAMES = {
     "Apple Catching":           ("games.catchingapple", "AppleCatchingGame"),
     "Key and Lock":             ("games.key_lock",      "KeyLockGame"),
     "Steady Aim":               ("games.steady_aim",    "SteadyAimGame"),
-    "Catch 'n Grab":             ("games.catch_object",  "CatchObjectGame"),
     "Lemonade":                 ("games.lemonade",      "LemonadeGame"),
     "Feed the Cat":             ("games.feed_the_cat",  "FeedTheCatGame"),
     "Plant the Garden":         ("games.plant_the_garden", "PlantTheGardenGame"),
     "Whack-a-Mole":       ("games.whack_mole",    "WhackMoleGame"),
+    "Toy Factory":              ("games.toy_factory",   "ToyFactoryGame"),
 }
 
 
@@ -101,6 +106,9 @@ class GameRunner:
                                          # begin_resume_countdown())
         self._countdown_screen = CountdownScreen()
 
+        self._fading = False   # How-to-Play -> black, before the initial countdown
+        self._fade_t = 0.0
+
         self._tele_accum = 0.0
 
         # --- sensor bridge pump -------------------------------------------
@@ -142,15 +150,20 @@ class GameRunner:
             fn()
 
     def begin_countdown(self):
-        """Therapist-triggered START (dual-monitor production): show the
-        "Get Ready! / 3 / 2 / 1 / START!" sequence while the underlying game
-        stays completely frozen (update() below skips sensor pump, game
-        update, AND the telemetry accumulator while counting_down -- not just
-        drawing a countdown on top of a timer that's already running), then
-        call force_begin() automatically once it's done. One shared
-        implementation for every wrapped game (see games/*.py + the generic
-        adapter) instead of each game drawing its own countdown."""
-        self.counting_down = True
+        """Therapist-triggered START (dual-monitor production): the visible
+        How-to-Play card (still showing -- _show_instructions is only ever
+        cleared by force_begin(), right at the end of this whole sequence)
+        first fades to black, THEN the "Get Ready! / 3 / 2 / 1 / START!"
+        sequence plays, while the underlying game stays completely frozen
+        throughout both (update() below skips sensor pump, game update, AND
+        the telemetry accumulator the whole time -- not just drawing on top
+        of a timer that's already running), then force_begin() is called
+        automatically once it's done. One shared implementation for every
+        wrapped game (see games/*.py + the generic adapter) instead of each
+        game drawing its own countdown."""
+        self._fading = True
+        self._fade_t = 0.0
+        self.counting_down = False
         self._countdown_t = 0.0
         self._countdown_resume = False
 
@@ -163,7 +176,10 @@ class GameRunner:
         untouched, only resumed. The underlying game is already paused
         (self.paused stays True for the whole countdown) so draw()/update()/
         handle_event() all freeze it exactly like a not-yet-started game is
-        frozen by `counting_down` -- same guard, same code path."""
+        frozen by `counting_down` -- same guard, same code path. No fade
+        here -- there is no How-to-Play card up to fade away, just the
+        game's own last paused frame, so the 3-2-1 starts immediately."""
+        self._fading = False
         self.counting_down = True
         self._countdown_t = 0.0
         self._countdown_resume = True
@@ -177,10 +193,12 @@ class GameRunner:
 
     def stop(self):
         self.stopped = True
-        # A countdown that gets cancelled must never reach force_begin() (or,
-        # for a resume countdown, set_paused(False)) on a later update() --
-        # clearing it here (not just leaving self.stopped to short-circuit
-        # update()) is what guarantees that.
+        # A countdown (or a fade leading into one) that gets cancelled must
+        # never reach force_begin() (or, for a resume countdown,
+        # set_paused(False)) on a later update() -- clearing both here (not
+        # just leaving self.stopped to short-circuit update()) is what
+        # guarantees that.
+        self._fading = False
         self.counting_down = False
         self._countdown_resume = False
         hook = getattr(self.game, "external_stop", None)
@@ -189,11 +207,19 @@ class GameRunner:
 
     # -- per-frame ---------------------------------------------------
     def handle_event(self, event):
-        if self.counting_down or self.paused or self.stopped or self.finished:
+        if self._fading or self.counting_down or self.paused or self.stopped or self.finished:
             return
         self.game.handle_event(event)
 
     def update(self, dt: float):
+        if self._fading:
+            self._fade_t += dt
+            if self._fade_t >= FADE_TOTAL_SEC:
+                self._fading = False
+                self.counting_down = True
+                self._countdown_t = 0.0
+                self._countdown_resume = False
+            return
         if self.counting_down:
             self._countdown_t += dt
             if self._countdown_t >= COUNTDOWN_TOTAL_SEC:
@@ -259,7 +285,17 @@ class GameRunner:
                 target.fill((0, 0, 0))
             target.blit(scaled, ((tw - sw) // 2, (th - sh) // 2))
 
-        if self.counting_down:
+        if self._fading:
+            # The How-to-Play card (drawn above, since _show_instructions is
+            # still True right up until force_begin() at the very end of
+            # this sequence) fades to solid black -- then the 3-2-1
+            # countdown takes over, already drawn on its own dark wash, so
+            # the handoff reads as one continuous transition.
+            alpha = int(255 * min(1.0, self._fade_t / FADE_TOTAL_SEC))
+            fade = pygame.Surface(target.get_size(), pygame.SRCALPHA)
+            fade.fill((0, 0, 0, alpha))
+            target.blit(fade, (0, 0))
+        elif self.counting_down:
             self._countdown_screen.draw(target, self._countdown_t)
         elif self.paused:
             self._draw_pause_overlay(target)

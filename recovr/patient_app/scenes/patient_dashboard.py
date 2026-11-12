@@ -61,8 +61,8 @@ _GAME_ICONS = {
     "Key and Lock":       "key_and_lock_icon.png",
     "Plant the Garden":   "plant_the_garden_icon.png",
     "Steady Aim":         "steady_aim_icon.png",
-    "Catch 'n Grab":      "catch_n_grab_icon.png",
     "Feed the Cat":       "feed_the_cat_icon.png",
+    "Toy Factory":        "bear_toy_factory.png",
 }
 _GAME_METRIC_LABELS = {
     "Basketball":        "Shots Made",
@@ -72,8 +72,8 @@ _GAME_METRIC_LABELS = {
     "Key and Lock":       "Locks Opened",
     "Plant the Garden":   "Plants Grown",
     "Steady Aim":         "Shots Fired",
-    "Catch 'n Grab":      "Caught",
     "Feed the Cat":       "Cats Fed",
+    "Toy Factory":        "Toys Sorted",
 }
 
 # Real icon assets for the Rehabilitation Progress sub-metric rows and the

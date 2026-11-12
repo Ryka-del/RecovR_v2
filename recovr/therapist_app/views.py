@@ -13,8 +13,8 @@ bp = Blueprint("views", __name__)
 # Every game currently wired into recovr/patient_app/game_runner.py.
 KNOWN_GAMES = [
     "Basketball", "Piano Tiles", "Steady Aim", "Apple Catching",
-    "Key and Lock", "Catch 'n Grab", "Lemonade", "Feed the Cat",
-    "Plant the Garden",
+    "Key and Lock", "Toy Factory", "Lemonade", "Feed the Cat",
+    "Plant the Garden", "Whack-a-Mole",
 ]
 DIFFICULTIES = ["Easy", "Medium", "Hard"]
 

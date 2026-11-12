@@ -15,6 +15,7 @@ from sensors.input_handler import input_handler
 from audio import play_success, play_error, play_completion, start_music, stop_music, game_music_path, play_click
 from constants import get_theme, is_dark_mode, GAME_W, GAME_H
 from games.game_header import draw_game_header
+from games.hud import draw_target_pill, TARGET_POS
 from games.round_complete import draw_round_complete_overlay
 
 GOALS      = {"Easy": 10, "Medium": 15, "Hard": 20}   # Target Mode: shots to make to complete
@@ -349,6 +350,7 @@ class BasketballGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
         self._font_hud = pygame.font.SysFont("monospace", 36, bold=True)
         self._font_sm  = pygame.font.SysFont("monospace", 26)
+        self._font_target = pygame.font.SysFont("monospace", 54, bold=True)
         self._font_fb  = pygame.font.SysFont("monospace", 52, bold=True)
 
         _prewarm_ball_cache()
@@ -642,7 +644,6 @@ class BasketballGame(SessionModeMixin, FatigueMixin, BaseScreen):
     # ------------------------------------------------------------------ #
 
     def _draw_instructions(self, surface):
-        T = get_theme()
         ov = pygame.Surface((GAME_W, GAME_H), pygame.SRCALPHA)
         ov.fill((0, 0, 0, 210))
         surface.blit(ov, (0, 0))
@@ -657,24 +658,12 @@ class BasketballGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # rather than two differently-proportioned popups.
         top_margin, bottom_reserved = int(GAME_H * 0.05), int(GAME_H * 0.17)
         card = _load_image_fit(card_name, int(GAME_W * 0.50), GAME_H - top_margin - bottom_reserved)
-        bottom_y = GAME_H // 2
         if card is not None:
-            cr = card.get_rect(midtop=(GAME_W // 2, top_margin))
+            cr = card.get_rect(center=(GAME_W // 2, GAME_H // 2))
             surface.blit(card, cr)
-            bottom_y = cr.bottom
-
-        # This session's goal/difficulty aren't part of the (static) card
-        # art, so they stay as a small live line underneath it -- the one
-        # piece of dynamic info the original panel showed that the new
-        # artwork has no room for. No "press any key" prompt here -- the
-        # patient never starts the game themselves, only the therapist's
-        # own START control does, so that instruction doesn't apply.
-        f_info = pygame.font.SysFont("monospace", 22, bold=True)
-        sess_txt = (f"Goal: Make {self.goal} shots" if self.session_mode == "target" else
-                    f"Duration: {int(self.timed_duration)}s — make as many shots as you can")
-        info = f_info.render(f"{sess_txt}   ·   Difficulty: {self.difficulty}", True, T["WHITE"])
-        info_r = info.get_rect(centerx=GAME_W // 2, top=bottom_y + 14)
-        surface.blit(info, info_r)
+        # Just the card, centered -- no extra text/descriptions. No "press
+        # any key" prompt either -- the patient never starts the game
+        # themselves, only the therapist's own START control does.
 
     def _exit_to_game_config(self):
         import builtins
@@ -786,8 +775,8 @@ class BasketballGame(SessionModeMixin, FatigueMixin, BaseScreen):
                      (BAR_X - 8, BAR_Y + BAR_H + 8))
 
         # Live goal progress
-        prog_s = font_sm.render(self._session_progress_text("shots"), True, T["TEXT"])
-        surface.blit(prog_s, (int(40 * GAME_W / 1920), int(GAME_H * 0.14)))
+        draw_target_pill(surface, self._session_progress_text("shots"),
+                          TARGET_POS, T["ACCENT"], self._font_target)
 
         # Score flash
         if self.score_flash > 0:
@@ -804,13 +793,6 @@ class BasketballGame(SessionModeMixin, FatigueMixin, BaseScreen):
         if self.feedback:
             msg = self._font_fb.render(self.feedback[0], True, self.feedback[1])
             surface.blit(msg, (GAME_W // 2 - msg.get_width() // 2, GAME_H // 2 - 60))
-
-        # Hint
-        if self.difficulty == "Easy":
-            hint = "Squeeze into the GREEN zone, then RELEASE to shoot"
-        else:
-            hint = "Zone moves while relaxed -- squeeze to freeze, release in GREEN to shoot"
-        surface.blit(font_sm.render(hint, True, T["GRAY"]), (80, GAME_H - 44))
 
         if self.paused:
             self._draw_pause(surface)

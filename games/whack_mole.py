@@ -18,7 +18,13 @@ Mechanic:
   - A successful hit swings the (enlarged) hammer from its resting corner
     over to the mole's hole, rotating head-first into it, before returning
     -- see _trigger_hammer()/_update_hammer()/_draw_hammer(). Purely visual;
-    it never gates or delays sensor processing.
+    it never gates or delays sensor processing (scoring/feedback/sound fire
+    immediately on the input, same as always). The MOLE's own reaction is
+    synced to the swing, though: a correctly-hit mole stays in its normal
+    pose through the whole swing (Mole.phase "hit_wait") and only flips to
+    its dizzy sprite at the instant the hammer actually lands (see
+    Mole.apply_impact(), called from _update_hammer()'s swing->hold
+    transition) -- never the moment the input itself is registered.
   - All 5 Flex Sensors (sensors.input_handler's state["finger_flex"]) are
     read every frame regardless of which single hole is currently active,
     each with its own independent calibrated threshold and press/release
@@ -37,8 +43,10 @@ from games.session_mode import SessionModeMixin
 from sensors.input_handler import input_handler, FINGER_NAMES
 from audio import (start_music, stop_music, pause_music, resume_music,
                     game_bgm_path, play_success, play_error, play_completion, play_click)
-from constants import get_theme, GAME_W, GAME_H
+from constants import get_theme, is_dark_mode, GAME_W, GAME_H
 from games.game_header import draw_game_header, HEADER_BOTTOM
+from games.hud import draw_target_pill, TARGET_POS
+from games.round_complete import draw_round_complete_overlay
 
 # ── difficulty-scaled parameters ────────────────────────────────────────────
 GOAL          = {"Easy": 15,  "Medium": 15,  "Hard": 15}    # Target Mode: moles to hit
@@ -54,6 +62,7 @@ MOLE_HIT_WINDOW_SEC = 3.0
 RISE_TIME_SEC   = 0.15   # spawn animation: fully hidden -> fully risen
 SINK_TIME_SEC   = 0.18   # disappearance animation: fully risen -> fully hidden
 HIT_FLASH_SEC   = 0.45   # dizzy sprite hold time after a successful hit, before sinking
+HIT_WAIT_SAFETY_SEC = 1.0   # Mole.apply_impact() safety-net timeout -- see Mole.update()
 
 # Hole index -> (finger name, x-fraction of the screen, row). Compactly
 # clustered on the background art's dirt patch -- front row sits lower/
@@ -75,18 +84,42 @@ FRONT_RADIUS, BACK_RADIUS = 100, 78
 _MOLE_SPRITES = ["mole1", "mole2", "mole3", "rare_mole", "epic_mole"]
 _MOLE_WEIGHTS = [34, 34, 24, 5, 3]   # rare/epic are cosmetic variety only, no bonus scoring
 
-# Hammer -- enlarged resting size, and the swing/strike animation it plays
-# on every successful hit. Angle is in pygame.transform.rotate()'s own
-# convention (positive = counter-clockwise); HEAD_FRAC is where the
-# striking face sits within the UNROTATED art, as a fraction of its own
-# width/height, used as the pivot the whole swing is anchored on so the
-# head (not the handle) is what travels to and visually contacts the mole.
-HAMMER_SIZE_FRAC   = 0.235          # of GAME_W
-HAMMER_HEAD_FRAC   = (0.62, 0.30)
-HAMMER_SWING_SEC   = 0.12
-HAMMER_HOLD_SEC    = 0.14
-HAMMER_RETURN_SEC  = 0.20
-HAMMER_STRIKE_ANGLE = -32
+# Hammer -- a TRUE pivot swing: a fixed invisible "grip" point (HAMMER_PIVOT
+# FRAC, measured off the art -- the handle's own butt end) stays anchored at
+# HAMMER_PIVOT_SCREEN the whole time, and the whole sprite only ever rotates
+# + uniformly scales (never translates independently, never stretches)
+# around it, exactly like games/toy_factory.py's arm. This is what makes it
+# read as swinging an arc, not sliding. HAMMER_HEAD_FRAC is the drum/head's
+# own center -- the broad, flat-ish striking mass (as opposed to the thin
+# handle) -- which is what gets aimed at the mole, so the head (never an
+# edge or the handle) is what visually contacts it. Both fractions are
+# measured directly off the cropped art (see the hammer_whack_a_mole.png
+# grid-overlay reference used to find them).
+HAMMER_PIVOT_FRAC  = (0.2034, 0.9029)   # handle grip, i.e. where a hand holds it
+HAMMER_HEAD_FRAC   = (0.5747, 0.2580)   # drum/head centre
+HAMMER_REST_PIVOT_SCREEN_FRAC = (1.02, 1.02)  # the fixed grip point while idle -- just past the
+                                               # bottom-right corner, matching the reference
+                                               # "resting" photo exactly
+HAMMER_REST_TARGET_FRAC  = (0.938, 0.768)  # idle pose aims the head here -- a modest, mostly
+                                            # on-screen lean near the corner (reference photo 1),
+                                            # not cropped/oversized
+# The SWING uses a different (below-screen-centre) pivot than the rest pose
+# -- the reference "swing" photo only shows one hole (Ring) being hit, and
+# a literal corner pivot makes the 5 holes' reach distances vary enormously
+# (Thumb is ~2.3x farther from the corner than Pinky is), which either
+# strands far holes short of the clamp or balloons the hammer to an absurd
+# size reaching them. This below-centre pivot keeps every hole's reach
+# comfortably clustered so the swing always actually connects, at a
+# consistently dramatic (never absurd) size -- see HAMMER_SCALE_CLAMP. The
+# hammer's PIVOT POINT ITSELF is interpolated between the two (alongside
+# rotation/scale) during swing/return, so the handoff from the corner-
+# anchored idle lean into the swing is one continuous motion, never a pop.
+HAMMER_SWING_PIVOT_SCREEN_FRAC = (0.50, 1.148)
+HAMMER_BASE_LOAD_FRAC    = 0.50            # base texture height, as a fraction of GAME_H
+HAMMER_SCALE_CLAMP = (0.6, 1.6)
+HAMMER_SWING_SEC   = 0.14
+HAMMER_HOLD_SEC    = 0.16
+HAMMER_RETURN_SEC  = 0.22
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _img_cache = {}
@@ -130,15 +163,35 @@ def _ease(t):
     return t * t * (3 - 2 * t)
 
 
+def _rotate_scale_anchored(image, angle, scale, local_point, target_pos):
+    """Rotate `image` by `angle` degrees and uniformly scale it by `scale`
+    (never a non-uniform stretch), returning (surface, rect) such that
+    `local_point` -- given in the image's own unrotated, unscaled pixel
+    coordinates -- lands exactly at `target_pos` on screen. The hammer's
+    pivot/swing system anchors on its GRIP point this way (see
+    _draw_hammer) -- identical technique to games/toy_factory.py's arm."""
+    w, h = image.get_size()
+    offset = pygame.math.Vector2((w / 2 - local_point[0]) * scale,
+                                  (h / 2 - local_point[1]) * scale)
+    rotated_offset = offset.rotate(-angle)
+    if scale != 1.0:
+        image = pygame.transform.smoothscale(
+            image, (max(1, int(w * scale)), max(1, int(h * scale))))
+    rotated = pygame.transform.rotate(image, angle)
+    rect = rotated.get_rect(center=(target_pos[0] + rotated_offset.x,
+                                     target_pos[1] + rotated_offset.y))
+    return rotated, rect
+
+
 class Mole:
     """One active mole: which hole it's in, and its own rise/active/
-    hit-flash/retreat phase timeline (see module docstring). Every mole is
-    a valid target -- there is no red/green distinction any more."""
+    hit-wait/hit-flash/retreat phase timeline (see module docstring). Every
+    mole is a valid target -- there is no red/green distinction any more."""
 
     def __init__(self, hole_idx, sprite_key):
         self.hole_idx   = hole_idx
         self.sprite_key = sprite_key
-        self.phase      = "rising"   # rising -> active -> (hit_flash ->) retreating -> done
+        self.phase      = "rising"   # rising -> active -> hit_wait -> hit_flash -> retreating -> done
         self.timer      = 0.0
         self.hit        = False
 
@@ -153,13 +206,27 @@ class Mole:
         """Called by the game once a correct, newly-armed finger press is
         confirmed against this mole. No-ops (returns False) if the mole
         isn't currently hittable -- callers don't need to check phase
-        themselves."""
+        themselves. Scoring/feedback/sound fire immediately on this, same
+        as ever -- but the mole itself stays in its normal (non-dizzy) pose,
+        "hit_wait"ing for apply_impact() once the swinging hammer actually
+        lands, exactly like the reference reaction footage (mole stays
+        put/happy through the whole swing, only flinches on contact)."""
         if self.phase != "active":
             return False
+        self.phase = "hit_wait"
+        self.timer = 0.0
+        return True
+
+    def apply_impact(self):
+        """Called by the game the instant the hammer's swing animation
+        actually reaches this mole (see _update_hammer's swing->hold
+        transition) -- this, not register_hit(), is what flips the sprite
+        to its dizzy version and starts the HIT_FLASH_SEC hold."""
+        if self.phase != "hit_wait":
+            return
         self.hit   = True
         self.phase = "hit_flash"
         self.timer = 0.0
-        return True
 
     def update(self, dt, hit_window):
         """Advance this mole's phase timeline. Returns "missed" on the
@@ -174,6 +241,13 @@ class Mole:
             if self.timer >= hit_window:
                 event = "missed"
                 self.phase, self.timer = "retreating", 0.0
+        elif self.phase == "hit_wait":
+            # Normally ended by apply_impact() within one short hammer
+            # swing (HAMMER_SWING_SEC) -- this is only a safety net so a
+            # mole can never get stuck in its "waiting to flinch" pose if
+            # that signal is somehow missed.
+            if self.timer >= HIT_WAIT_SAFETY_SEC:
+                self.apply_impact()
         elif self.phase == "hit_flash":
             if self.timer >= HIT_FLASH_SEC:
                 self.phase, self.timer = "retreating", 0.0
@@ -186,7 +260,7 @@ class Mole:
         """0 = fully hidden in the hole, 1 = fully risen at rest."""
         if self.phase == "rising":
             return max(0.0, min(1.0, self.timer / RISE_TIME_SEC))
-        if self.phase in ("active", "hit_flash"):
+        if self.phase in ("active", "hit_wait", "hit_flash"):
             return 1.0
         if self.phase == "retreating":
             return max(0.0, 1.0 - self.timer / SINK_TIME_SEC)
@@ -244,19 +318,39 @@ class WhackMoleGame(SessionModeMixin, FatigueMixin, BaseScreen):
             if d not in self._hole_img:
                 self._hole_img[d] = _load_image_fit("hole_whack_a_mole.png", d, d)
 
-        hammer_wh = int(HAMMER_SIZE_FRAC * W)
-        self._hammer_img = _load_image_fit("hammer_whack_a_mole.png", hammer_wh, hammer_wh)
-        hw, hh = self._hammer_img.get_size() if self._hammer_img is not None else (hammer_wh, hammer_wh)
-        self._hammer_size = (hw, hh)
-        rest_right  = W - int(20 * W / 1920)
-        rest_bottom = H - int(10 * H / 1080)
-        rest_topleft = (rest_right - hw, rest_bottom - hh)
-        self._hammer_rest_head = (rest_topleft[0] + HAMMER_HEAD_FRAC[0] * hw,
-                                   rest_topleft[1] + HAMMER_HEAD_FRAC[1] * hh)
-        self._hammer_rest_anchor = (rest_right, rest_bottom)
+        hammer_load_h = int(HAMMER_BASE_LOAD_FRAC * H)
+        self._hammer_img = _load_image_fit("hammer_whack_a_mole.png", W, hammer_load_h)
+        if self._hammer_img is not None:
+            hw, hh = self._hammer_img.get_size()
+            self._hammer_pivot_local = (HAMMER_PIVOT_FRAC[0] * hw, HAMMER_PIVOT_FRAC[1] * hh)
+            head_local = (HAMMER_HEAD_FRAC[0] * hw, HAMMER_HEAD_FRAC[1] * hh)
+            dx = head_local[0] - self._hammer_pivot_local[0]
+            dy = head_local[1] - self._hammer_pivot_local[1]
+            self._hammer_natural_reach = math.hypot(dx, dy) or 1.0
+            self._hammer_natural_angle = math.degrees(math.atan2(dy, dx))
+        else:
+            self._hammer_pivot_local = (0.0, 0.0)
+            self._hammer_natural_reach = 1.0
+            self._hammer_natural_angle = -60.0
+        self._hammer_rest_pivot_screen = (W * HAMMER_REST_PIVOT_SCREEN_FRAC[0],
+                                          H * HAMMER_REST_PIVOT_SCREEN_FRAC[1])
+        self._hammer_swing_pivot_screen = (W * HAMMER_SWING_PIVOT_SCREEN_FRAC[0],
+                                           H * HAMMER_SWING_PIVOT_SCREEN_FRAC[1])
+        # The idle/rest pose is fixed and computed directly (bypassing
+        # _hammer_aim's clamp, which exists only to keep SWING targets --
+        # the 5 holes -- from rendering absurdly large/small) so the
+        # hammer leans in the lower-right corner at its own natural size,
+        # matching the reference "resting" photo, instead of being forced
+        # into whatever range the swing clamp allows.
+        rest_target = (W * HAMMER_REST_TARGET_FRAC[0], H * HAMMER_REST_TARGET_FRAC[1])
+        rdx = rest_target[0] - self._hammer_rest_pivot_screen[0]
+        rdy = rest_target[1] - self._hammer_rest_pivot_screen[1]
+        rest_angle = math.degrees(math.atan2(rdy, rdx))
+        self._hammer_rest_rot   = rest_angle - self._hammer_natural_angle
+        self._hammer_rest_scale = (math.hypot(rdx, rdy) or 1.0) / self._hammer_natural_reach
 
         self._font_hud = pygame.font.SysFont("monospace", 34, bold=True)
-        self._font_sm  = pygame.font.SysFont("monospace", 24)
+        self._font_target = pygame.font.SysFont("monospace", 54, bold=True)
         self._font_obj = pygame.font.SysFont("monospace", 22, bold=True)
         self._font_fb  = pygame.font.SysFont("monospace", 48, bold=True)
 
@@ -296,8 +390,9 @@ class WhackMoleGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
         self._hammer_phase = "idle"
         self._hammer_timer = 0.0
-        self._hammer_from_head, self._hammer_from_angle = self._hammer_rest_head, 0.0
-        self._hammer_to_head, self._hammer_to_angle     = self._hammer_rest_head, 0.0
+        self._hammer_from_rot, self._hammer_from_scale = self._hammer_rest_rot, self._hammer_rest_scale
+        self._hammer_from_pivot = self._hammer_rest_pivot_screen
+        self._hammer_to_rot, self._hammer_to_scale     = self._hammer_rest_rot, self._hammer_rest_scale
 
         # Per-finger press/release (hysteresis) state. "armed" starts True
         # only if the finger is NOT already held above its own release
@@ -345,12 +440,33 @@ class WhackMoleGame(SessionModeMixin, FatigueMixin, BaseScreen):
             if self._session_target_reached():
                 self._end_game()
 
-    # ── hammer swing: purely cosmetic, never gates input/sensor handling ──
+    # ── hammer swing: a true pivot swing, purely cosmetic, never gates
+    # input/sensor handling ──────────────────────────────────────────────
+
+    def _hammer_aim(self, target):
+        """(rotation_degrees, scale) that, pivoting on self._hammer_swing_
+        pivot_screen (fixed), points the hammer's own HEAD centre exactly
+        at `target` -- the single source of truth every strike uses, so
+        there is only one aiming formula in the file. (The idle/rest pose
+        uses its own separate corner pivot -- see on_enter -- since the
+        two poses are governed by different reference photos.)"""
+        dx = target[0] - self._hammer_swing_pivot_screen[0]
+        dy = target[1] - self._hammer_swing_pivot_screen[1]
+        reach = math.hypot(dx, dy) or 1.0
+        angle = math.degrees(math.atan2(dy, dx))
+        scale = reach / self._hammer_natural_reach
+        scale = max(HAMMER_SCALE_CLAMP[0], min(HAMMER_SCALE_CLAMP[1], scale))
+        rot = angle - self._hammer_natural_angle
+        return rot, scale
 
     def _hammer_current(self):
-        """(head_pos, angle) for whatever the hammer is doing RIGHT NOW --
-        used both to draw it and, on a new hit, as the swing's own "from"
-        so retriggering mid-animation never jumps/snaps."""
+        """(rotation, scale, pivot_screen) for whatever the hammer is doing
+        RIGHT NOW -- used both to draw it and, on a new hit, as the swing's
+        own "from" so retriggering mid-animation never jumps/snaps. The
+        PIVOT itself is interpolated too (idle leans from the corner pivot;
+        swinging/holding/returning pivots from the swing pivot -- see the
+        module docstring), in lockstep with rotation/scale, so switching
+        between the two is one continuous motion, never a pop."""
         if self._hammer_phase == "swing":
             t = _ease(self._hammer_timer / HAMMER_SWING_SEC)
         elif self._hammer_phase == "return":
@@ -358,25 +474,28 @@ class WhackMoleGame(SessionModeMixin, FatigueMixin, BaseScreen):
         else:
             t = 1.0
         if self._hammer_phase == "swing":
-            fx, fy = self._hammer_from_head
-            tx, ty = self._hammer_to_head
-            a0, a1 = self._hammer_from_angle, self._hammer_to_angle
+            r0, s0, p0 = self._hammer_from_rot, self._hammer_from_scale, self._hammer_from_pivot
+            r1, s1, p1 = self._hammer_to_rot, self._hammer_to_scale, self._hammer_swing_pivot_screen
         elif self._hammer_phase == "return":
-            fx, fy = self._hammer_to_head
-            tx, ty = self._hammer_rest_head
-            a0, a1 = self._hammer_to_angle, 0.0
+            r0, s0, p0 = self._hammer_to_rot, self._hammer_to_scale, self._hammer_swing_pivot_screen
+            r1, s1, p1 = self._hammer_rest_rot, self._hammer_rest_scale, self._hammer_rest_pivot_screen
         elif self._hammer_phase == "hold":
-            return self._hammer_to_head, self._hammer_to_angle
+            return self._hammer_to_rot, self._hammer_to_scale, self._hammer_swing_pivot_screen
         else:
-            return self._hammer_rest_head, 0.0
-        return (fx + (tx - fx) * t, fy + (ty - fy) * t), a0 + (a1 - a0) * t
+            return self._hammer_rest_rot, self._hammer_rest_scale, self._hammer_rest_pivot_screen
+        return (r0 + (r1 - r0) * t, s0 + (s1 - s0) * t,
+                (p0[0] + (p1[0] - p0[0]) * t, p0[1] + (p1[1] - p0[1]) * t))
 
     def _trigger_hammer(self, hole_idx):
         x, y, r = self._hole_pos[hole_idx]
-        cur_head, cur_angle = self._hammer_current()
-        self._hammer_from_head, self._hammer_from_angle = cur_head, cur_angle
-        self._hammer_to_head  = (x, y - int(r * 0.05))
-        self._hammer_to_angle = HAMMER_STRIKE_ANGLE
+        cur_rot, cur_scale, cur_pivot = self._hammer_current()
+        self._hammer_from_rot, self._hammer_from_scale, self._hammer_from_pivot = cur_rot, cur_scale, cur_pivot
+        # Aimed a bit above the hole, not dead-centre on it -- at this
+        # hammer's (large, at-impact) scale, centring on the hole would
+        # bury the mole entirely under the head. The reference "swing"
+        # photo shows the dizzy mole still clearly visible beside the
+        # hammer at the moment of impact, not hidden behind it.
+        self._hammer_to_rot, self._hammer_to_scale = self._hammer_aim((x, y - int(r * 0.7)))
         self._hammer_phase = "swing"
         self._hammer_timer = 0.0
 
@@ -386,6 +505,11 @@ class WhackMoleGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self._hammer_timer += dt
         if self._hammer_phase == "swing" and self._hammer_timer >= HAMMER_SWING_SEC:
             self._hammer_phase, self._hammer_timer = "hold", 0.0
+            # The instant the swing actually lands -- this, not the input
+            # press back in _on_finger_press(), is what flips the mole to
+            # its dizzy sprite (see Mole.apply_impact()).
+            if self._mole is not None and self._mole.phase == "hit_wait":
+                self._mole.apply_impact()
         elif self._hammer_phase == "hold" and self._hammer_timer >= HAMMER_HOLD_SEC:
             self._hammer_phase, self._hammer_timer = "return", 0.0
         elif self._hammer_phase == "return" and self._hammer_timer >= HAMMER_RETURN_SEC:
@@ -561,8 +685,6 @@ class WhackMoleGame(SessionModeMixin, FatigueMixin, BaseScreen):
             self._draw_instructions(surface)
             return
 
-        font_sm = self._font_sm
-
         for i, (x, y, r) in enumerate(self._hole_pos):
             mole = self._mole if (self._mole is not None and self._mole.hole_idx == i
                                    and not self._mole.done) else None
@@ -576,33 +698,13 @@ class WhackMoleGame(SessionModeMixin, FatigueMixin, BaseScreen):
             if mole is not None:
                 self._draw_mole(surface, mole, x, y, r)
 
-            finger_lbl = font_sm.render(self._hole_finger[i], True, (255, 255, 255))
-            lbl_r = finger_lbl.get_rect(center=(x, y + r + 26))
-            bg_r = lbl_r.inflate(14, 8)
-            bg_s = pygame.Surface(bg_r.size, pygame.SRCALPHA)
-            pygame.draw.rect(bg_s, (20, 20, 30, 170), (0, 0, *bg_r.size), border_radius=8)
-            surface.blit(bg_s, bg_r.topleft)
-            surface.blit(finger_lbl, lbl_r)
-
         self._draw_hammer(surface)
 
         draw_game_header(surface, "Whack-a-Mole", self.difficulty,
                           self._session_header_time(), self.score, GAME_W, GAME_H)
 
-        # A dark translucent backing behind the HUD text -- the forest
-        # background art is busy/detailed, so plain themed text alone (fine
-        # against every other game's flatter backgrounds) was hard to read
-        # here regardless of theme.
-        def _hud_text(text, pos, col):
-            s = font_sm.render(text, True, col)
-            bg_r = s.get_rect(topleft=pos).inflate(14, 8)
-            bg_s = pygame.Surface(bg_r.size, pygame.SRCALPHA)
-            pygame.draw.rect(bg_s, (15, 18, 28, 150), (0, 0, *bg_r.size), border_radius=8)
-            surface.blit(bg_s, bg_r.topleft)
-            surface.blit(s, pos)
-
-        _hud_text(self._session_progress_text("moles hit"),
-                  (int(40 * GAME_W / 1920), HEADER_BOTTOM + int(24 * GAME_H / 1080)), (255, 255, 255))
+        draw_target_pill(surface, self._session_progress_text("moles hit"),
+                          TARGET_POS, T["ACCENT"], self._font_target)
 
         if self.feedback:
             msg = self._font_fb.render(self.feedback[0], True, self.feedback[1])
@@ -656,110 +758,45 @@ class WhackMoleGame(SessionModeMixin, FatigueMixin, BaseScreen):
         img = self._hammer_img
         if img is None:
             return
-        head_pos, angle = self._hammer_current()
-        w, h = self._hammer_size
-        # Pivot/anchor offset (head position relative to the UNROTATED
-        # image's own center), rotated the same way pygame.transform.rotate
-        # rotates the image itself, so the head stays pinned to head_pos
-        # however the hammer is currently angled.
-        ax = HAMMER_HEAD_FRAC[0] * w - w / 2
-        ay = HAMMER_HEAD_FRAC[1] * h - h / 2
-        rotated = pygame.transform.rotate(img, angle)
-        rad = math.radians(angle)
-        rax = ax * math.cos(rad) + ay * math.sin(rad)
-        ray = -ax * math.sin(rad) + ay * math.cos(rad)
-        center = (head_pos[0] - rax, head_pos[1] - ray)
-        surface.blit(rotated, rotated.get_rect(center=center))
+        rot, scale, pivot = self._hammer_current()
+        rotated, rect = _rotate_scale_anchored(
+            img, -rot, scale, self._hammer_pivot_local, pivot)
+        surface.blit(rotated, rect)
 
     def _draw_instructions(self, surface):
-        T = get_theme()
         ov = pygame.Surface((GAME_W, GAME_H), pygame.SRCALPHA)
         ov.fill((0, 0, 0, 210))
         surface.blit(ov, (0, 0))
 
-        pw, ph = 940, 580
-        px, py = (GAME_W - pw) // 2, (GAME_H - ph) // 2
-        bg = pygame.Surface((pw, ph), pygame.SRCALPHA)
-        pygame.draw.rect(bg, T["PANEL"] + (252,), (0, 0, pw, ph), border_radius=16)
-        surface.blit(bg, (px, py))
-        pygame.draw.rect(surface, T["ACCENT"], pygame.Rect(px, py, pw, ph), 2, border_radius=16)
-
-        f_title = pygame.font.SysFont("monospace", 36, bold=True)
-        f_head  = pygame.font.SysFont("monospace", 22, bold=True)
-        f_body  = pygame.font.SysFont("monospace", 19)
-
-        diff_col = {"Easy": T["GREEN"], "Medium": T["YELLOW"], "Hard": T["RED"]}[self.difficulty]
-        title = f_title.render("How to Play", True, diff_col)
-        surface.blit(title, title.get_rect(centerx=GAME_W // 2, top=py + 26))
-        pygame.draw.line(surface, T["ACCENT"], (px + 40, py + 78), (px + pw - 40, py + 78), 1)
-
-        y = py + 96
-        for header, lines in [
-            ("OBJECTIVE", [
-                "A mole pops up in ONE of the 5 holes at a time.",
-                "Every mole is a valid target -- bend the matching finger",
-                "before it ducks back under (3 seconds).",
-            ]),
-            ("FINGER MAP", [f"{finger}: {hole_name} hole" for hole_name, finger in
-                            (("Front-left", "Thumb"), ("Back-left", "Index"),
-                             ("Front-center", "Middle"), ("Back-right", "Ring"),
-                             ("Front-right", "Pinky"))]),
-            ("THIS SESSION", [
-                (f"Goal:       Hit {self.goal} moles" if self.session_mode == "target" else
-                 f"Duration:   {int(self.timed_duration)} seconds — hit as many as you can"),
-                f"Difficulty: {self.difficulty}",
-            ]),
-        ]:
-            surface.blit(f_head.render(header, True, T["ACCENT"]), (px + 48, y))
-            y += 30
-            for line in lines:
-                surface.blit(f_body.render(line, True, T["TEXT"]), (px + 64, y))
-                y += 25
-            y += 12
-        # No "press any key" prompt -- the patient never starts the game
+        # Fully designed "How To Play" card art (title, numbered steps, tip
+        # banner all baked in) -- replaces the hand-drawn panel. Per-theme,
+        # cropped to its own opaque content then fit preserving aspect
+        # ratio. Same outer card box (position + max size) as _draw_results'
+        # Round Complete card -- the two screens read as stages of one
+        # interface rather than two differently-proportioned popups.
+        card_name = f"whack_a_mole_how_to_play_{'dark' if is_dark_mode() else 'light'}.png"
+        top_margin, bottom_reserved = int(GAME_H * 0.05), int(GAME_H * 0.17)
+        card = _load_image_fit(card_name, int(GAME_W * 0.50), GAME_H - top_margin - bottom_reserved)
+        if card is not None:
+            cr = card.get_rect(center=(GAME_W // 2, GAME_H // 2))
+            surface.blit(card, cr)
+        # Just the card, centered -- no extra text/descriptions. No "press
+        # any key" prompt either -- the patient never starts the game
         # themselves, only the therapist's own START control does.
 
     def _draw_results(self, surface):
         T = get_theme()
-        ov = pygame.Surface((GAME_W, GAME_H), pygame.SRCALPHA)
-        ov.fill((0, 0, 0, 185))
-        surface.blit(ov, (0, 0))
-
-        pw, ph = 900, 520
-        px, py = (GAME_W - pw) // 2, (GAME_H - ph) // 2 - 20
-        bg = pygame.Surface((pw, ph), pygame.SRCALPHA)
-        pygame.draw.rect(bg, T["PANEL"] + (252,), (0, 0, pw, ph), border_radius=20)
-        surface.blit(bg, (px, py))
-        pygame.draw.rect(surface, T["ACCENT"], pygame.Rect(px, py, pw, ph), 2, border_radius=20)
-
-        f_title = pygame.font.SysFont("monospace", 40, bold=True)
-        f_lbl   = pygame.font.SysFont("monospace", 20)
-        f_num   = pygame.font.SysFont("monospace", 46, bold=True)
-
-        title = f_title.render("Round Complete!", True, T["GREEN"])
-        surface.blit(title, title.get_rect(centerx=GAME_W // 2, top=py + 30))
-
-        enc = f_lbl.render("You are awesome!", True, T["TEXT"])
-        surface.blit(enc, enc.get_rect(centerx=GAME_W // 2, top=py + 90))
-
-        mins, secs = divmod(max(0, self.game_over_duration), 60)
-        col_y = py + 160
-        col_w = pw // 3
-        cols = [
-            (f"{mins:02d}:{secs:02d}", "Total Time", px + col_w // 2),
-            (self._session_count_text(), "Moles Hit", px + pw // 2),
-            (str(self.missed), "Moles Missed", px + pw - col_w // 2),
-        ]
-        for val_txt, lbl_txt, cx in cols:
-            val_s = f_num.render(val_txt, True, T["ACCENT"])
-            lbl_s = f_lbl.render(lbl_txt, True, T["GRAY"])
-            surface.blit(val_s, val_s.get_rect(centerx=cx, top=col_y))
-            surface.blit(lbl_s, lbl_s.get_rect(centerx=cx, top=col_y + val_s.get_height() + 6))
+        # Just the card, centered -- no extra text/descriptions (Moles
+        # Missed etc. are no longer shown here; the HUD's own live counter
+        # during gameplay already covers progress).
+        _card, bottom_y = draw_round_complete_overlay(
+            surface, card_prefix="whack_a_mole", duration_sec=self.game_over_duration,
+            score_text=self._session_count_text(), load_fit=_load_image_fit)
 
         f_btn = pygame.font.SysFont("monospace", 28, bold=True)
         mp = pygame.mouse.get_pos()
         bw, bh = 220, 52
-        by = py + ph - bh - 30
+        by = bottom_y + 20
 
         again_r = pygame.Rect(GAME_W // 2 - bw - 16, by, bw, bh)
         exit_r  = pygame.Rect(GAME_W // 2 + 16,       by, bw, bh)

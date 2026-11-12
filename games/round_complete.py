@@ -44,7 +44,10 @@ def draw_round_complete_overlay(surface, *, card_prefix, duration_sec, score_tex
     if card is None:
         return None, GAME_H // 2
 
-    cr = card.get_rect(midtop=(GAME_W // 2, top_margin))
+    # Centered on screen -- same box size as the How To Play card (see each
+    # game's own _draw_instructions), so the two screens read as the same
+    # size/placement, just different content.
+    cr = card.get_rect(center=(GAME_W // 2, GAME_H // 2))
     surface.blit(card, cr)
 
     num_col = (255, 255, 255) if not is_dark_mode() else (20, 80, 150)

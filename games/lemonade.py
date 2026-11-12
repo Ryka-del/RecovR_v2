@@ -36,6 +36,7 @@ from audio import (play_error, play_completion,
                     start_music, stop_music, play_click)
 from constants import get_theme, is_dark_mode, GAME_W, GAME_H
 from games.game_header import draw_game_header, HEADER_BOTTOM
+from games.hud import draw_target_pill, TARGET_POS
 from games.round_complete import draw_round_complete_overlay
 
 # -- Difficulty configuration (per-difficulty, never a single hardcoded
@@ -308,6 +309,7 @@ class LemonadeGame(SessionModeMixin, FatigueMixin, BaseScreen):
             self.pause_vol = 0.4
 
         self._font_sm  = pygame.font.SysFont("monospace", 26)
+        self._font_target = pygame.font.SysFont("monospace", 54, bold=True)
         self._font_fb  = pygame.font.SysFont("monospace", 46, bold=True)
 
         self._init_fatigue()
@@ -674,7 +676,6 @@ class LemonadeGame(SessionModeMixin, FatigueMixin, BaseScreen):
     # ------------------------------------------------------------------ #
 
     def _draw_instructions(self, surface):
-        T = get_theme()
         ov = pygame.Surface((GAME_W, GAME_H), pygame.SRCALPHA)
         ov.fill((0, 0, 0, 210))
         surface.blit(ov, (0, 0))
@@ -684,20 +685,12 @@ class LemonadeGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # two screens read as stages of one interface.
         top_margin, bottom_reserved = int(GAME_H * 0.05), int(GAME_H * 0.17)
         card = _load_fit(card_name, int(GAME_W * 0.50), GAME_H - top_margin - bottom_reserved)
-        bottom_y = GAME_H // 2
         if card is not None:
-            cr = card.get_rect(midtop=(GAME_W // 2, top_margin))
+            cr = card.get_rect(center=(GAME_W // 2, GAME_H // 2))
             surface.blit(card, cr)
-            bottom_y = cr.bottom
-
-        # No "press any key" prompt -- the patient never starts the game
+        # Just the card, centered -- no extra text/descriptions. No "press
+        # any key" prompt either -- the patient never starts the game
         # themselves, only the therapist's own START control does.
-        f_info = pygame.font.SysFont("monospace", 22, bold=True)
-        sess_txt = (f"Lemons needed: {self.goal}" if self.session_mode == "target" else
-                    f"Duration: {int(self.timed_duration)}s — squeeze as many as you can")
-        info = f_info.render(f"{sess_txt}   ·   Difficulty: {self.difficulty}", True, T["WHITE"])
-        info_r = info.get_rect(centerx=GAME_W // 2, top=bottom_y + 14)
-        surface.blit(info, info_r)
 
     def _exit_to_game_config(self):
         import builtins
@@ -763,41 +756,6 @@ class LemonadeGame(SessionModeMixin, FatigueMixin, BaseScreen):
         surface.blit(ex_lbl, ex_lbl.get_rect(center=exit_r.center))
 
     # ------------------------------------------------------------------ #
-
-    def _draw_lemons_left(self, surface):
-        box_w, box_h = 230, 220
-        bx, by = 56, HEADER_BOTTOM + 36
-        img = _load_fit("left_lemons_bg.png", box_w, box_h)
-        r = pygame.Rect(bx, by, box_w, box_h)
-        if img is not None:
-            r = img.get_rect(topleft=(bx, by))
-            surface.blit(img, r)
-        else:
-            pygame.draw.rect(surface, (90, 195, 60), r, border_radius=20)
-
-        f_lbl = pygame.font.SysFont("arial", 30, bold=True)
-        f_val = pygame.font.SysFont("arial", 56, bold=True)
-        lbl1 = f_lbl.render("Lemons", True, (255, 255, 255))
-        lbl2 = f_lbl.render("left" if self.session_mode == "target" else "made", True, (255, 255, 255))
-        val  = f_val.render(f"{self.lemons_left:02d}", True, (255, 255, 255))
-
-        # Center the WHOLE label+number group as one block within the box's
-        # actual content rect, rather than anchoring the label from the top
-        # and the number from the bottom independently (which left uneven,
-        # resolution/font-size-dependent padding instead of true centering).
-        # Each line is still individually horizontally centered -- correct
-        # for stacked text of differing widths -- and recentres automatically
-        # as the digit count changes (e.g. "00" vs a two-digit value).
-        line_gap  = 4
-        group_gap = 10
-        group_h = (lbl1.get_height() + line_gap + lbl2.get_height()
-                   + group_gap + val.get_height())
-        gy = r.centery - group_h // 2
-        surface.blit(lbl1, lbl1.get_rect(centerx=r.centerx, top=gy))
-        gy += lbl1.get_height() + line_gap
-        surface.blit(lbl2, lbl2.get_rect(centerx=r.centerx, top=gy))
-        gy += lbl2.get_height() + group_gap
-        surface.blit(val, val.get_rect(centerx=r.centerx, top=gy))
 
     def _draw_juice_drip(self, surface, hand_pos, pitcher_rect):
         """A few small animated drops arcing from the squeezed lemon toward
@@ -995,26 +953,17 @@ class LemonadeGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # above and the hand below regardless of hold/squeeze sprite.
         self._draw_progress_indicator(surface, hand_x, int(GAME_H * 0.335), 80)
 
-        self._draw_lemons_left(surface)
-
         # -- shared header --
         draw_game_header(surface, "Lemonade", self.difficulty,
                           self._session_header_time(), self.score, GAME_W, GAME_H)
+
+        draw_target_pill(surface, self._session_progress_text("lemons"),
+                          TARGET_POS, T["ACCENT"], self._font_target)
 
         if self.feedback:
             msg = self._font_fb.render(self.feedback[0], True, self.feedback[1])
             surface.blit(msg, (GAME_W // 2 - msg.get_width() // 2, int(GAME_H * 0.30)))
 
-        hint = ("Squeeze and HOLD the lemon, then release to add it to the pitcher"
-                if self._phase != "ready" else
-                "Hold complete -- RELEASE to pour this lemon into the pitcher!")
-        hint_col = (255, 230, 120) if self._phase == "ready" else (235, 240, 248)
-        hint_s = self._font_sm.render(hint, True, hint_col)
-        hint_r = hint_s.get_rect(midleft=(80, GAME_H - 34))
-        bar = pygame.Surface((hint_r.width + 28, hint_r.height + 14), pygame.SRCALPHA)
-        pygame.draw.rect(bar, (10, 20, 15, 150), bar.get_rect(), border_radius=10)
-        surface.blit(bar, (hint_r.x - 14, hint_r.y - 7))
-        surface.blit(hint_s, hint_r)
 
         if self.paused:
             self._draw_pause(surface)

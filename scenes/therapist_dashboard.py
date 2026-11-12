@@ -134,7 +134,7 @@ SEX_OPTS      = ["Male", "Female"]
 HAND_OPTS     = ["Left", "Right"]
 
 SINGLE_SKILL_GAMES = [
-    ("Catch 'n Grab",            "Grip Strength"),
+    ("Toy Factory",              "Grip Strength"),
     ("Whack-a-Mole",       "Finger Flexion"),
     ("Key & Lock",               "Wrist Rotation"),
 ]
@@ -165,12 +165,15 @@ GAME_ICON_ASSET = {
     "Key and Lock":   "key_and_lock_icon.png",
     "Steady Aim":     "steady_aim_icon.png",
     "Feed the Cat":   "feed_the_cat_icon.png",
-    "Catch 'n Grab":  "catch_n_grab_icon.png",
     "Plant the Garden": "plant_the_garden_icon.png",
     # No dedicated icon asset exists yet for this game -- reuses the mole
     # hole art (already a small, roughly-square, game-representative image)
     # instead of leaving the Game Information card's icon chip blank.
     "Whack-a-Mole": "hole_whack_a_mole.png",
+    # Same reasoning -- no dedicated small icon asset exists for Toy
+    # Factory, so this reuses one of its own toy sprites instead of leaving
+    # the Game Information card's icon chip blank.
+    "Toy Factory": "bear_toy_factory.png",
 }
 
 # Metrics tab hierarchy -- Main category -> Subcategory -> [game names],
@@ -186,7 +189,7 @@ METRICS_TREE = [
         ("Wrist Rotation", ["Apple Catching", "Key and Lock", "Steady Aim"]),
     ]),
     ("Integrated", [
-        ("Dual Skill",  ["Catch 'n Grab", "Feed the Cat"]),
+        ("Dual Skill",  ["Toy Factory", "Feed the Cat"]),
         ("Multi Skill", ["Plant the Garden"]),
     ]),
 ]
@@ -206,7 +209,7 @@ SKILL_GAMES = {
     "Grip Strength":  ["Basketball", "Lemonade"],
     "Finger Flexion": ["Piano Tiles", "Whack-a-Mole"],
     "Wrist Rotation": ["Apple Catching", "Key and Lock", "Steady Aim"],
-    "Dual Skill":     ["Catch 'n Grab", "Feed the Cat"],
+    "Dual Skill":     ["Toy Factory", "Feed the Cat"],
     "Multi-skill":    ["Plant the Garden"],
 }
 
@@ -227,23 +230,34 @@ SENSOR_ORDER = ["Grip Strength", "Finger Flexion", "Wrist Rotation"]
 # Flex -> MPU6050), since CalibrationWindow walks this list in the order
 # given.
 #
-# Feed the Cat and Catch 'n Grab are "Dual Skill" in SKILL_GAMES/
-# GAME_SENSOR_SPEC (grip + wrist telemetry) but, before this entry existed,
-# were never actually calibrated for both: "Dual Skill" isn't a SENSOR_CFG
-# key, so CalibrationWindow silently fell back to a single Grip-Strength-only
-# pass and the MPU6050 pass never ran. Listing them here is a real-logic fix,
-# not a cosmetic one -- their gameplay wrist thresholds were previously left
-# at CalibrationWindow's unset defaults.
+# Feed the Cat is "Dual Skill" in SKILL_GAMES/GAME_SENSOR_SPEC (grip + wrist
+# telemetry) but, before this entry existed, was never actually calibrated
+# for both: "Dual Skill" isn't a SENSOR_CFG key, so CalibrationWindow
+# silently fell back to a single Grip-Strength-only pass and the MPU6050
+# pass never ran. Listing it here is a real-logic fix, not a cosmetic one --
+# its gameplay wrist threshold was previously left at CalibrationWindow's
+# unset default.
 MULTI_SENSOR_CALIBRATION = {
     "Plant the Garden": ["Grip Strength", "Finger Flexion", "Wrist Rotation"],
     "Feed the Cat":      ["Grip Strength", "Wrist Rotation"],
-    "Catch 'n Grab":     ["Grip Strength", "Wrist Rotation"],
-    # Whack-a-Mole's 5 fingers calibrate independently, one pass each
-    # (see scenes/calibration_window.py's _FINGER_FLEX_KEYS) -- NOT the
-    # single shared "Finger Flexion" pass Piano Tiles/Plant the Garden/
-    # Steady Aim use, so none of those games' calibration is affected.
+    # Whack-a-Mole's and Piano Tiles' 5 fingers each calibrate independently,
+    # one pass each (see scenes/calibration_window.py's _FINGER_FLEX_KEYS) --
+    # NOT the single shared "Finger Flexion" pass Plant the Garden/Steady Aim
+    # still use, so neither of those games' calibration is affected. Piano
+    # Tiles' own gameplay mapping of which calibrated finger governs which
+    # on-screen lane is still exactly lanes 0-4 = Thumb..Pinky in this same
+    # order (see games/piano_tiles.py's FINGER_NAMES-driven on_enter()) --
+    # ready to change if a different physical mapping is ever confirmed.
     "Whack-a-Mole": ["Thumb Flexion", "Index Flexion", "Middle Flexion",
                            "Ring Flexion", "Pinky Flexion"],
+    "Piano Tiles":  ["Thumb Flexion", "Index Flexion", "Middle Flexion",
+                           "Ring Flexion", "Pinky Flexion"],
+    # Toy Factory's two wrist axes calibrate independently (see
+    # scenes/calibration_window.py's SENSOR_CFG["Wrist Horizontal"/
+    # "Wrist Vertical"]) -- NOT the single shared "Wrist Rotation" pass Key
+    # & Lock/Apple Catching/Steady Aim use, since Toy Factory genuinely
+    # needs both axes measured, not just horizontal.
+    "Toy Factory": ["Grip Strength", "Wrist Horizontal", "Wrist Vertical"],
 }
 
 
@@ -275,6 +289,12 @@ _CAL_SENSOR_KEY = {
     "Middle Flexion": "flex",
     "Ring Flexion":   "flex",
     "Pinky Flexion":  "flex",
+    # Toy Factory's 2 wrist-axis passes reuse the same "wrist" patient-
+    # screen content "Wrist Rotation" already shows (the instruction is the
+    # same gesture -- move the wrist); the therapist-side title still shows
+    # which axis via SENSOR_CFG's own "sensor_name".
+    "Wrist Horizontal": "wrist",
+    "Wrist Vertical":   "wrist",
 }
 
 # Timed Mode's per-game, per-difficulty default session length (seconds) --
@@ -289,10 +309,10 @@ GAME_TIMED_DURATION_PRESETS = {
     "Apple Catching":    {"Easy": 60,  "Medium": 50,  "Hard": 40},
     "Key and Lock":      {"Easy": 60,  "Medium": 50,  "Hard": 40},
     "Steady Aim":        {"Easy": 90,  "Medium": 75,  "Hard": 60},
-    "Catch 'n Grab":     {"Easy": 60,  "Medium": 50,  "Hard": 40},
     "Feed the Cat":      {"Easy": 60,  "Medium": 50,  "Hard": 40},
     "Plant the Garden":  {"Easy": 120, "Medium": 100, "Hard": 80},
     "Whack-a-Mole": {"Easy": 45, "Medium": 40, "Hard": 35},
+    "Toy Factory":       {"Easy": 90,  "Medium": 75,  "Hard": 60},
 }
 # Timed Mode's therapist-facing default/step on the Session Settings screen
 # -- 7 minutes, adjusted 1 minute at a time (replaces the old per-game/
@@ -322,16 +342,26 @@ GAME_CATEGORY = {g: cat for cat, games in SKILL_GAMES.items() for g in games}
 GAME_SENSOR_SPEC = {
     "Basketball":               [("grip",   "Grip Strength",      "FSR402",      "pct")],
     "Lemonade":                 [("grip",   "Grip Strength",      "FSR402",      "pct")],
-    "Catch 'n Grab":             [("grip",   "Grip Strength",      "FSR402",      "pct"),
-                                  ("tilt_x", "Wrist Movement",     "MPU6050",     "pct_signed")],
+    # Genuine two-axis wrist movement (see games/toy_factory.py's
+    # _vertical_raw(), same pattern as Steady Aim's own tilt_y override) --
+    # NOT the single "Wrist Movement" row Feed the Cat/Catch 'n Grab used,
+    # since Toy Factory needs both axes shown separately.
+    "Toy Factory":               [("grip",   "Grip Strength",      "FSR402",      "pct"),
+                                  ("tilt_x", "Wrist Movement (H)", "MPU6050",     "pct_signed"),
+                                  ("tilt_y", "Wrist Movement (V)", "MPU6050",     "pct_signed")],
     "Feed the Cat":              [("grip",   "Grip Strength",      "FSR402",      "pct"),
                                   ("tilt_x", "Wrist Movement",     "MPU6050",     "pct_signed")],
-    "Piano Tiles":                [("tilt_y", "Finger Flexion",     "Flex Sensor", "flex")],
     # 5 independent finger channels (see generic_adapter.py's
     # _sensor_telemetry "finger_*" keys and sensors/input_handler.py's
-    # FINGER_NAMES) -- NOT the single shared tilt_y "Finger Flexion" row
-    # Piano Tiles uses above, since Whack-a-Mole needs each finger shown
-    # separately, not one combined reading.
+    # FINGER_NAMES) -- Piano Tiles and Whack-a-Mole both show each finger
+    # separately now, not one combined tilt_y "Finger Flexion" reading, so
+    # the therapist sees all 5 sensor inputs at the same time for either
+    # game, same as each other.
+    "Piano Tiles":          [("finger_thumb",  "Thumb",  "Flex Sensor", "flex"),
+                                    ("finger_index",  "Index",  "Flex Sensor", "flex"),
+                                    ("finger_middle", "Middle", "Flex Sensor", "flex"),
+                                    ("finger_ring",   "Ring",   "Flex Sensor", "flex"),
+                                    ("finger_pinky",  "Pinky",  "Flex Sensor", "flex")],
     "Whack-a-Mole":         [("finger_thumb",  "Thumb",  "Flex Sensor", "flex"),
                                     ("finger_index",  "Index",  "Flex Sensor", "flex"),
                                     ("finger_middle", "Middle", "Flex Sensor", "flex"),
@@ -2906,7 +2936,7 @@ class TherapistDashboardScene:
         "Steady Aim": "steady_aim",
         "Piano Tiles": "piano_tiles",
         "Apple Catching": "catchingapple",
-        "Catch 'n Grab": "catch_object",
+        "Toy Factory": "toy_factory",
         "Key and Lock": "key_lock",
         "Feed the Cat": "feed_the_cat",
         "Plant the Garden": "plant_the_garden",
