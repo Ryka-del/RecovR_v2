@@ -52,17 +52,29 @@ from audio import (play_success, play_click, play_completion, start_music, stop_
                     pause_music, resume_music, game_bgm_path)
 from constants import get_theme, is_dark_mode, GAME_W, GAME_H
 from games.game_header import draw_game_header, HEADER_BOTTOM
-from games.hud import draw_target_pill, TARGET_POS
+from games.hud import (draw_target_pill, TARGET_POS, draw_tutorial_badge, draw_feedback_banner,
+                        draw_controls_panel, controls_panel_rect)
+from games.tutorial_hints import TutorialHints, TutorialStep
 from games.round_complete import draw_round_complete_overlay
+from i18n import tr
 
 # ── difficulty-scaled parameters ────────────────────────────────────────────
 TOLERANCE  = {"Easy": 15, "Medium": 8, "Hard": 3}     # degrees -- how close to the target counts as aligned
-LOCK_GOAL  = {"Easy": 10, "Medium": 15, "Hard": 20}   # Target Mode: LOCKS (not turns) to open to complete
-DURATION   = {"Easy": 60, "Medium": 50, "Hard": 40}   # Timed Mode: session length in seconds
+LOCK_GOAL  = {"Easy": 80, "Medium": 120, "Hard": 160} # Target Mode: points to reach
+DURATION   = {"Easy": 300, "Medium": 420, "Hard": 600}  # Timed Mode: session length in seconds (5/7/10 min)
 HOLD_TIME_DEFAULT = 2.0   # seconds -- uniform per spec ("2 continuous seconds"), overridable via kl_hold_time
 NEUTRAL_TOLERANCE  = 6    # degrees -- how close to 0 counts as "back at neutral" between turns
 TEST_RAMP_RATE     = 0.5  # normalized units/second (-1..1 range) -- Keyboard Test Mode's
                            # LEFT/RIGHT ramp speed; reaches full deflection in ~2s of holding
+
+# Required Wrist Rotation -- a MINIMUM rotation-magnitude gate, separate
+# from TOLERANCE above (which is an angle-MATCHING precision window around
+# the rolled target, unaffected by this). The patient's current raw wrist
+# reading (abs(tilt_x), same domain SENSOR_CFG["Wrist Rotation"] calibrates
+# against) must reach this % of their own calibrated resting->peak range
+# before hold-time progress accumulates at all -- see on_enter()'s
+# self._wrist_rotation_min and update()'s "rotated_enough" check.
+WRIST_REQUIREMENT = {"Easy": 0.30, "Medium": 0.70, "Hard": 0.90}
 
 # Magnitude range (degrees) a turn's target angle is rolled from -- always
 # comfortably inside the +/-90 degree calibrated display range (see
@@ -70,14 +82,12 @@ TEST_RAMP_RATE     = 0.5  # normalized units/second (-1..1 range) -- Keyboard Te
 TARGET_ANGLE_RANGE = {"Easy": (15, 28), "Medium": (20, 34), "Hard": (26, 42)}
 MAX_DISPLAY_ANGLE  = 90.0   # the gauge's own +/-90 degree span; also the degrees-per-normalized-unit scale
 
-TURNS_REQUIRED = {
-    "Easy":   {"normal": 1, "legendary": 3},
-    "Medium": {"normal": 2, "legendary": 4},
-    "Hard":   {"normal": 3, "legendary": 5},
-}
+# Turns required per lock, by TYPE only -- no longer difficulty-scaled (the
+# patient's effort is now tuned via WRIST_REQUIREMENT/TOLERANCE instead).
+TURNS_REQUIRED = {"normal": 2, "legendary": 4}
 
-LEGENDARY_CHANCE = 0.20
-POINTS           = {"normal": 1, "legendary": 5}
+LEGENDARY_CHANCE = 0.15
+POINTS           = {"normal": 3, "legendary": 7}
 
 LEGENDARY_POPUP_DURATION = 1.8
 UNLOCK_ANIM_DURATION     = 1.3
@@ -96,8 +106,11 @@ LEGENDARY_PAIR = ("legend_lock_key_and_lock.png", "Purple")
 # color-coded gem, same pairing as the original key sprites.
 KEY_GOLD        = (235, 185, 55)
 KEY_GOLD_LIGHT  = (255, 225, 140)
-KEY_GOLD_DARK   = (62, 40, 8)   # darker + thicker outline -- see _draw_key
+KEY_GOLD_DARK   = (26, 16, 3)   # darker + thicker outline -- see _draw_key
 KEY_SHINE       = (255, 250, 225)  # small specular highlights -- "shines like the lock"
+KEY_SHADOW      = (16, 10, 3)   # blended into every fill as the key turns edge-on
+                                 # (see _edge_scale()/_draw_key) -- a real 3D object's
+                                 # turning face goes into shadow, it doesn't just narrow
 KEY_GEM_COLORS  = {
     "Pink":   (255, 45, 165),
     "Green":  (35, 235, 110),
@@ -105,13 +118,71 @@ KEY_GEM_COLORS  = {
     "Purple": (190, 80, 255),
 }
 
-LOCK_BOX = (320, 460)
+# A real door lock plate is a small fraction of the door's own size, not
+# nearly as wide as the door itself -- previous sizes (up to 320x460) read
+# as a giant fantasy padlock bolted on top of the door instead of a lock
+# the door actually has. Shrunk drastically down to roughly a normal
+# lock's proportion of the door, then nudged back up a little (keyhole
+# included, since it's a fraction of this same box) per feedback that it
+# had gone a bit too small.
+LOCK_BOX = (124, 180)
+
+# The archway opening in bg_key_and_lock.png, measured directly off the
+# real rendered 1920x1080 background: the stone frame's inner edges sit at
+# x=763..1155 (width 392), from the arch's apex at y=259 down to a ground
+# line that's a judgment call, since the scene recedes into the distance
+# rather than showing a hard floor. door_key_and_lock.png is fit inside
+# this box; its own aspect ratio is wider than the opening's, so fitting
+# it by width leaves it shorter than the opening's own height -- anchored
+# by midTOP to the arch's own apex (not midbottom) so any leftover height
+# shows up as extra floor space at the door's foot, never as a gap between
+# the door and the stone arch above it. Trimmed back down a little from an
+# earlier, slightly larger box that ran past the bottom of the stone frame.
+DOOR_BOX        = (400, 533)
+DOOR_ANCHOR_TOP = (GAME_W // 2, 259)
 
 LOCK_X = GAME_W // 2
-# Leaves room above for the turn-progress dots, and keeps the key (which
-# hangs down from the keyhole, roughly another ~290px) from reaching too
-# far into the lower gauge area.
-LOCK_Y = HEADER_BOTTOM + 95
+# The lock is centered on the DOOR itself now (see _spawn_round()'s
+# `self.lock_rect`), not pinned to a fixed screen y -- with the lock this
+# much smaller, "centered on the door" is what actually reads as "a lock
+# mounted on this door" rather than "a lock floating above it".
+
+# The key's own local geometry (see _draw_key) is a fixed set of absolute
+# pixel coordinates, scaled from the keyhole (local 0,0) by this factor --
+# entirely independent of LOCK_BOX, so shrinking the lock doesn't shrink
+# the key along with it. The tip itself always lands exactly on
+# self.keyhole_pos regardless of this value (see pt() in _draw_key), so a
+# bigger key never drifts off the keyhole, it only reaches further from
+# it. A uniform scale keeps every part's proportions/spacing consistent
+# with each other, so shrinking it further is what actually reads as
+# "compact" (a neatly smaller copy) rather than risking overlapping parts
+# that a length-only squeeze would cause. Pulled down from 0.8 per
+# feedback that the key looked messy/sprawling.
+KEY_SCALE = 0.62
+
+# _draw_key's rotation axis runs lengthwise through the key (tip to bow),
+# so the SHAFT is a cylindrical rod spinning about its OWN long axis --
+# like a screwdriver twirling in your hand, a cylinder's silhouette width
+# is its diameter from every angle around that axis, so it should barely
+# narrow at all. The BOW/teeth/gem-collar, though, are flat plates whose
+# own face sits roughly perpendicular to that axis -- a flat plate really
+# does foreshorten toward a sliver as it turns. Treating every part of the
+# key with one shared width factor (as before) made the whole key collapse
+# together into one thin, unrecognizable silhouette; splitting the two
+# fixes that; the moving highlight below (see the sheen-stripe in
+# _draw_key) is what actually sells "this rod is turning" without any
+# silhouette change at all, same as a real lit cylinder.
+KEY_SHAFT_EDGE_MIN_FRAC = 0.82
+KEY_BOW_EDGE_MIN_FRAC   = 0.42
+
+
+def _edge_scale(cs, min_frac):
+    """Replaces a bare cos(angle) everywhere _draw_key scales a width.
+    Keeps cos's own sign (so the key still mirrors correctly past +-90)
+    but maps its magnitude from [0, 1] to [min_frac, 1], so a part never
+    collapses all the way to an invisible line as the key turns."""
+    mag = min_frac + (1.0 - min_frac) * abs(cs)
+    return mag if cs >= 0 else -mag
 
 # Key rotation (see module docstring) -- the art's own tip-to-head axis
 # IS the longitudinal rotation axis, so no base re-orientation is needed.
@@ -202,8 +273,27 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # override, fall back to the normal per-difficulty preset.
         cal_params       = self.cal.get("params", {})
         self._session_init(data, LOCK_GOAL, DURATION, self.difficulty, cal_goal_key="kl_goal")
+        # Every session gets a minimum read time on the How-To-Play screen --
+        # a curious first tilt shouldn't be able to skip past the
+        # instructions before the patient has had any chance to read them
+        # (the patient's own sensor input can dismiss this screen even in
+        # the dual-monitor production flow -- see
+        # recovr/patient_app/games/generic_adapter.py's handle_event()).
+        self._instructions_min_t = 2.5
         self.tolerance   = cal_params.get("kl_tolerance", TOLERANCE[self.difficulty])
         self.hold_time   = cal_params.get("kl_hold_time", HOLD_TIME_DEFAULT)
+
+        # Required Wrist Rotation: a minimum raw-rotation gate, derived from
+        # THIS patient's own calibration trials (baseline = resting reading,
+        # average = their measured peak-effort reading -- the same pair
+        # CalibrationWindow's own generic threshold slider uses), not a flat
+        # per-difficulty raw number. Falls back to 0 (no gate) if this
+        # sensor was never actually calibrated (e.g. Test Mode bypass).
+        self.wrist_requirement_pct = cal_params.get("kl_wrist_requirement", WRIST_REQUIREMENT[self.difficulty])
+        _avg      = self.cal.get("average", 0.0)
+        _baseline = self.cal.get("baseline", 0.0)
+        _span     = max(0.0, _avg - _baseline)
+        self._wrist_rotation_min = _baseline + _span * self.wrist_requirement_pct
 
         self.game_over           = False
         self.game_over_score     = 0
@@ -223,11 +313,29 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
         self._bg_img = _load_image_cover("bg_key_and_lock.png", GAME_W, GAME_H)
         self._legendary_popup_img = _load_image_fit("legendary_key_and_lock.png", 760, 260)
+        self._door_img = _load_image_fit("door_key_and_lock.png", *DOOR_BOX)
+        self.door_rect = (self._door_img.get_rect(midtop=DOOR_ANCHOR_TOP)
+                           if self._door_img is not None else None)
 
         self._init_fatigue()
         self._reset()
         self._show_instructions = True
         self._pause_btn_rect    = pygame.Rect(GAME_W - 90, HEADER_BOTTOM + 14, 70, 46)
+
+        # Tutorial-only: sequential on-screen coaching during actual
+        # gameplay (see games/tutorial_hints.py), picking up once the
+        # How-To-Play card is dismissed.
+        self._tutorial_hints = TutorialHints([
+            TutorialStep(lambda g: tr("keylock.tut.1", g.language),
+                         anchor=lambda g: (g.lock_rect.centerx, g.lock_rect.centery),
+                         done=lambda g, t: g.hold_timer > 0),
+            TutorialStep(lambda g: tr("keylock.tut.2", g.language),
+                         anchor=lambda g: (g.lock_rect.centerx, g.lock_rect.centery),
+                         done=lambda g, t: g.score >= 1),
+            TutorialStep(lambda g: (tr("keylock.tut.3.target", g.language, goal=g.goal)
+                                     if g.session_mode == "target" else
+                                     tr("keylock.tut.3.timed", g.language))),
+        ]) if self.tutorial else None
 
     def _reset(self):
         self._init_fatigue()
@@ -273,13 +381,14 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self.color_name  = color
         self._lock_img = _load_image_fit(lock_name, *LOCK_BOX)
         kf = _keyhole_center_frac(lock_name)
-        lock_rect = self._lock_img.get_rect(midtop=(LOCK_X, LOCK_Y)) if self._lock_img is not None \
+        lock_center = self.door_rect.center if self.door_rect is not None else (LOCK_X, HEADER_BOTTOM + 150)
+        lock_rect = self._lock_img.get_rect(center=lock_center) if self._lock_img is not None \
             else pygame.Rect(0, 0, *LOCK_BOX)
         self.keyhole_pos = (lock_rect.left + kf[0] * lock_rect.width,
                              lock_rect.top + kf[1] * lock_rect.height)
         self.lock_rect = lock_rect
 
-        self.turns_required = TURNS_REQUIRED[self.difficulty][self.lock_type]
+        self.turns_required = TURNS_REQUIRED[self.lock_type]
         self.turns_done = 0
         self._last_sign = 0
         self._need_neutral = False
@@ -328,7 +437,7 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
     def handle_event(self, event):
         if self._show_instructions:
-            if (event.type == pygame.KEYDOWN or
+            if self._instructions_min_t <= 0 and (event.type == pygame.KEYDOWN or
                     (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1) or
                     input_handler.was_pressed(event, "action")):
                 self._show_instructions = False
@@ -405,16 +514,15 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
     # ── update ───────────────────────────────────────────────────────────
 
     def update(self, dt):
-        if self._show_instructions or self.game_over:
+        if self._show_instructions:
+            self._instructions_min_t = max(0.0, self._instructions_min_t - dt)
+            return
+        if self.game_over:
             return
 
         self._state = input_handler.get_state()
         self._update_fatigue(dt, self._state)
         if self.fatigue_paused or self.paused: return
-
-        if self._session_tick(dt):
-            self._end_game("completed")
-            return
 
         raw_tilt_x = self._state["tilt_x"] if input_handler.connected else self._test_mode_tilt_x(dt)
         tx = self._normalize_tilt(raw_tilt_x)
@@ -430,12 +538,18 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
         elif self.phase == "playing":
             dist    = abs(self.current_angle - self.target_angle)
             aligned = dist <= self.tolerance
+            # Required Wrist Rotation: the patient must actually rotate the
+            # wrist by at least this much (raw magnitude, independent of
+            # which way "aligned" is measured) before hold-time progress
+            # counts at all -- composes with the existing angle/tolerance
+            # check rather than replacing it.
+            rotated_enough = abs(raw_tilt_x) >= self._wrist_rotation_min
 
             if self._need_neutral:
                 self.hold_timer = 0.0
                 if abs(self.current_angle) <= NEUTRAL_TOLERANCE:
                     self._need_neutral = False
-            elif aligned:
+            elif aligned and rotated_enough:
                 self.hold_timer += dt
                 if self.hold_timer >= self.hold_time:
                     self._complete_turn()
@@ -450,6 +564,18 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
         if self.feedback:
             self.feedback = (self.feedback[0], self.feedback[1], self.feedback[2] - dt)
             if self.feedback[2] <= 0: self.feedback = None
+
+        if self._tutorial_hints:
+            self._tutorial_hints.update(self, dt)
+
+        # Checked LAST, after this frame's own hold/turn logic has already
+        # run -- Timed Mode's duration expiring on the exact same frame as
+        # a completed turn must never preempt it (the old position, before
+        # that logic, could do exactly that and silently drop the final
+        # point). time_left is floored at 0 by _session_tick() itself, so
+        # this still ends the session on every subsequent frame.
+        if self._session_tick(dt):
+            self._end_game("completed")
 
     def _complete_turn(self):
         self.turns_done += 1
@@ -489,6 +615,8 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self.manager.go_to("therapist_dashboard")
 
     def _save_session(self, status):
+        if not self._session_should_save():
+            return
         try:
             from database import Database
             db = Database()
@@ -524,6 +652,8 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
         else:
             surface.fill(T["BG"])
 
+        self._draw_door(surface)
+
         if self._show_instructions:
             self._draw_instructions(surface)
             return
@@ -546,6 +676,8 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
         draw_game_header(surface, "Key and Lock", self.difficulty,
                           self._session_header_time(), self.score, GAME_W, GAME_H)
+        if self.tutorial:
+            draw_tutorial_badge(surface)
 
         prog_bg = draw_target_pill(surface, self._session_progress_text("locks"),
                                     TARGET_POS, T["ACCENT"], self._font_target)
@@ -567,14 +699,71 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
         pygame.draw.rect(surface, pb_col, (bx2, by2, bw2, bh2), border_radius=2)
 
         if self.feedback:
-            msg = self._font_fb.render(self.feedback[0], True, self.feedback[1])
-            surface.blit(msg, msg.get_rect(center=(self.lock_rect.centerx, self.lock_rect.top - 40)))
+            draw_feedback_banner(surface, self.feedback, self._font_fb,
+                                  (self.lock_rect.centerx, self.lock_rect.top - 40))
+
+        if self._tutorial_hints:
+            self._tutorial_hints.draw(surface, self)
 
         if self.paused: self._draw_pause(surface)
         self._draw_fatigue_overlay(surface)
 
         if self.game_over:
             self._draw_results(surface)
+
+    def _draw_door(self, surface):
+        """The archway's own door, sitting in the background behind the
+        lock -- closed the whole "playing" phase, then swings open on the
+        SAME timer the lock itself splits open on (self.unlock_t /
+        UNLOCK_ANIM_DURATION, see _complete_turn()/_draw_lock()), so the
+        lock opening and the door opening read as one single event instead
+        of two unrelated animations. Reverts to fully closed the instant
+        the next round's fresh lock spawns (phase leaves "unlocking") --
+        same "no separate closing animation" simplicity _draw_lock already
+        uses for the lock itself.
+
+        Each leaf is pinned at its own OUTER edge (its real hinge, per the
+        art) and its rendered WIDTH shrinks toward that edge as the lock
+        unlocks -- the classic 2D "swinging away from camera" illusion,
+        done with a plain horizontal scale rather than a true 3D rotation."""
+        if self._door_img is None or self.door_rect is None:
+            return
+
+        frac = 0.0
+        if self.phase == "unlocking":
+            frac = 1.0 - max(0.0, min(1.0, self.unlock_t / UNLOCK_ANIM_DURATION))
+
+        dr = self.door_rect
+        if frac <= 0.0:
+            surface.blit(self._door_img, dr)
+            return
+
+        w, h = self._door_img.get_size()
+        half_w = w // 2
+        left_leaf  = self._door_img.subsurface((0, 0, half_w, h))
+        right_leaf = self._door_img.subsurface((half_w, 0, w - half_w, h))
+
+        min_scale = 0.12
+        scale = 1.0 - frac * (1.0 - min_scale)
+        shade = 255 - int(90 * frac)   # a touch darker as it turns edge-on
+
+        def swung(leaf_img):
+            lw, lh = leaf_img.get_size()
+            new_w = max(1, int(round(lw * scale)))
+            scaled = pygame.transform.smoothscale(leaf_img, (new_w, lh))
+            if shade < 255:
+                tint = pygame.Surface(scaled.get_size(), pygame.SRCALPHA)
+                tint.fill((shade, shade, shade, 255))
+                scaled.blit(tint, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+            return scaled
+
+        left_scaled  = swung(left_leaf)
+        right_scaled = swung(right_leaf)
+        # Left leaf's hinge is its LEFT edge -- pin that, let its width
+        # shrink inward from the (now receding) center seam.
+        surface.blit(left_scaled, left_scaled.get_rect(topleft=(dr.left, dr.top)))
+        # Right leaf's hinge is its RIGHT edge -- mirror of the above.
+        surface.blit(right_scaled, right_scaled.get_rect(topright=(dr.right, dr.top)))
 
     def _draw_lock(self, surface):
         if self._lock_img is None:
@@ -626,67 +815,105 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
     # geometry, so it reads as real metal turning in place.
     def _draw_key(self, surface):
         cs = math.cos(math.radians(self.current_angle))
+        sn = math.sin(math.radians(self.current_angle))
+        # Two different width factors, not one shared cos(angle) -- see the
+        # KEY_SHAFT_EDGE_MIN_FRAC / KEY_BOW_EDGE_MIN_FRAC comment above.
+        # shaft_es barely narrows at all (a cylinder spinning on its own
+        # axis keeps its silhouette); bow_es foreshortens much further (a
+        # flat plate turning really does thin toward a sliver).
+        shaft_es = _edge_scale(cs, KEY_SHAFT_EDGE_MIN_FRAC)
+        bow_es   = _edge_scale(cs, KEY_BOW_EDGE_MIN_FRAC)
+        # 0 face-on (full color) -> 1 edge-on (blended toward KEY_SHADOW) --
+        # a real rotating object's turning face goes into shadow, which
+        # also helps sell that it's turning rather than just narrowing.
+        shade_mix = 1.0 - abs(cs)
         kx, ky = self.keyhole_pos
 
-        def pt(x, y):
-            return (kx + x * cs, ky + y)
+        def shaded(color):
+            if shade_mix <= 0:
+                return color
+            k = shade_mix * 0.7
+            return tuple(int(c + (d - c) * k) for c, d in zip(color, KEY_SHADOW))
 
-        def poly(points, fill, outline=None, owidth=6):
-            p = [pt(x, y) for x, y in points]
-            pygame.draw.polygon(surface, fill, p)
+        def pt(x, y, s):
+            return (kx + x * s * KEY_SCALE, ky + y * KEY_SCALE)
+
+        def poly(points, fill, outline=None, owidth=6, s=bow_es):
+            p = [pt(x, y, s) for x, y in points]
+            pygame.draw.polygon(surface, shaded(fill), p)
             if outline:
-                pygame.draw.polygon(surface, outline, p, owidth)
+                pygame.draw.polygon(surface, outline, p, max(1, round(owidth * KEY_SCALE)))
 
-        def circle(cx_, cy_, r, fill=None, owidth=0, ring=0):
-            w = max(2, int(round(2 * r * abs(cs))))
+        def circle(cx_, cy_, r, fill=None, owidth=0, ring=0, s=bow_es):
+            r = r * KEY_SCALE
+            w = max(2, int(round(2 * r * abs(s))))
             h = int(round(2 * r))
             rect = pygame.Rect(0, 0, w, h)
-            rect.center = pt(cx_, cy_)
+            rect.center = pt(cx_, cy_, s)
+            fill = shaded(fill) if fill else fill
             if ring:
+                ring = max(1, round(ring * KEY_SCALE))
                 pygame.draw.ellipse(surface, fill, rect, ring)
                 # Outline both edges of the ring (not just the flat fill) so
                 # it reads as a distinct outlined band, not a soft blob.
-                pygame.draw.ellipse(surface, KEY_GOLD_DARK, rect, 5)
+                pygame.draw.ellipse(surface, KEY_GOLD_DARK, rect, max(1, round(5 * KEY_SCALE)))
                 inner = rect.inflate(-2 * ring, -2 * ring)
                 if inner.width > 2 and inner.height > 2:
-                    pygame.draw.ellipse(surface, KEY_GOLD_DARK, inner, 5)
+                    pygame.draw.ellipse(surface, KEY_GOLD_DARK, inner, max(1, round(5 * KEY_SCALE)))
             else:
                 pygame.draw.ellipse(surface, fill, rect)
                 if owidth:
-                    pygame.draw.ellipse(surface, KEY_GOLD_DARK, rect, owidth)
+                    pygame.draw.ellipse(surface, KEY_GOLD_DARK, rect, max(1, round(owidth * KEY_SCALE)))
 
-        def shine(cx_, cy_, w_, h_, ang_deg=-35):
+        def shine(cx_, cy_, w_, h_, ang_deg=-35, s=bow_es):
             # A small bright specular streak -- a thin rotated ellipse --
             # the same "glossy highlight" trick the lock's own art already
             # uses, so the procedural key reads as shiny metal too, not
-            # flat paint. Width compresses with the key's own foreshortening
-            # (abs(cs)) like every other shape here.
-            w_ = max(2, int(round(w_ * abs(cs))))
+            # flat paint. Width compresses with the same factor its own
+            # shape uses, and fades out as the key turns edge-on, since a
+            # shadowed edge shouldn't still be catching a bright highlight.
+            if shade_mix >= 0.97:
+                return
+            w_ = max(2, int(round(w_ * KEY_SCALE * abs(s))))
+            h_ = max(2, int(round(h_ * KEY_SCALE)))
             surf = pygame.Surface((w_, h_), pygame.SRCALPHA)
-            pygame.draw.ellipse(surf, (*KEY_SHINE, 235), surf.get_rect())
+            alpha = int(235 * (1.0 - shade_mix))
+            pygame.draw.ellipse(surf, (*KEY_SHINE, alpha), surf.get_rect())
             surf = pygame.transform.rotate(surf, ang_deg)
-            r = surf.get_rect(center=pt(cx_, cy_))
+            r = surf.get_rect(center=pt(cx_, cy_, s))
             surface.blit(surf, r)
 
         gem = KEY_GEM_COLORS.get(self.color_name, KEY_GOLD_LIGHT)
 
         if self.lock_type == "legendary":
             for r, a in ((95, 35), (72, 55), (50, 80)):
-                w = max(2, int(round(2 * r * abs(cs))))
+                r = r * KEY_SCALE
+                w = max(2, int(round(2 * r * abs(bow_es))))
                 h = int(round(2 * r))
                 glow = pygame.Surface((w, h), pygame.SRCALPHA)
                 pygame.draw.ellipse(glow, (*gem, a), glow.get_rect())
-                surface.blit(glow, glow.get_rect(center=pt(0, 150)))
+                surface.blit(glow, glow.get_rect(center=pt(0, 150, bow_es)))
 
         SHAFT_W = 15
-        # shaft + rounded tip cap
+        # shaft + rounded tip cap -- the cylindrical rod (see module note
+        # above), drawn with shaft_es so it stays essentially full-width at
+        # every angle instead of collapsing with the rest of the key.
         poly([(-SHAFT_W, 0), (SHAFT_W, 0), (SHAFT_W, 150), (-SHAFT_W, 150)],
-             KEY_GOLD, KEY_GOLD_DARK)
-        poly([(-4, 0), (2, 0), (2, 150), (-4, 150)], KEY_GOLD_LIGHT)   # sheen stripe
-        circle(0, 10, 16, KEY_GOLD, owidth=6)
-        shine(-5, 3, 10, 16)
+             KEY_GOLD, KEY_GOLD_DARK, s=shaft_es)
+        # Sheen stripe -- NOT fixed to the shaft's own left side anymore.
+        # It slides across the shaft's width with sin(angle), the same way
+        # a specular highlight visibly slides around a real cylinder as it
+        # spins -- this, not the silhouette, is what actually reads as "the
+        # rod is turning" at angles where the width itself barely changes.
+        sheen_shift = sn * (SHAFT_W - 3)
+        poly([(sheen_shift - 3, 0), (sheen_shift + 3, 0),
+              (sheen_shift + 3, 150), (sheen_shift - 3, 150)],
+             KEY_GOLD_LIGHT, s=shaft_es)
+        circle(0, 10, 16, KEY_GOLD, owidth=6, s=shaft_es)
+        shine(-5, 3, 10, 16, s=shaft_es)
 
-        # single flag-like tooth/bit, sticking left off the shaft
+        # single flag-like tooth/bit, sticking left off the shaft -- a flat
+        # flag, not part of the cylindrical rod, so it uses bow_es (default).
         poly([(-SHAFT_W, 48), (-33, 48), (-33, 66), (-SHAFT_W, 66)], KEY_GOLD, KEY_GOLD_DARK)
         poly([(-SHAFT_W, 70), (-26, 70), (-26, 85), (-SHAFT_W, 85)], KEY_GOLD, KEY_GOLD_DARK)
 
@@ -882,15 +1109,22 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # ratio. Same outer card box (position + max size) as _draw_results'
         # Round Complete card -- the two screens read as stages of one
         # interface rather than two differently-proportioned popups.
-        card_name = f"key_and_lock_how_to_play_{'dark' if is_dark_mode() else 'light'}.png"
+        card_name = (f"key_and_lock_how_to_play_{'dark' if is_dark_mode() else 'light'}"
+                     f"{'_fil' if self.language == 'fil' else ''}.png")
         top_margin, bottom_reserved = int(GAME_H * 0.05), int(GAME_H * 0.17)
         card = _load_image_fit(card_name, int(GAME_W * 0.50), GAME_H - top_margin - bottom_reserved)
         if card is not None:
             cr = card.get_rect(center=(GAME_W // 2, GAME_H // 2))
             surface.blit(card, cr)
-        # Just the card, centered -- no extra text/descriptions. No "press
-        # any key" prompt either -- the patient never starts the game
+        # Code-drawn "Controls" supplement in the card's own side margin --
+        # spells out the same loop the card already shows, in plain text.
+        # No "press any key" prompt -- the patient never starts the game
         # themselves, only the therapist's own START control does.
+        lang = self.language
+        draw_controls_panel(surface, controls_panel_rect(top_margin, bottom_reserved), [
+            (tr("keylock.ctrl.tilt.action", lang), tr("keylock.ctrl.tilt.desc", lang)),
+            (tr("keylock.ctrl.hold.action", lang), tr("keylock.ctrl.hold.desc", lang)),
+        ])
 
     def _draw_results(self, surface):
         T = get_theme()

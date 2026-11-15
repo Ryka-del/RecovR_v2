@@ -49,13 +49,13 @@ class GameSpec:
 # modified by the wrapping itself.
 _REAL_GAMES = {
     "Basketball":               ("games.basketball",    "BasketballGame"),
-    "Piano Tiles":              ("games.piano_tiles",   "PianoTilesGame"),
+    "Tile Rush":              ("games.piano_tiles",   "PianoTilesGame"),
     "Apple Catching":           ("games.catchingapple", "AppleCatchingGame"),
     "Key and Lock":             ("games.key_lock",      "KeyLockGame"),
     "Steady Aim":               ("games.steady_aim",    "SteadyAimGame"),
     "Lemonade":                 ("games.lemonade",      "LemonadeGame"),
-    "Feed the Cat":             ("games.feed_the_cat",  "FeedTheCatGame"),
-    "Plant the Garden":         ("games.plant_the_garden", "PlantTheGardenGame"),
+    "Purrfect Feast":             ("games.feed_the_cat",  "FeedTheCatGame"),
+    "Garden Wonders":         ("games.plant_the_garden", "PlantTheGardenGame"),
     "Whack-a-Mole":       ("games.whack_mole",    "WhackMoleGame"),
     "Toy Factory":              ("games.toy_factory",   "ToyFactoryGame"),
 }

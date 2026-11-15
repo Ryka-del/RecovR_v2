@@ -1,5 +1,5 @@
 """
-Feed the Cat — Dual Skill (Wrist Movement + Grip Strength) game (1920x1080)
+Purrfect Feast — Dual Skill (Wrist Movement + Grip Strength) game (1920x1080)
 
 Mechanic:
   - Tilt wrist LEFT/RIGHT to move the hand.
@@ -7,10 +7,13 @@ Mechanic:
     resting bowl to grab it. The hand and bowl then move together.
   - Carry the empty bowl to the food, keep squeezing, and the bowl fills --
     no release needed to collect food.
-  - Carry the filled bowl to the cat, keep squeezing, to feed it and score.
-  - If grip drops below the threshold while carrying, the bowl returns to
-    its resting spot in whatever state it was in (still empty, or still
-    filled) and the hand must grab it again.
+  - Carry the filled bowl to the cat, then RELEASE the grip while over the
+    cat to actually feed it and score -- the food is not dispensed while
+    still squeezing, only on that deliberate release.
+  - If grip is released anywhere else while carrying (not over the cat with
+    a filled bowl), the bowl is simply dropped: it returns to its resting
+    spot in whatever state it was in (still empty, or still filled) and the
+    hand must grab it again.
 """
 
 import os
@@ -24,8 +27,11 @@ from audio import (start_music, stop_music, pause_music, resume_music,
                     game_bgm_path, play_completion, play_click, play_success)
 from constants import get_theme, is_dark_mode, GAME_W, GAME_H
 from games.game_header import draw_game_header, HEADER_BOTTOM
-from games.hud import draw_target_pill, TARGET_POS
+from games.hud import (draw_target_pill, TARGET_POS, draw_tutorial_badge, draw_feedback_banner,
+                        draw_controls_panel, controls_panel_rect)
+from games.tutorial_hints import TutorialHints, TutorialStep
 from games.round_complete import draw_round_complete_overlay
+from i18n import tr
 
 # ── difficulty-scaled parameters ────────────────────────────────────────────
 # All four are real, independently read values (not cosmetic labels) --
@@ -33,20 +39,70 @@ from games.round_complete import draw_round_complete_overlay
 # positioning tolerance per the calibration screen's GAME_PARAM_SCHEMA
 # ("ftc_*" keys in scenes/calibration_window.py); travel distance is
 # difficulty-only, matching the spec's Advanced Settings list exactly.
-GRIP_THRESHOLD = {"Easy": 0.30, "Medium": 0.45, "Hard": 0.60}   # calibrated grip (0-1) to grab/hold
+GRIP_THRESHOLD = {"Easy": 0.30, "Medium": 0.70, "Hard": 0.90}   # calibrated grip (0-1) to grab/hold
 MOVE_DEADZONE  = {"Easy": 0.05, "Medium": 0.08, "Hard": 0.12}   # wrist tilt magnitude before the hand moves
-ZONE_TOLERANCE = {"Easy": 150,  "Medium": 110,  "Hard": 75}     # px radius of the bowl/food/cat interaction zones
+# px radius of the bowl/food/cat interaction zones. Raised from the previous
+# 150/110/75 -- measured against the actual sprites (empty_bowl/food/cat_
+# hungry at their real rendered sizes: ~300x207, ~230x356, ~400x466), the old
+# radii were well under half those sprites' own on-screen size, so a hand
+# clearly hovering over the bowl/cat could still read as "out of range".
+# Still keeps the same relative Easy>Medium>Hard shape as before.
+ZONE_TOLERANCE = {"Easy": 180,  "Medium": 135,  "Hard": 95}
 TRAVEL_SCALE   = {"Easy": 0.75, "Medium": 1.0,  "Hard": 1.3}    # food/cat distance from the bowl, relative to base
 MOVE_SPEED     = {"Easy": 700,  "Medium": 850,  "Hard": 1000}   # hand px/s per unit tilt
-GOAL           = {"Easy": 5,    "Medium": 7,    "Hard": 10}     # Target Mode: cats to feed to complete
-DURATION       = {"Easy": 60,   "Medium": 50,   "Hard": 40}     # Timed Mode: session length in seconds
+GOAL           = {"Easy": 50,   "Medium": 75,   "Hard": 100}    # Target Mode: points
+DURATION       = {"Easy": 300,  "Medium": 420,  "Hard": 600}    # Timed Mode: session length (s) -- 5/7/10 min
+
+# Cosmetic-only Advanced Settings display value ("Required Finger Flexion")
+# -- the real grab/hold/release gate stays grip-only (unchanged below); this
+# exists so the setting is visible/editable in Advanced Settings without
+# changing real gameplay behavior.
+FLEX_THRESHOLD_DISPLAY = {"Easy": 0.30, "Medium": 0.70, "Hard": 0.90}
+
+# Affected-Hand Adaptation (see games/session_mode.py's self.affected_hand) --
+# this game's unflipped art/layout depicts a LEFT hand. When the patient's
+# affected hand is the opposite one, on_enter() mirrors: the hand/grab
+# sprites, BOWL_CARRY_X_FRAC, the food_x/cat_x placement (spec: "Switch the
+# placement of the food and the cat"), and every asymmetric tolerance pair
+# below -- by swapping which scale each named self.* tolerance attribute
+# gets, not by mirroring a coordinate (see on_enter's tolerance block).
+DEFAULT_HAND = "left"
 
 # The resting bowl's own grab zone is more forgiving than the shared
 # food/cat zone_tolerance -- patients with limited wrist/grip control don't
-# need to land on it precisely to pick it up. 25% extra margin, comfortably
-# inside the food/cat travel distance at every difficulty (see
-# HAND_MOVE_RANGE below) so it can never reach into those zones.
-BOWL_GRAB_TOLERANCE_SCALE = 1.25
+# need to land on it precisely to pick it up. Comfortably inside the food/
+# cat travel distance at every difficulty (see HAND_MOVE_RANGE below) so it
+# can never reach into those zones. Asymmetric per the reference "grabbing"
+# photo (fingers already making contact while the hand is still left of the
+# bowl's own centre): generous on the hand's LEFT approach, tighter on the
+# right, where there is nothing to reach for -- pushed further in both
+# directions per spec (the hand must move further left to grab it).
+BOWL_GRAB_TOLERANCE_LEFT_SCALE  = 1.5
+BOWL_GRAB_TOLERANCE_RIGHT_SCALE = 0.5
+# Same asymmetric idea for the cat specifically: a little extra allowance on
+# its FRONT (the side the bowl actually approaches from -- the left, coming
+# back through the bowl's own resting spot), not its rear, which widening
+# symmetrically would otherwise extend uselessly past the cat into empty
+# space.
+CAT_FRONT_TOLERANCE_SCALE = 1.25
+CAT_REAR_TOLERANCE_SCALE  = 0.8
+# The food's own zone is asymmetric too, the opposite way round from the
+# cat's: its FRONT -- the side the empty bowl actually approaches from,
+# i.e. the RIGHT (coming from the bowl's resting spot toward food_x, which
+# sits to the LEFT of it) -- gets the reduced allowance, specifically so the
+# hand has to keep moving further left, past where it used to register,
+# before the bowl fills. The LEFT side (beyond food_x, where there's
+# nothing left to reach for) stays generous, matching the cat/bowl pattern.
+FOOD_LEFT_TOLERANCE_SCALE  = 1.3
+FOOD_RIGHT_TOLERANCE_SCALE = 0.4
+# The bowl's own visual centre within the combined grab_*_bowl sprite --
+# grid-overlay measured (color-isolated the blue bowl from the hand/arm):
+# ~68% across the sprite's own width, NOT the sprite's geometric centre
+# (where hand_x itself anchors). Comparing raw hand_x to food_x/cat_x put
+# the real trigger point noticeably right of where the bowl visually was
+# ("hitbox too far right from the sprite's actual position") -- see
+# _carried_bowl_x(), which this is used to compute.
+BOWL_CARRY_X_FRAC = 0.68
 
 FEED_FLASH_DURATION = 1.1   # seconds the cat_food sprite stays up after a feed
 FEEDBACK_DURATION   = 1.0
@@ -76,11 +132,31 @@ CAT_BOTTOM_Y  = int(GAME_H * 0.90)
 # per spec, instead of showing a hard horizontal edge.
 HAND_BOTTOM_Y = GAME_H + 150
 
-TRAVEL_BASE     = GAME_W * 0.28   # base food/cat distance from the bowl before TRAVEL_SCALE
+TRAVEL_BASE     = GAME_W * 0.30   # base food/cat distance from the bowl before TRAVEL_SCALE -- raised
+                                   # from 0.28 so the food and cat sit farther apart, keeping their
+                                   # (now larger) interaction zones comfortably clear of each other
+                                   # and of the bowl's own resting spot.
+# Extra push outward on top of TRAVEL_BASE -- the food moves further left of
+# the bowl and the cat further right, per spec, independent of (and in
+# addition to) the _carried_bowl_x() hitbox-accuracy fix below.
+EXTRA_SPREAD_PX = 60
+# How far right of hand_x (the combined grab sprite's own geometric centre)
+# the bowl itself actually sits -- see BOWL_CARRY_X_FRAC. GRABBOWL_BOX's
+# width is the binding (width-constrained) dimension for this art, so the
+# rendered sprite is always exactly this wide regardless of instance state,
+# making this safe to compute here rather than from a loaded image.
+BOWL_CARRY_OFFSET_PX = GRABBOWL_BOX[0] * (BOWL_CARRY_X_FRAC - 0.5)
 # Must comfortably reach the food/cat zone at every difficulty -- sized off
-# the actual TRAVEL_SCALE/ZONE_TOLERANCE values rather than a guessed
-# constant, so it can never fall short of what Hard difficulty requires.
-HAND_MOVE_RANGE = TRAVEL_BASE * max(TRAVEL_SCALE.values()) + max(ZONE_TOLERANCE.values()) + 60
+# the actual TRAVEL_SCALE/EXTRA_SPREAD_PX/BOWL_CARRY_OFFSET_PX values
+# rather than a guessed constant, so it can never fall short of what Hard
+# difficulty requires: the hand has to travel the full outward push PLUS
+# the bowl's own rightward carry offset to make the bowl (not just hand_x)
+# actually reach food_x. ZONE_TOLERANCE never makes this NEED more reach
+# (reaching the exact target already succeeds; extra tolerance only ever
+# makes success easier, not farther away), so it is deliberately left out
+# of this sum -- including it nearly pushed the hand's clamp off-screen.
+HAND_MOVE_RANGE = (TRAVEL_BASE * max(TRAVEL_SCALE.values())
+                    + EXTRA_SPREAD_PX + BOWL_CARRY_OFFSET_PX + 30)
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _img_cache = {}
@@ -178,18 +254,64 @@ class FeedTheCatGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self.grip_threshold = cal_params.get("ftc_grip_threshold", GRIP_THRESHOLD[self.difficulty])
         self.move_deadzone  = cal_params.get("ftc_move_deadzone", MOVE_DEADZONE[self.difficulty])
         self.zone_tolerance = cal_params.get("ftc_zone_tolerance", ZONE_TOLERANCE[self.difficulty])
-        self.bowl_grab_tolerance = self.zone_tolerance * BOWL_GRAB_TOLERANCE_SCALE
         self.move_speed     = MOVE_SPEED[self.difficulty]
+        # Cosmetic-only -- exposed in Advanced Settings as "Required Finger
+        # Flexion" but never read by the real grab/hold/release gate (grip
+        # alone stays the sole gate).
+        self.flex_threshold_display = cal_params.get(
+            "ftc_flex_threshold", FLEX_THRESHOLD_DISPLAY[self.difficulty])
         self._session_init(data, GOAL, DURATION, self.difficulty, cal_goal_key="ftc_target_cats")
+        self.hand_flipped = bool(self.affected_hand) and self.affected_hand != DEFAULT_HAND
+
+        # Each pair's two named scales swap which self.* attribute they land
+        # in when flipped, rather than mirroring a coordinate -- every call
+        # site below (_near_asym's tol_left/tol_right args) stays untouched;
+        # only which physical scale backs "left"/"right" changes.
+        if self.hand_flipped:
+            self.bowl_grab_tolerance_left  = self.zone_tolerance * BOWL_GRAB_TOLERANCE_RIGHT_SCALE
+            self.bowl_grab_tolerance_right = self.zone_tolerance * BOWL_GRAB_TOLERANCE_LEFT_SCALE
+            self.cat_front_tolerance = self.zone_tolerance * CAT_REAR_TOLERANCE_SCALE
+            self.cat_rear_tolerance  = self.zone_tolerance * CAT_FRONT_TOLERANCE_SCALE
+            self.food_left_tolerance  = self.zone_tolerance * FOOD_RIGHT_TOLERANCE_SCALE
+            self.food_right_tolerance = self.zone_tolerance * FOOD_LEFT_TOLERANCE_SCALE
+            bowl_carry_x_frac = 1.0 - BOWL_CARRY_X_FRAC
+        else:
+            self.bowl_grab_tolerance_left  = self.zone_tolerance * BOWL_GRAB_TOLERANCE_LEFT_SCALE
+            self.bowl_grab_tolerance_right = self.zone_tolerance * BOWL_GRAB_TOLERANCE_RIGHT_SCALE
+            self.cat_front_tolerance = self.zone_tolerance * CAT_FRONT_TOLERANCE_SCALE
+            self.cat_rear_tolerance  = self.zone_tolerance * CAT_REAR_TOLERANCE_SCALE
+            self.food_left_tolerance  = self.zone_tolerance * FOOD_LEFT_TOLERANCE_SCALE
+            self.food_right_tolerance = self.zone_tolerance * FOOD_RIGHT_TOLERANCE_SCALE
+            bowl_carry_x_frac = BOWL_CARRY_X_FRAC
+        # Per-instance (not the module constant) since it depends on
+        # hand_flipped -- see _carried_bowl_x().
+        self.bowl_carry_offset_px = GRABBOWL_BOX[0] * (bowl_carry_x_frac - 0.5)
+        # Every session gets a minimum read time on the How-To-Play screen --
+        # a curious first squeeze/tilt shouldn't be able to skip past the
+        # instructions before the patient has had any chance to read them
+        # (the patient's own sensor input can dismiss this screen even in
+        # the dual-monitor production flow -- see
+        # recovr/patient_app/games/generic_adapter.py's handle_event()).
+        self._instructions_min_t = 2.5
 
         travel = TRAVEL_SCALE[self.difficulty]
-        self.food_x = BOWL_X - TRAVEL_BASE * travel
-        self.cat_x  = BOWL_X + TRAVEL_BASE * travel
+        if self.hand_flipped:
+            self.food_x = BOWL_X + TRAVEL_BASE * travel + EXTRA_SPREAD_PX
+            self.cat_x  = BOWL_X - TRAVEL_BASE * travel - EXTRA_SPREAD_PX
+        else:
+            self.food_x = BOWL_X - TRAVEL_BASE * travel - EXTRA_SPREAD_PX
+            self.cat_x  = BOWL_X + TRAVEL_BASE * travel + EXTRA_SPREAD_PX
+
+        def _hand_art(name, box):
+            """Loads a hand/arm sprite (unlike the bowl/cat/food art, these
+            depict a specific hand, so they're the only sprites mirrored)."""
+            img = _load_image_fit(name, *box)
+            return pygame.transform.flip(img, True, False) if (img is not None and self.hand_flipped) else img
 
         self._bg_img         = _load_image_cover("bg_feed_the_cat.png", GAME_W, GAME_H)
-        self._hand_img       = _load_image_fit("hand_feed_the_cat.png", *HAND_BOX)
-        self._grab_empty_img = _load_image_fit("grab_empty_bowl_feed_the_cat.png", *GRABBOWL_BOX)
-        self._grab_food_img  = _load_image_fit("grab_food_bowl_feed_the_cat.png", *GRABBOWL_BOX)
+        self._hand_img       = _hand_art("hand_feed_the_cat.png", HAND_BOX)
+        self._grab_empty_img = _hand_art("grab_empty_bowl_feed_the_cat.png", GRABBOWL_BOX)
+        self._grab_food_img  = _hand_art("grab_food_bowl_feed_the_cat.png", GRABBOWL_BOX)
         self._empty_bowl_img = _load_image_fit("empty_bowl_feed_the_cat.png", *BOWL_BOX)
         self._food_bowl_img  = _load_image_fit("food_bowl_feed_the_cat.png", *BOWL_BOX)
         self._food_img       = _load_image_fit("food_feed_the_cat.png", *FOOD_BOX)
@@ -216,6 +338,24 @@ class FeedTheCatGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self._init_fatigue()
         self._reset()
         self._show_instructions = True
+
+        # Tutorial-only: sequential on-screen coaching during actual
+        # gameplay (see games/tutorial_hints.py), picking up once the
+        # How-To-Play card is dismissed.
+        self._tutorial_hints = TutorialHints([
+            TutorialStep(lambda g: tr("feedcat.tut.1", g.language),
+                         anchor=lambda g: (int(g.food_x), int(GAME_H * 0.65)),
+                         done=lambda g, t: g.bowl_carried),
+            TutorialStep(lambda g: tr("feedcat.tut.2", g.language),
+                         anchor=lambda g: (int(g.food_x), int(GAME_H * 0.65)),
+                         done=lambda g, t: g.bowl_filled),
+            TutorialStep(lambda g: tr("feedcat.tut.3", g.language),
+                         anchor=lambda g: (int(g.cat_x), int(GAME_H * 0.65)),
+                         done=lambda g, t: g.score >= 1),
+            TutorialStep(lambda g: (tr("feedcat.tut.4.target", g.language, goal=g.goal)
+                                     if g.session_mode == "target" else
+                                     tr("feedcat.tut.4.timed", g.language))),
+        ]) if self.tutorial else None
 
     def _reset(self):
         self.game_over          = False
@@ -279,14 +419,32 @@ class FeedTheCatGame(SessionModeMixin, FatigueMixin, BaseScreen):
             return raw
         return max(-1.0, min(1.0, (raw - wmin) / (wmax - wmin) * 2.0 - 1.0))
 
+    def _carried_bowl_x(self):
+        """x-position of the BOWL itself while carried -- not hand_x, which
+        is the combined grab sprite's own geometric centre (see
+        BOWL_CARRY_X_FRAC/self.bowl_carry_offset_px). Used for the food/cat
+        proximity checks so they key off where the bowl visually is, not
+        where the hand's own anchor point happens to be."""
+        return self.hand_x + self.bowl_carry_offset_px
+
+    @staticmethod
+    def _near_asym(x, target, tol_left, tol_right):
+        """True if x is within tol_left of target on its LEFT side, or
+        tol_right on its RIGHT side -- an asymmetric replacement for
+        abs(x - target) <= tol, used wherever one direction of approach
+        deserves more forgiveness than the other (see BOWL_GRAB_TOLERANCE_*/
+        CAT_*_TOLERANCE_SCALE)."""
+        d = x - target
+        return (-d <= tol_left) if d < 0 else (d <= tol_right)
+
     def handle_event(self, event):
         if self._show_instructions:
-            if (event.type == pygame.KEYDOWN or
+            if self._instructions_min_t <= 0 and (event.type == pygame.KEYDOWN or
                     (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1) or
                     input_handler.was_pressed(event, "action")):
                 self._show_instructions = False
                 self.start_time = pygame.time.get_ticks()
-                start_music(game_bgm_path("Feed the Cat"))
+                start_music(game_bgm_path("Purrfect Feast"))
             return
 
         if self.game_over:
@@ -294,7 +452,7 @@ class FeedTheCatGame(SessionModeMixin, FatigueMixin, BaseScreen):
                 if self._results_again_rect.collidepoint(event.pos):
                     play_click()
                     self._reset()
-                    start_music(game_bgm_path("Feed the Cat"))
+                    start_music(game_bgm_path("Purrfect Feast"))
                 elif self._results_exit_rect.collidepoint(event.pos):
                     play_click()
                     self._exit_to_game_config()
@@ -336,7 +494,7 @@ class FeedTheCatGame(SessionModeMixin, FatigueMixin, BaseScreen):
             return
         opts_actions = [
             lambda: (setattr(self, "paused", False), resume_music()),
-            lambda: (self._reset(), start_music(game_bgm_path("Feed the Cat"))),
+            lambda: (self._reset(), start_music(game_bgm_path("Purrfect Feast"))),
             lambda: setattr(self, "vol_active", True),
             self._exit_to_game_config,
         ]
@@ -348,16 +506,15 @@ class FeedTheCatGame(SessionModeMixin, FatigueMixin, BaseScreen):
                 return
 
     def update(self, dt):
-        if self._show_instructions or self.game_over:
+        if self._show_instructions:
+            self._instructions_min_t = max(0.0, self._instructions_min_t - dt)
+            return
+        if self.game_over:
             return
 
         self._state = input_handler.get_state()
         self._update_fatigue(dt, self._state)
         if self.fatigue_paused or self.paused:
-            return
-
-        if self._session_tick(dt):
-            self._end_game()
             return
 
         # ── wrist movement -- horizontal only, per spec ────────────────
@@ -374,24 +531,41 @@ class FeedTheCatGame(SessionModeMixin, FatigueMixin, BaseScreen):
         if not grip_valid:
             self._need_release = False
 
+        bowl_x = self._carried_bowl_x()
+
         if self.bowl_carried:
             if not grip_valid:
-                # Grip insufficient -- drop. The bowl keeps whatever fill
-                # state it had; it is NOT reset to empty.
-                self.bowl_carried = False
-                self.feedback = ("Bowl dropped — grab it again!", (255, 170, 60), FEEDBACK_DURATION)
+                # Grip released while carrying. Over the cat with a filled
+                # bowl (and no cat-swap animation in progress) this is the
+                # deliberate feed -- the food is dispensed by the release
+                # itself, never while still squeezing. Any other release is
+                # just a drop: the bowl keeps whatever fill state it had; it
+                # is NOT reset to empty.
+                if (self.bowl_filled and self._cat_state == "idle"
+                        and self._near_asym(bowl_x, self.cat_x,
+                                             self.cat_front_tolerance, self.cat_rear_tolerance)):
+                    self.bowl_carried = False
+                    self._feed_cat()
+                else:
+                    self.bowl_carried = False
+                    self.feedback = ("Bowl dropped — grab it again!", (255, 170, 60), FEEDBACK_DURATION)
             elif not self.bowl_filled:
-                if abs(self.hand_x - self.food_x) <= self.zone_tolerance:
+                # Asymmetric: food_x sits LEFT of the bowl's resting spot,
+                # so the bowl always approaches it from the right (its
+                # "front") -- that side gets the reduced tolerance, forcing
+                # the hand to keep moving left past where it used to
+                # register; the far/left side (beyond the food, nothing to
+                # reach for) stays generous.
+                if self._near_asym(bowl_x, self.food_x,
+                                    self.food_left_tolerance, self.food_right_tolerance):
                     self.bowl_filled = True
                     self.feedback = ("Food collected!", (120, 220, 255), FEEDBACK_DURATION)
-            else:
-                # Feeding is disabled while the previous/next cat is
-                # sliding -- the patient just waits a beat with the bowl.
-                if self._cat_state == "idle" and abs(self.hand_x - self.cat_x) <= self.zone_tolerance:
-                    self._feed_cat()
+            # else: filled bowl, still gripping -- wait for the release over
+            # the cat above; squeezing alone never feeds it.
         else:
             if grip_valid and not self._need_release:
-                if abs(self.hand_x - BOWL_X) <= self.bowl_grab_tolerance:
+                if self._near_asym(self.hand_x, BOWL_X,
+                                    self.bowl_grab_tolerance_left, self.bowl_grab_tolerance_right):
                     self.bowl_carried = True   # bowl_filled is preserved as-is
 
         if self.feed_flash_t > 0:
@@ -409,6 +583,18 @@ class FeedTheCatGame(SessionModeMixin, FatigueMixin, BaseScreen):
             self.feedback = (self.feedback[0], self.feedback[1], self.feedback[2] - dt)
             if self.feedback[2] <= 0:
                 self.feedback = None
+
+        if self._tutorial_hints:
+            self._tutorial_hints.update(self, dt)
+
+        # Checked LAST, after this frame's own grip/feed logic has already
+        # run -- Timed Mode's duration expiring on the exact same frame as
+        # a feed must never preempt it (the old position, before that
+        # logic, could do exactly that and silently drop the final point).
+        # time_left is floored at 0 by _session_tick() itself, so this
+        # still ends the session on every subsequent frame.
+        if self._session_tick(dt):
+            self._end_game()
 
     def _update_cat_anim(self, dt):
         """Advance the exit/enter cat-swap slide (see _reset()'s _cat_state
@@ -475,6 +661,8 @@ class FeedTheCatGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self.manager.go_to("therapist_dashboard")
 
     def _save_session(self, status):
+        if not self._session_should_save():
+            return
         try:
             from database import Database
             db = Database()
@@ -482,7 +670,7 @@ class FeedTheCatGame(SessionModeMixin, FatigueMixin, BaseScreen):
             db.save_session(
                 patient_id     = patient_id,
                 therapist_id   = self.account_id,
-                game           = "Feed the Cat",
+                game           = "Purrfect Feast",
                 score          = self.score,
                 difficulty     = self.difficulty,
                 status         = status,
@@ -548,15 +736,17 @@ class FeedTheCatGame(SessionModeMixin, FatigueMixin, BaseScreen):
                 r = self._hand_img.get_rect(midbottom=(int(self.hand_x), HAND_BOTTOM_Y))
                 surface.blit(self._hand_img, r)
 
-        draw_game_header(surface, "Feed the Cat", self.difficulty,
+        draw_game_header(surface, "Purrfect Feast", self.difficulty,
                           self._session_header_time(), self.score, GAME_W, GAME_H)
+        if self.tutorial:
+            draw_tutorial_badge(surface)
 
         draw_target_pill(surface, self._session_progress_text("cats"),
                           TARGET_POS, T["ACCENT"], self._font_target)
 
         if self.feedback:
-            msg = self._font_fb.render(self.feedback[0], True, self.feedback[1])
-            surface.blit(msg, (GAME_W // 2 - msg.get_width() // 2, int(GAME_H * 0.12)))
+            draw_feedback_banner(surface, self.feedback, self._font_fb,
+                                  (GAME_W // 2, int(GAME_H * 0.12)))
 
         # Pause button — two solid bars (same as every other game)
         pb     = self._pause_btn_rect
@@ -570,6 +760,9 @@ class FeedTheCatGame(SessionModeMixin, FatigueMixin, BaseScreen):
         pygame.draw.rect(surface, pb_col, (bx1, by2, bw2, bh2), border_radius=2)
         pygame.draw.rect(surface, pb_col, (bx2, by2, bw2, bh2), border_radius=2)
 
+        if self._tutorial_hints:
+            self._tutorial_hints.draw(surface, self)
+
         if self.paused: self._draw_pause(surface)
         self._draw_fatigue_overlay(surface)
 
@@ -581,7 +774,8 @@ class FeedTheCatGame(SessionModeMixin, FatigueMixin, BaseScreen):
         ov.fill((0, 0, 0, 210))
         surface.blit(ov, (0, 0))
 
-        card_name = f"feed_the_cat_how_to_play_{'dark' if is_dark_mode() else 'light'}.png"
+        card_name = (f"feed_the_cat_how_to_play_{'dark' if is_dark_mode() else 'light'}"
+                     f"{'_fil' if self.language == 'fil' else ''}.png")
         # Same outer card box as _draw_results' Round Complete card -- the
         # two screens read as stages of one interface.
         top_margin, bottom_reserved = int(GAME_H * 0.05), int(GAME_H * 0.17)
@@ -589,9 +783,16 @@ class FeedTheCatGame(SessionModeMixin, FatigueMixin, BaseScreen):
         if card is not None:
             cr = card.get_rect(center=(GAME_W // 2, GAME_H // 2))
             surface.blit(card, cr)
-        # Just the card, centered -- no extra text/descriptions. No "press
-        # any key" prompt either -- the patient never starts the game
-        # themselves, only the therapist's own START control does.
+        # Code-drawn "Controls" supplement in the card's own side margin --
+        # covers the filling step the card may gloss over. No "press any
+        # key" prompt -- the patient never starts the game themselves, only
+        # the therapist's own START control does.
+        lang = self.language
+        draw_controls_panel(surface, controls_panel_rect(top_margin, bottom_reserved), [
+            (tr("feedcat.ctrl.tilt.action", lang), tr("feedcat.ctrl.tilt.desc", lang)),
+            (tr("feedcat.ctrl.squeeze.action", lang), tr("feedcat.ctrl.squeeze.desc", lang)),
+            (tr("feedcat.ctrl.release.action", lang), tr("feedcat.ctrl.release.desc", lang)),
+        ])
 
     def _draw_results(self, surface):
         T = get_theme()

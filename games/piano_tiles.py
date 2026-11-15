@@ -1,5 +1,5 @@
 """
-Piano Tiles — Finger Flexion game (1920x1080)
+Tile Rush — Finger Flexion game (1920x1080)
 
 Five independent keys (Thumb, Index, Middle, Ring, Pinky), one falling tile
 at a time. A tap requires the SPECIFIC finger whose key the tile fell in to
@@ -9,18 +9,14 @@ re-fires it, and it must drop back to released before that finger can tap
 again. See _try_flex_tap()/update() for the per-finger READY -> FLEX ->
 RELEASE -> READY gate.
 
-Input source, today vs. the future (see _read_fingers()):
+Input source (see _read_fingers()):
   - Keyboard Test Mode (no BLE controller connected): keys 1-5 simulate
     Thumb..Pinky independently -- held = flexed, released = relaxed.
-  - Real BLE hardware: the physical controller currently has ONE Flex
-    Sensor (firmware/controller_esp32c3.ino), not five independent ones.
-    Genuine five-finger hardware play is NOT implemented yet -- this file
-    deliberately does not fake it by duplicating that single shared
-    reading across all five lanes (which would misrepresent which finger
-    moved). When real hardware is connected, gameplay is paused and a
-    clear in-game notice is shown instead. _read_fingers() is the single
-    seam to update once the five-sensor firmware/BLE/input_handler/
-    calibration chain lands -- nothing else in this file needs to change.
+  - Real BLE hardware: the physical controller now has 5 independent Flex
+    Sensors (verified wiring, MUX C0-C4 -- see
+    firmware/controller_esp32c3.ino), read straight off
+    sensors.input_handler's state["finger_flex"] -- the same source
+    games/whack_mole.py already reads unconditionally.
 """
 
 import sys, os
@@ -35,8 +31,11 @@ from sensors.input_handler import input_handler, FINGER_NAMES
 from audio import play_success, play_completion, start_music, stop_music, game_music_path, play_click
 from constants import get_theme, is_dark_mode, GAME_W, GAME_H
 from games.game_header import draw_game_header, HEADER_BOTTOM
-from games.hud import draw_target_pill, TARGET_POS
+from games.hud import (draw_target_pill, TARGET_POS, draw_tutorial_badge,
+                        draw_controls_panel, controls_panel_rect)
+from games.tutorial_hints import TutorialHints, TutorialStep
 from games.round_complete import draw_round_complete_overlay
+from i18n import tr
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _img_cache = {}
@@ -92,14 +91,14 @@ _FLEX_TEST_KEYS = [pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5]
 # -- FLEX_THRESHOLD below is now only the per-finger fallback default for
 # whichever finger was never actually calibrated, exactly like
 # whack_mole.py's own DEFAULT_THRESHOLD.
-BASE_SPEED     = {"Easy": 260, "Medium": 340, "Hard": 420}   # px/s
-FLEX_THRESHOLD = {"Easy": 0.35, "Medium": 0.50, "Hard": 0.65}  # calibrated flex (0-1) to register a tap
+BASE_SPEED     = {"Easy": 260, "Medium": 340, "Hard": 420}   # px/s -- Tile Speed
+FLEX_THRESHOLD = {"Easy": 0.30, "Medium": 0.70, "Hard": 0.90}  # calibrated flex (0-1) to register a tap
 PT_RELEASE_MARGIN = 0.65  # release threshold = press threshold * this -- same hysteresis concept as
                           # games/whack_mole.py's own RELEASE_MARGIN (must release below it to re-arm)
 HIT_WINDOW     = {"Easy": 130, "Medium": 95,  "Hard": 65}     # px, +/- around the hit line
 SPAWN_GAP      = {"Easy": 1.0,  "Medium": 0.7,  "Hard": 0.45}  # pause after a tile resolves before the next spawns
-TILE_GOAL      = {"Easy": 20,  "Medium": 30,  "Hard": 40}     # Target Mode: tiles to hit to complete
-DURATION       = {"Easy": 60,  "Medium": 60,  "Hard": 60}     # Timed Mode: session length in seconds
+TILE_GOAL      = {"Easy": 50,  "Medium": 75,  "Hard": 100}    # Target Mode: points to reach
+DURATION       = {"Easy": 300, "Medium": 420, "Hard": 600}    # Timed Mode: session length in seconds (5/7/10 min)
 
 HIT_HOLD_DURATION  = 0.18   # white-glow hold at full size, right after a successful tap
 HIT_FADE_DURATION  = 0.22   # shrink/fade-out that follows the hold
@@ -236,25 +235,30 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self.difficulty = data.get("difficulty", "Easy")
         self.cal        = data.get("calibration", {})
 
-        # Tile fall speed from Session Details speed setting
-        _spd_map   = {"Slow": 260, "Normal": 340, "Fast": 420}
-        self.speed = _spd_map.get(data.get("speed", "Normal"), 340)
+        # Tile Speed -- now a real Advanced Settings parameter (pt_tile_speed)
+        # that actually reaches gameplay. Previously this was unconditionally
+        # overwritten by the generic Session Details Speed dropdown
+        # (Slow/Normal/Fast), which silently made BASE_SPEED's per-difficulty
+        # values dead code -- that override is gone now, since Tile Speed is
+        # a required, independently-tunable difficulty parameter for this
+        # game specifically.
+        cal_params = (data.get("calibration") or {}).get("params", {})
+        cal_diff   = cal_params.get("difficulty", self.difficulty)
+        self.speed = cal_params.get("pt_tile_speed", BASE_SPEED[self.difficulty])
 
         # Per-finger calibrated press threshold, from the 5 independent
         # "<Finger> Flexion" calibration passes (see MULTI_SENSOR_CALIBRATION
         # in scenes/therapist_dashboard.py / SENSOR_CFG in
         # scenes/calibration_window.py) -- same concept as games/
-        # whack_mole.py's own self.press_threshold, and deliberately NOT
-        # also overridable via a single GAME_PARAM_SCHEMA slider (that
-        # mechanism always supplies a preset value for every schema'd key,
-        # which would silently collide with 5 independent per-finger
-        # calibrated values every session -- see calibration_window.py's
-        # own note by the (now-removed) "pt_flex_threshold" entry). Falls
-        # back to the difficulty preset for any finger never actually
-        # calibrated.
-        cal_params = (data.get("calibration") or {}).get("params", {})
-        cal_diff   = cal_params.get("difficulty", self.difficulty)
-        default_thr = FLEX_THRESHOLD.get(cal_diff, 0.5)
+        # whack_mole.py's own self.press_threshold. A per-finger calibrated
+        # value always wins when present (highest priority); "pt_flex_threshold"
+        # (Required Finger Flexion in Advanced Settings) is the next
+        # fallback, applied uniformly to any finger with no calibration of
+        # its own; FLEX_THRESHOLD[difficulty] is the last-resort fallback
+        # if neither is available. Deliberately NOT a single schema override
+        # that unconditionally replaces per-finger calibration -- only steps
+        # in when a finger genuinely has none.
+        default_thr = cal_params.get("pt_flex_threshold", FLEX_THRESHOLD.get(cal_diff, 0.5))
         sensors_cal = (data.get("calibration") or {}).get("sensors", {})
         self.press_threshold = []
         for name in FINGER_NAMES:
@@ -266,6 +270,13 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self.hit_window     = HIT_WINDOW[self.difficulty]
 
         self._session_init(data, TILE_GOAL, DURATION, self.difficulty, cal_goal_key="pt_goal")
+        # Every session gets a minimum read time on the How-To-Play screen --
+        # a curious first finger bend shouldn't be able to skip past the
+        # instructions before the patient has had any chance to read them
+        # (the patient's own sensor input can dismiss this screen even in
+        # the dual-monitor production flow -- see
+        # recovr/patient_app/games/generic_adapter.py's handle_event()).
+        self._instructions_min_t = 2.5
 
         self.game_over           = False
         self.game_over_score     = 0
@@ -289,6 +300,22 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self._init_fatigue()
         self._reset()
         self._show_instructions = True
+
+        # Tutorial-only: sequential on-screen coaching during actual
+        # gameplay (see games/tutorial_hints.py), picking up once the
+        # How-To-Play card is dismissed.
+        _mid_x = (PLAYFIELD_X0 + PLAYFIELD_X1) // 2
+        self._tutorial_hints = TutorialHints([
+            TutorialStep(lambda g: tr("tilerush.tut.1", g.language),
+                         anchor=lambda g: (_mid_x, HIT_LINE_Y),
+                         done=lambda g, t: t >= 3.0),
+            TutorialStep(lambda g: tr("tilerush.tut.2", g.language),
+                         anchor=lambda g: (_mid_x, HIT_LINE_Y),
+                         done=lambda g, t: g.reps >= 1),
+            TutorialStep(lambda g: (tr("tilerush.tut.3.target", g.language, goal=g.goal)
+                                     if g.session_mode == "target" else
+                                     tr("tilerush.tut.3.timed", g.language))),
+        ]) if self.tutorial else None
 
     # ── state ──────────────────────────────────────────────────────────
 
@@ -315,13 +342,13 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
     def handle_event(self, event):
         # How To Play — any key or click dismisses
         if self._show_instructions:
-            if (event.type == pygame.KEYDOWN or
+            if self._instructions_min_t <= 0 and (event.type == pygame.KEYDOWN or
                     (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1) or
                     event.type == pygame.FINGERDOWN or
                     input_handler.was_pressed(event, "action")):
                 self._show_instructions = False
                 self.start_time = pygame.time.get_ticks()
-                start_music(game_music_path("Piano Tiles", self.difficulty))
+                start_music(game_music_path("Tile Rush", self.difficulty))
             return
 
         # Results screen — mouse click on buttons
@@ -331,7 +358,7 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
                     play_click()
                     self._reset()
                     self._show_instructions = False
-                    start_music(game_music_path("Piano Tiles", self.difficulty))
+                    start_music(game_music_path("Tile Rush", self.difficulty))
                 elif self._results_exit_rect.collidepoint(event.pos):
                     play_click()
                     self._exit_to_game_config()
@@ -341,7 +368,7 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
                     play_click()
                     self._reset()
                     self._show_instructions = False
-                    start_music(game_music_path("Piano Tiles", self.difficulty))
+                    start_music(game_music_path("Tile Rush", self.difficulty))
                 elif self._results_exit_rect.collidepoint(pos):
                     play_click()
                     self._exit_to_game_config()
@@ -390,7 +417,7 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
             lambda: setattr(self, "paused", False),
             lambda: (self._reset(), setattr(self, "_show_instructions", False),
                      setattr(self, "paused", False),
-                     start_music(game_music_path("Piano Tiles", self.difficulty))),
+                     start_music(game_music_path("Tile Rush", self.difficulty))),
             lambda: setattr(self, "vol_active", True),
             self._exit_to_game_config,
         ]
@@ -404,13 +431,14 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
     # ── finger input ───────────────────────────────────────────────────
 
     def _read_fingers(self):
-        """Returns (ready, values). ready=False means no genuine independent
-        five-finger input source is currently available -- `values` is then
-        just harmless zeros, never a duplicated/shared reading (see module
-        docstring: real BLE hardware only has one physical Flex Sensor
-        today, so five-finger play isn't faked there)."""
+        """Returns (ready, values). Real BLE hardware now has 5 independent
+        physical Flex Sensors (see module docstring) -- read straight off
+        input_handler's own state["finger_flex"], same source
+        games/whack_mole.py already reads unconditionally. Test Mode (no
+        BLE controller connected): keys 1-5 simulate Thumb..Pinky."""
         if input_handler.connected:
-            return False, [0.0] * LANE_COUNT
+            state = input_handler.get_state()
+            return True, list(state.get("finger_flex", [0.0] * LANE_COUNT))
         keys = pygame.key.get_pressed()
         return True, [1.0 if keys[k] else 0.0 for k in _FLEX_TEST_KEYS]
 
@@ -443,7 +471,10 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
     # ── update ─────────────────────────────────────────────────────────
 
     def update(self, dt):
-        if self._show_instructions or self.game_over:
+        if self._show_instructions:
+            self._instructions_min_t = max(0.0, self._instructions_min_t - dt)
+            return
+        if self.game_over:
             return
 
         state = input_handler.get_state()
@@ -514,6 +545,9 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
             if self._finger_tap_flash_t[i] > 0:
                 self._finger_tap_flash_t[i] -= dt
 
+        if self._tutorial_hints:
+            self._tutorial_hints.update(self, dt)
+
     # ── game end ───────────────────────────────────────────────────────
 
     def _exit_to_game_config(self):
@@ -527,6 +561,8 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self.manager.go_to("therapist_dashboard")
 
     def _save_session(self, status):
+        if not self._session_should_save():
+            return
         try:
             from database import Database
             db = Database()
@@ -534,7 +570,7 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
             db.save_session(
                 patient_id     = patient_id,
                 therapist_id   = self.account_id,
-                game           = "Piano Tiles",
+                game           = "Tile Rush",
                 score          = self.score,
                 difficulty     = self.difficulty,
                 status         = status,
@@ -572,8 +608,10 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
             self.tile.draw(surface)
         self._draw_tap_zones(surface)
 
-        draw_game_header(surface, "Piano Tiles", self.difficulty,
+        draw_game_header(surface, "Tile Rush", self.difficulty,
                           self._session_header_time(), self.score, GAME_W, GAME_H)
+        if self.tutorial:
+            draw_tutorial_badge(surface)
 
         draw_target_pill(surface, self._session_progress_text("tiles"),
                           TARGET_POS, T["ACCENT"], self._font_tiles)
@@ -592,6 +630,9 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
         if not self.five_finger_ready:
             self._draw_hw_unsupported(surface)
+
+        if self._tutorial_hints:
+            self._tutorial_hints.draw(surface, self)
 
         if self.paused:
             self._draw_pause(surface)
@@ -692,7 +733,7 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
         surface.blit(title, title.get_rect(centerx=GAME_W // 2, top=py + 26))
 
         lines = [
-            "This controller currently has one Flex Sensor; Piano Tiles",
+            "This controller currently has one Flex Sensor; Tile Rush",
             "needs five independent sensors (one per finger) to play on",
             "real hardware. That upgrade is in progress.",
             "",
@@ -712,7 +753,8 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
         ov.fill((0, 0, 0, 210))
         surface.blit(ov, (0, 0))
 
-        card_name = f"piano_tiles_how_to_play_{'dark' if is_dark_mode() else 'light'}.png"
+        card_name = (f"piano_tiles_how_to_play_{'dark' if is_dark_mode() else 'light'}"
+                     f"{'_fil' if self.language == 'fil' else ''}.png")
         # Same outer card box as _draw_results' Round Complete card -- the
         # two screens read as stages of one interface.
         top_margin, bottom_reserved = int(GAME_H * 0.05), int(GAME_H * 0.17)
@@ -720,9 +762,17 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
         if card is not None:
             cr = card.get_rect(center=(GAME_W // 2, GAME_H // 2))
             surface.blit(card, cr)
-        # Just the card, centered -- no extra text/descriptions. No "press
-        # any key" prompt either -- the patient never starts the game
-        # themselves, only the therapist's own START control does.
+        # Code-drawn "Controls" supplement in the card's own side margin --
+        # covers the one thing the baked card art can't show on its own:
+        # exactly which finger goes with which lane (nothing in-game labels
+        # the lanes by finger either). No "press any key" prompt -- the
+        # patient never starts the game themselves, only the therapist's
+        # own START control does.
+        lang = self.language
+        draw_controls_panel(surface, controls_panel_rect(top_margin, bottom_reserved), [
+            (tr("tilerush.ctrl.bend.action", lang), tr("tilerush.ctrl.bend.desc", lang)),
+            (tr("tilerush.ctrl.tap.action", lang), tr("tilerush.ctrl.tap.desc", lang)),
+        ])
 
     # ── Session Complete ───────────────────────────────────────────────
 

@@ -36,17 +36,20 @@ from audio import (play_error, play_completion,
                     start_music, stop_music, play_click)
 from constants import get_theme, is_dark_mode, GAME_W, GAME_H
 from games.game_header import draw_game_header, HEADER_BOTTOM
-from games.hud import draw_target_pill, TARGET_POS
+from games.hud import (draw_target_pill, TARGET_POS, draw_tutorial_badge, draw_feedback_banner,
+                        draw_controls_panel, controls_panel_rect)
+from games.tutorial_hints import TutorialHints, TutorialStep
 from games.round_complete import draw_round_complete_overlay
+from i18n import tr
 
 # -- Difficulty configuration (per-difficulty, never a single hardcoded
 # clinical value); grip threshold / hold duration have no Advanced Settings
 # override anywhere else in RecovR today, so those two stay difficulty-driven
 # defaults, same as every other game's per-difficulty tables (GOALS/
 # DURATION/etc. in games/basketball.py). ----
-LEMON_GOAL     = {"Easy": 15, "Medium": 30, "Hard": 50}         # Target Mode: lemons to squeeze to complete
-DURATION       = {"Easy": 90, "Medium": 120, "Hard": 150}       # Timed Mode: session length in seconds
-GRIP_THRESHOLD = {"Easy": 0.35, "Medium": 0.45, "Hard": 0.55}   # calibrated grip (0-1) to start a squeeze
+LEMON_GOAL     = {"Easy": 50, "Medium": 75, "Hard": 100}        # Target Mode: points to reach
+DURATION       = {"Easy": 300, "Medium": 420, "Hard": 600}      # Timed Mode: session length in seconds (5/7/10 min)
+GRIP_THRESHOLD = {"Easy": 0.30, "Medium": 0.70, "Hard": 0.90}   # calibrated grip (0-1) to start a squeeze
 HOLD_DURATION  = {"Easy": 0.8,  "Medium": 1.2,  "Hard": 1.6}    # seconds the grip must be sustained
 
 # Release threshold = activation threshold * this factor -- a small
@@ -81,6 +84,19 @@ PITCHER_SLIDE_DISTANCE = GAME_W
 INDICATOR_FLASH_DUR = 0.45
 INDICATOR_SEGMENTS  = 8
 
+# -- Hand-side adaptation (Affected-Hand Adaptation feature) ----------------
+# Lemonade's art is drawn for a RIGHT-handed patient by default (hand/lemon
+# basket anchored on the right, reaching across to the centered pitcher).
+# When the patient's affected hand (self.affected_hand, set by
+# games/session_mode.py from their profile) is the opposite of this default,
+# the hand sprite is mirrored and every hand-relative element -- the hand's
+# own x-anchor, the lemon basket's x-anchor, the juice-drip's origin offset,
+# and the tutorial hint pointer -- swaps sides with it. The pitcher (centered
+# already) and the table/stand background are untouched, per spec.
+DEFAULT_HAND  = "right"
+HAND_X_FRAC   = 0.80    # unflipped (right-handed) hand anchor, fraction of GAME_W
+BASKET_X_FRAC = 0.205   # unflipped (right-handed) basket anchor, fraction of GAME_W
+
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _img_cache = {}
 
@@ -108,6 +124,17 @@ def _get_sfx(path):
         except Exception:
             _sfx_cache[path] = None
     return _sfx_cache[path]
+
+
+def _load_fit_flipped(name, w, h):
+    """Same as _load_fit, horizontally mirrored and cached under its own key
+    -- used for the hand sprite when self.hand_flipped, so the flip happens
+    once per (name, w, h) rather than every frame."""
+    key = ("fit_flip", name, w, h)
+    if key not in _img_cache:
+        base = _load_fit(name, w, h)
+        _img_cache[key] = pygame.transform.flip(base, True, False) if base is not None else None
+    return _img_cache[key]
 
 
 def _load_fit(name, w, h):
@@ -288,6 +315,20 @@ class LemonadeGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # override, fall back to the normal per-difficulty preset.
         cal_params           = self.cal.get("params", {})
         self._session_init(data, LEMON_GOAL, DURATION, self.difficulty, cal_goal_key="lem_target")
+
+        # Affected-Hand Adaptation -- see DEFAULT_HAND/HAND_X_FRAC/
+        # BASKET_X_FRAC above. Computed once here (not per-frame) since
+        # self.affected_hand never changes mid-session.
+        self.hand_flipped  = bool(self.affected_hand) and self.affected_hand != DEFAULT_HAND
+        self._hand_x_frac   = (1.0 - HAND_X_FRAC) if self.hand_flipped else HAND_X_FRAC
+        self._basket_x_frac = (1.0 - BASKET_X_FRAC) if self.hand_flipped else BASKET_X_FRAC
+        # Every session gets a minimum read time on the How-To-Play screen --
+        # a curious first squeeze shouldn't be able to skip past the
+        # instructions before the patient has had any chance to read them
+        # (the patient's own sensor input can dismiss this screen even in
+        # the dual-monitor production flow -- see
+        # recovr/patient_app/games/generic_adapter.py's handle_event()).
+        self._instructions_min_t = 2.5
         self.grip_threshold  = cal_params.get("lem_grip_threshold", GRIP_THRESHOLD[self.difficulty])
         self.release_threshold = self.grip_threshold * RELEASE_FACTOR
         self.hold_required   = cal_params.get("lem_hold_duration", HOLD_DURATION[self.difficulty])
@@ -315,6 +356,21 @@ class LemonadeGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self._init_fatigue()
         self._reset()
         self._show_instructions = True
+
+        # Tutorial-only: sequential on-screen coaching during actual
+        # gameplay (see games/tutorial_hints.py), picking up once the
+        # How-To-Play card is dismissed.
+        self._tutorial_hints = TutorialHints([
+            TutorialStep(lambda g: tr("lemonade.tut.1", g.language),
+                         anchor=lambda g: (int(GAME_W * g._hand_x_frac), int(GAME_H * 0.55)),
+                         done=lambda g, t: g._phase != "waiting"),
+            TutorialStep(lambda g: tr("lemonade.tut.2", g.language),
+                         anchor=lambda g: (int(GAME_W * g._hand_x_frac), int(GAME_H * 0.55)),
+                         done=lambda g, t: g.score >= 1),
+            TutorialStep(lambda g: (tr("lemonade.tut.3.target", g.language, goal=g.goal)
+                                     if g.session_mode == "target" else
+                                     tr("lemonade.tut.3.timed", g.language))),
+        ]) if self.tutorial else None
 
     def _reset(self):
         self.game_over  = False
@@ -451,7 +507,7 @@ class LemonadeGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
     def handle_event(self, event):
         if self._show_instructions:
-            if (event.type == pygame.KEYDOWN or
+            if self._instructions_min_t <= 0 and (event.type == pygame.KEYDOWN or
                     (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1) or
                     input_handler.was_pressed(event, "action")):
                 self._show_instructions = False
@@ -520,7 +576,10 @@ class LemonadeGame(SessionModeMixin, FatigueMixin, BaseScreen):
     # ------------------------------------------------------------------ #
 
     def update(self, dt):
-        if self._show_instructions or self.game_over:
+        if self._show_instructions:
+            self._instructions_min_t = max(0.0, self._instructions_min_t - dt)
+            return
+        if self.game_over:
             return
 
         self._state = input_handler.get_state()
@@ -529,9 +588,6 @@ class LemonadeGame(SessionModeMixin, FatigueMixin, BaseScreen):
             return
 
         self._drip_t += dt
-        if self._session_tick(dt):
-            self._end_game()
-            return
 
         # Sensor readings keep updating every frame regardless of what
         # follows, so the therapist monitoring interface always reflects
@@ -557,6 +613,19 @@ class LemonadeGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
         if self._indicator_flash_t > 0:
             self._indicator_flash_t = max(0.0, self._indicator_flash_t - dt)
+
+        if self._tutorial_hints:
+            self._tutorial_hints.update(self, dt)
+
+        # Checked LAST, after this frame's own squeeze/pitcher logic has
+        # already run -- Timed Mode's duration expiring on the exact same
+        # frame as a completed lemon must never preempt it (the old
+        # position, before that logic, could do exactly that and silently
+        # drop the final point). time_left is floored at 0 by
+        # _session_tick() itself, so this still ends the session on every
+        # subsequent frame.
+        if self._session_tick(dt):
+            self._end_game()
 
     def _update_squeeze_state(self, dt):
         if self._phase == "waiting":
@@ -680,7 +749,8 @@ class LemonadeGame(SessionModeMixin, FatigueMixin, BaseScreen):
         ov.fill((0, 0, 0, 210))
         surface.blit(ov, (0, 0))
 
-        card_name = f"lemonade_how_to_play_{'dark' if is_dark_mode() else 'light'}.png"
+        card_name = (f"lemonade_how_to_play_{'dark' if is_dark_mode() else 'light'}"
+                     f"{'_fil' if self.language == 'fil' else ''}.png")
         # Same outer card box as _draw_results' Round Complete card -- the
         # two screens read as stages of one interface.
         top_margin, bottom_reserved = int(GAME_H * 0.05), int(GAME_H * 0.17)
@@ -688,9 +758,15 @@ class LemonadeGame(SessionModeMixin, FatigueMixin, BaseScreen):
         if card is not None:
             cr = card.get_rect(center=(GAME_W // 2, GAME_H // 2))
             surface.blit(card, cr)
-        # Just the card, centered -- no extra text/descriptions. No "press
-        # any key" prompt either -- the patient never starts the game
+        # Code-drawn "Controls" supplement in the card's own side margin --
+        # spells out the same loop the card already shows, in plain text.
+        # No "press any key" prompt -- the patient never starts the game
         # themselves, only the therapist's own START control does.
+        lang = self.language
+        draw_controls_panel(surface, controls_panel_rect(top_margin, bottom_reserved), [
+            (tr("lemonade.ctrl.squeeze.action", lang), tr("lemonade.ctrl.squeeze.desc", lang)),
+            (tr("lemonade.ctrl.release.action", lang), tr("lemonade.ctrl.release.desc", lang)),
+        ])
 
     def _exit_to_game_config(self):
         import builtins
@@ -703,6 +779,8 @@ class LemonadeGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self.manager.go_to("therapist_dashboard")
 
     def _save_session(self, status):
+        if not self._session_should_save():
+            return
         try:
             from database import Database
             db = Database()
@@ -900,7 +978,7 @@ class LemonadeGame(SessionModeMixin, FatigueMixin, BaseScreen):
                        "Hard": "hard_lemonade.png"}.get(self.difficulty, "easy_lemonade.png")
         basket_img = _load_fit(basket_name, 480, 400)
         if basket_img is not None:
-            br = basket_img.get_rect(midbottom=(int(GAME_W * 0.205), table_surface_y - basket_lift))
+            br = basket_img.get_rect(midbottom=(int(GAME_W * self._basket_x_frac), table_surface_y - basket_lift))
             surface.blit(basket_img, br)
 
         # -- pitcher (center) -- juice drawn on top of its glass so the
@@ -940,12 +1018,18 @@ class LemonadeGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # (same x, same extra drop), so switching hold/squeeze never shifts
         # the hand or the lemon's apparent position.
         hand_name = "squeeze_lemonade.png" if self._phase in ("squeezing", "ready") else "hold_lemonade.png"
-        hand_img = _load_fit(hand_name, 560, 620)
-        hand_x = int(GAME_W * 0.80)
+        hand_img = (_load_fit_flipped(hand_name, 560, 620) if self.hand_flipped
+                    else _load_fit(hand_name, 560, 620))
+        hand_x = int(GAME_W * self._hand_x_frac)
         hand_bottom_y = GAME_H + int(GAME_H * 0.12)
         if hand_img is not None:
             hr = hand_img.get_rect(midbottom=(hand_x, hand_bottom_y))
-            self._draw_juice_drip(surface, (hr.centerx - 60, hr.y + 120), pitcher_rect)
+            # Drip origin sits slightly toward the pitcher (centered) from
+            # the hand's own centerx -- that's -60 (toward the left/center)
+            # for the unflipped right-side hand, so it mirrors to +60 when
+            # the hand is on the left reaching rightward instead.
+            drip_dx = 60 if self.hand_flipped else -60
+            self._draw_juice_drip(surface, (hr.centerx + drip_dx, hr.y + 120), pitcher_rect)
             surface.blit(hand_img, hr)
 
         # -- lemon segment progress indicator -- right side, directly above
@@ -956,14 +1040,18 @@ class LemonadeGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # -- shared header --
         draw_game_header(surface, "Lemonade", self.difficulty,
                           self._session_header_time(), self.score, GAME_W, GAME_H)
+        if self.tutorial:
+            draw_tutorial_badge(surface)
 
         draw_target_pill(surface, self._session_progress_text("lemons"),
                           TARGET_POS, T["ACCENT"], self._font_target)
 
         if self.feedback:
-            msg = self._font_fb.render(self.feedback[0], True, self.feedback[1])
-            surface.blit(msg, (GAME_W // 2 - msg.get_width() // 2, int(GAME_H * 0.30)))
+            draw_feedback_banner(surface, self.feedback, self._font_fb,
+                                  (GAME_W // 2, int(GAME_H * 0.30)))
 
+        if self._tutorial_hints:
+            self._tutorial_hints.draw(surface, self)
 
         if self.paused:
             self._draw_pause(surface)

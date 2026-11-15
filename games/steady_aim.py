@@ -40,8 +40,11 @@ from audio import (play_success, play_completion, start_music, stop_music,
                     pause_music, resume_music, game_bgm_path, play_click)
 from constants import get_theme, is_dark_mode, GAME_W, GAME_H
 from games.game_header import draw_game_header, HEADER_BOTTOM
-from games.hud import draw_target_pill, TARGET_POS
+from games.hud import (draw_target_pill, TARGET_POS, draw_tutorial_badge, draw_feedback_banner,
+                        draw_controls_panel, controls_panel_rect)
+from games.tutorial_hints import TutorialHints, TutorialStep
 from games.round_complete import draw_round_complete_overlay
+from i18n import tr
 
 # Real MPU6050 Y-axis tilt (accel_y) -- the firmware already transmits it
 # (ble_receiver.py's PACKET_FORMAT) but input_handler.py's own "tilt_y"
@@ -57,12 +60,22 @@ except Exception:
     _ble = None
 
 # ── difficulty-scaled parameters ────────────────────────────────────────────
-GOALS            = {"Easy": 8,   "Medium": 10, "Hard": 12}   # Target Mode: shots to complete
-DURATION         = {"Easy": 90,  "Medium": 75, "Hard": 60}   # Timed Mode: session length in seconds
-AIM_TOLERANCE_R  = {"Easy": 120, "Medium": 80, "Hard": 45}   # px radius of the HOLD-trigger zone (not the score rings)
+GOALS            = {"Easy": 80,  "Medium": 120, "Hard": 160}   # Target Mode: points to reach
+DURATION         = {"Easy": 300, "Medium": 420, "Hard": 600}   # Timed Mode: session length in seconds (5/7/10 min)
+# Aim Tolerance (the HOLD-trigger radius) is now a frozen constant, the same
+# for every difficulty -- Required Wrist Rotation (below) is this game's one
+# difficulty-scaled aiming parameter instead. Kept at the old Medium value.
+AIM_TOLERANCE_R  = 80
 CURSOR_SPD       = {"Easy": 900, "Medium": 1000, "Hard": 1100}
 ARROWS_ALLOWANCE = {"Easy": 20,  "Medium": 16,  "Hard": 14}  # arrows in the basket this session
 HOLD_TIME_DEFAULT = 3.0   # seconds -- uniform across difficulty per spec, overridable via sa_hold_time
+
+# Required Wrist Rotation -- the patient's raw wrist-tilt magnitude (shared
+# calibration for both axes -- see _normalize_tilt) must reach this % of
+# their own calibrated resting->peak range before the cursor responds to
+# that axis at all; replaces the old flat 0.05 deadzone. See on_enter()'s
+# self._wrist_rotation_min.
+WRIST_REQUIREMENT = {"Easy": 0.30, "Medium": 0.70, "Hard": 0.90}
 
 FIRE_DURATION    = 0.35   # seconds the arrow takes to travel to its locked impact point
 IMPACT_DURATION  = 1.3    # seconds the arrow stays stuck in the target before the next one --
@@ -70,16 +83,14 @@ IMPACT_DURATION  = 1.3    # seconds the arrow stays stuck in the target before t
 
 # ── target scoring rings, as a fraction of the target FACE's own radius
 # (not the full sprite including its rope) -- measured directly off the
-# artwork, innermost first. This is completely separate from
-# AIM_TOLERANCE_R: difficulty only changes when a hold is allowed to start,
-# never what an actual impact is worth.
+# artwork, innermost first. 3 zones (Innermost/Middle/Outermost) per spec --
+# completely separate from AIM_TOLERANCE_R: difficulty only changes when a
+# hold is allowed to start, never what an actual impact is worth.
 RING_SCORES = [
-    (0.22, 7),   # yellow / bullseye
-    (0.39, 3),   # red
-    (0.56, 3),   # blue
-    (0.68, 1),   # black
-    (0.85, 1),   # white
-]   # beyond the last radius -> 0 (outside the target)
+    (0.35, 5),   # innermost
+    (0.65, 3),   # middle
+    (0.85, 1),   # outermost
+]   # beyond the last radius -> 0 (outside the target / miss)
 
 # The 6 target sprites share one real-world face size (all 607px wide in
 # their own art, the rope above the face being the only thing that differs
@@ -238,10 +249,28 @@ class SteadyAimGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # override, fall back to the normal per-difficulty preset.
         cal_params  = self.cal.get("params", {})
         self._session_init(data, GOALS, DURATION, self.difficulty, cal_goal_key="sa_goal")
-        self.aim_tolerance_r  = cal_params.get("sa_circle_r", AIM_TOLERANCE_R[self.difficulty])
+        # Every session gets a minimum read time on the How-To-Play screen --
+        # a curious first tilt shouldn't be able to skip past the
+        # instructions before the patient has had any chance to read them
+        # (the patient's own sensor input can dismiss this screen even in
+        # the dual-monitor production flow -- see
+        # recovr/patient_app/games/generic_adapter.py's handle_event()).
+        self._instructions_min_t = 2.5
+        self.aim_tolerance_r  = AIM_TOLERANCE_R   # frozen constant -- no longer difficulty/Advanced-Settings-scaled
         self.cursor_spd       = cal_params.get("sa_cursor_spd", CURSOR_SPD[self.difficulty])
         self.hold_time        = cal_params.get("sa_hold_time", HOLD_TIME_DEFAULT)
         self.arrows_allowance = int(cal_params.get("sa_arrows", ARROWS_ALLOWANCE[self.difficulty]))
+
+        # Required Wrist Rotation: derived from THIS patient's own
+        # calibration trials (baseline = resting reading, average = their
+        # measured peak-effort reading -- same pair CalibrationWindow's own
+        # generic threshold slider uses), not a flat per-difficulty raw
+        # number. Falls back to 0 (no gate) if never actually calibrated.
+        self.wrist_requirement_pct = cal_params.get("sa_wrist_requirement", WRIST_REQUIREMENT[self.difficulty])
+        _avg      = self.cal.get("average", 0.0)
+        _baseline = self.cal.get("baseline", 0.0)
+        _span     = max(0.0, _avg - _baseline)
+        self._wrist_rotation_min = _baseline + _span * self.wrist_requirement_pct
 
         self.game_over           = False
         self.game_over_score     = 0
@@ -275,6 +304,21 @@ class SteadyAimGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self._reset()
         self._show_instructions = True
         self._pause_btn_rect    = pygame.Rect(GAME_W - 90, HEADER_BOTTOM + 14, 70, 46)
+
+        # Tutorial-only: sequential on-screen coaching during actual
+        # gameplay (see games/tutorial_hints.py), picking up once the
+        # How-To-Play card is dismissed.
+        self._tutorial_hints = TutorialHints([
+            TutorialStep(lambda g: tr("steadyaim.tut.1", g.language),
+                         anchor=lambda g: (int(g.target.x), int(g.target.face_cy)),
+                         done=lambda g, t: g.hold_timer > 0),
+            TutorialStep(lambda g: tr("steadyaim.tut.2", g.language),
+                         anchor=lambda g: (int(g.target.x), int(g.target.face_cy)),
+                         done=lambda g, t: g.reps >= 1),
+            TutorialStep(lambda g: (tr("steadyaim.tut.3.target", g.language, goal=g.goal)
+                                     if g.session_mode == "target" else
+                                     tr("steadyaim.tut.3.timed", g.language))),
+        ]) if self.tutorial else None
 
     def _reset(self):
         self._init_fatigue()
@@ -364,7 +408,7 @@ class SteadyAimGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
     def handle_event(self, event):
         if self._show_instructions:
-            if (event.type == pygame.KEYDOWN or
+            if self._instructions_min_t <= 0 and (event.type == pygame.KEYDOWN or
                     (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1) or
                     input_handler.was_pressed(event, "action")):
                 self._show_instructions = False
@@ -433,16 +477,15 @@ class SteadyAimGame(SessionModeMixin, FatigueMixin, BaseScreen):
     # ── update ───────────────────────────────────────────────────────────
 
     def update(self, dt):
-        if self._show_instructions or self.game_over:
+        if self._show_instructions:
+            self._instructions_min_t = max(0.0, self._instructions_min_t - dt)
+            return
+        if self.game_over:
             return
 
         self._state = input_handler.get_state()
         self._update_fatigue(dt, self._state)
         if self.fatigue_paused or self.paused: return
-
-        if self._session_tick(dt):
-            self._end_game("completed")
-            return
 
         ty_raw = self._vertical_raw()
         self._state["tilt_y"] = ty_raw   # keep the real value visible to therapist telemetry
@@ -458,9 +501,12 @@ class SteadyAimGame(SessionModeMixin, FatigueMixin, BaseScreen):
         tx, ty = self._tilt_x_smooth, self._tilt_y_smooth
 
         if self.phase == "aim":
-            if abs(tx) > 0.05:
+            # Required Wrist Rotation replaces the old flat 0.05 deadzone --
+            # the cursor only responds to an axis once its magnitude clears
+            # this patient's own calibration-relative requirement.
+            if abs(tx) > self._wrist_rotation_min:
                 self.cursor_x += self.cursor_spd * dt * tx
-            if abs(ty) > 0.05:
+            if abs(ty) > self._wrist_rotation_min:
                 self.cursor_y += self.cursor_spd * dt * ty
             self.cursor_x = max(AIM_X_MIN, min(AIM_X_MAX, self.cursor_x))
             self.cursor_y = max(AIM_Y_MIN, min(AIM_Y_MAX, self.cursor_y))
@@ -489,6 +535,18 @@ class SteadyAimGame(SessionModeMixin, FatigueMixin, BaseScreen):
         if self.feedback:
             self.feedback = (self.feedback[0], self.feedback[1], self.feedback[2] - dt)
             if self.feedback[2] <= 0: self.feedback = None
+
+        if self._tutorial_hints:
+            self._tutorial_hints.update(self, dt)
+
+        # Checked LAST, after this frame's own aim/fire logic has already
+        # run -- Timed Mode's duration expiring on the exact same frame as
+        # a shot must never preempt it (the old position, before that
+        # logic, could do exactly that and silently drop the final rep).
+        # time_left is floored at 0 by _session_tick() itself, so this
+        # still ends the session on every subsequent frame.
+        if self._session_tick(dt):
+            self._end_game("completed")
 
     def _fire_arrow(self):
         """Lock the current aim and hand off to the travel animation --
@@ -548,6 +606,8 @@ class SteadyAimGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self.manager.go_to("therapist_dashboard")
 
     def _save_session(self, status):
+        if not self._session_should_save():
+            return
         try:
             from database import Database
             db = Database()
@@ -627,6 +687,8 @@ class SteadyAimGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
         draw_game_header(surface, "Steady Aim", self.difficulty,
                           self._session_header_time(), self.score, GAME_W, GAME_H)
+        if self.tutorial:
+            draw_tutorial_badge(surface)
 
         draw_target_pill(surface, self._session_progress_text("shots"),
                           TARGET_POS, T["ACCENT"], self._font_target)
@@ -648,8 +710,10 @@ class SteadyAimGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
         if self.feedback:
             fx, fy = (self.target.x, self.target.face_cy - self.target.face_r - 50)
-            msg = self._font_fb.render(self.feedback[0], True, self.feedback[1])
-            surface.blit(msg, msg.get_rect(center=(int(fx), int(fy))))
+            draw_feedback_banner(surface, self.feedback, self._font_fb, (int(fx), int(fy)))
+
+        if self._tutorial_hints:
+            self._tutorial_hints.draw(surface, self)
 
         if self.paused: self._draw_pause(surface)
         self._draw_fatigue_overlay(surface)
@@ -777,15 +841,23 @@ class SteadyAimGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # ratio. Same outer card box (position + max size) as _draw_results'
         # Round Complete card -- the two screens read as stages of one
         # interface rather than two differently-proportioned popups.
-        card_name = f"steady_aim_how_to_play_{'dark' if is_dark_mode() else 'light'}.png"
+        card_name = (f"steady_aim_how_to_play_{'dark' if is_dark_mode() else 'light'}"
+                     f"{'_fil' if self.language == 'fil' else ''}.png")
         top_margin, bottom_reserved = int(GAME_H * 0.05), int(GAME_H * 0.17)
         card = _load_image_fit(card_name, int(GAME_W * 0.50), GAME_H - top_margin - bottom_reserved)
         if card is not None:
             cr = card.get_rect(center=(GAME_W // 2, GAME_H // 2))
             surface.blit(card, cr)
-        # Just the card, centered -- no extra text/descriptions. No "press
-        # any key" prompt either -- the patient never starts the game
-        # themselves, only the therapist's own START control does.
+        # Code-drawn "Controls" supplement in the card's own side margin --
+        # makes explicit that there is no squeeze at all: holding aim IS
+        # the fire trigger. No "press any key" prompt -- the patient never
+        # starts the game themselves, only the therapist's own START
+        # control does.
+        lang = self.language
+        draw_controls_panel(surface, controls_panel_rect(top_margin, bottom_reserved), [
+            (tr("steadyaim.ctrl.aim.action", lang), tr("steadyaim.ctrl.aim.desc", lang)),
+            (tr("steadyaim.ctrl.hold.action", lang), tr("steadyaim.ctrl.hold.desc", lang)),
+        ])
 
     def _draw_results(self, surface):
         T = get_theme()

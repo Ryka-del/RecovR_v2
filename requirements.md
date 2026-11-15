@@ -24,6 +24,8 @@ All other dependencies (`sqlite3`, `hashlib`, `datetime`, `asyncio`, `struct`, `
 
 All other dependencies (`sqlite3`, `hashlib`, `datetime`, `math`, `sys`, `os`, `random`, `time`, `ctypes`) are part of the Python standard library.
 
+`edge-tts` is a **dev-only** dependency, not imported by the running app -- it's used solely by `generate_calibration_audio.py`, the one-time script that produced the English + Filipino calibration narration clips in `assets/audio/` (`pip install edge-tts`, run only when those clips need regenerating).
+
 ---
 
 ## Installation Steps
@@ -197,7 +199,7 @@ The RecovR controller uses a **Seeed Studio XIAO-ESP32 C3** as the BLE transmitt
 | Sensor | `get_state()` key | Game |
 |--------|------------------|------|
 | FSR402 | `state["grip"]` | Basketball (squeeze to shoot) |
-| Flex Sensor | `state["tilt_y"]` + `state["fingers"]` | Piano Tiles + Calibration |
+| Flex Sensor | `state["tilt_y"]` + `state["fingers"]` | Tile Rush + Calibration |
 | MPU6050 accel X | `state["tilt_x"]` | Steady Aim (wrist rotation) |
 | Push Button | Synthetic `K_RETURN` event | General action |
 

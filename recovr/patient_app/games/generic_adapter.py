@@ -152,7 +152,7 @@ def _hidden_pause_rect(game):
 
     This used to let the game draw the button on-screen and then paint over
     its footprint with a sampled colour. That cannot reproduce detailed
-    background art (e.g. Feed the Cat's sky/trees): a single sampled pixel
+    background art (e.g. Purrfect Feast's sky/trees): a single sampled pixel
     flood-filled across the button's box showed up as a solid mismatched
     rectangle in that corner. Relocating the button before the game ever
     draws it fixes the actual rendering issue instead of covering it up.
@@ -194,6 +194,17 @@ def make_real_adapter(game_cls):
         def force_begin(self):
             if not getattr(self, "_show_instructions", False):
                 return
+            # The therapist's own START click is what dismisses this screen
+            # in production -- runner.update() never runs during HOWTOPLAY
+            # (see patient_main.py), so every game's own instructions
+            # minimum-read-time timer (_instructions_min_t) is still frozen
+            # at its starting value here and would otherwise always block
+            # the synthetic KEYDOWN below. Clear it first so the dismiss
+            # goes through the game's own normal path -- which is also
+            # what starts that game's own correct BGM -- instead of falling
+            # through to the generic fallback track below.
+            if hasattr(self, "_instructions_min_t"):
+                self._instructions_min_t = 0.0
             try:
                 super().handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_SPACE))
             except Exception:

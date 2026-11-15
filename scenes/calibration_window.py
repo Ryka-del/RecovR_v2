@@ -14,7 +14,8 @@ Usage by TherapistDashboardScene:
     if win.cancelled:  close without saving
 
 Phases:
-    sensitivity → countdown → recording → trial_done → (×3) → results
+    sensitivity → prep → baseline → ready → countdown → recording → trial_done
+        → (loop "ready"→"countdown"→"recording"→"trial_done" ×3) → complete → results
 """
 
 import pygame
@@ -99,11 +100,11 @@ SENSOR_CFG = {
     },
 }
 
-# Whack-a-Mole and Piano Tiles each calibrate their 5 fingers independently
+# Whack-a-Mole and Tile Rush each calibrate their 5 fingers independently
 # (one multi-sensor pass per finger, reusing the exact same sensitivity/
 # countdown/recording/trial_done engine as every other sensor -- see
 # MULTI_SENSOR_CALIBRATION below) instead of sharing the single generic
-# "Finger Flexion" entry Plant the Garden/Steady Aim still use, so adding it
+# "Finger Flexion" entry Garden Wonders/Steady Aim still use, so adding it
 # can never change those two games' calibration.
 _FINGER_FLEX_KEYS = [
     "Thumb Flexion", "Index Flexion", "Middle Flexion", "Ring Flexion", "Pinky Flexion",
@@ -151,10 +152,59 @@ SENSOR_CFG["Wrist Vertical"] = {
     "read":        _toy_factory_vertical_read,
 }
 
+# A patient's relaxed resting position rarely reads as a true sensor 0 (a
+# flex sensor still bends somewhat with the hand at rest, FSR402 can carry a
+# light resting preload, a wrist's "neutral" angle isn't always exactly 0) --
+# the baseline phase below measures that resting value per sensor so every
+# trial/threshold downstream can treat it as the real 0 instead of eating
+# into the patient's usable range. Applies uniformly to all 3 sensor types;
+# for a sensor that genuinely rests at 0 this is a no-op.
+#
+# Short, operational THERAPIST-facing instructions, one per calibration
+# stage -- shown on screen only, NEVER spoken (the patient hears a longer,
+# reassuring narration instead -- see recovr/patient_app/scenes/
+# calibrating.py's own cue tables/audio). Deliberately generic across sensor
+# types except "recording" (below), since the patient already hears which
+# specific movement to perform.
+THERAPIST_CUES = {
+    "prep":     "Prepare the patient for calibration. Ensure the hand is comfortably relaxed.",
+    "baseline": "Maintain the patient's resting position while the system records baseline sensor readings.",
+    "ready":    "Guide the patient through the upcoming movement.",
+    "between":  "Allow the patient to rest before proceeding.",
+    "complete": "Calibration is complete. Review the recommended setting based on the results before you start the game.",
+}
+
+# Recording-phase therapist instruction depends on which movement is being
+# measured right now.
+_RECORDING_CUES = {
+    "Grip Strength":  "Ask the patient to perform their maximum comfortable grip.",
+    "Finger Flexion": "Ask the patient to bend their fingers to their maximum comfortable range.",
+    "Wrist Rotation": "Ask the patient to rotate their wrist to their maximum comfortable range.",
+}
+
+
+def _recording_cue_for(game_type):
+    """Maps any SENSOR_CFG key -- including the 5 independent per-finger
+    passes and Toy Factory's two wrist axes -- to one of the 3 recording
+    instructions above, since the instruction to the therapist is the same
+    regardless of which specific finger or axis is currently being
+    captured."""
+    if game_type == "Grip Strength":
+        return _RECORDING_CUES["Grip Strength"]
+    if game_type in ("Wrist Rotation", "Wrist Horizontal", "Wrist Vertical"):
+        return _RECORDING_CUES["Wrist Rotation"]
+    return _RECORDING_CUES["Finger Flexion"]
+
+
 # Difficulty presets — threshold_pct is applied to the calibrated average
 DIFFICULTY_PRESETS = {
     "Easy": {
-        "threshold_pct": 40,
+        # 30/70/90 -- matches the required-performance band each difficulty
+        # represents (0-50% / 51-80% / 81-100% of the patient's own
+        # calibrated range), same anchor every GAME_PARAM_SCHEMA "Required
+        # Grip Strength"/"Required Finger Flexion"/"Required Wrist Rotation"
+        # row uses.
+        "threshold_pct": 30,
         "speed":         "Slow",
         "duration":      "60 s",
         "difficulty":    "Easy",
@@ -162,7 +212,7 @@ DIFFICULTY_PRESETS = {
         "color":         (60, 180, 100),
     },
     "Medium": {
-        "threshold_pct": 60,
+        "threshold_pct": 70,
         "speed":         "Normal",
         "duration":      "120 s",
         "difficulty":    "Medium",
@@ -170,7 +220,7 @@ DIFFICULTY_PRESETS = {
         "color":         (60, 130, 220),
     },
     "Hard": {
-        "threshold_pct": 80,
+        "threshold_pct": 90,
         "speed":         "Fast",
         "duration":      "180 s",
         "difficulty":    "Hard",
@@ -184,9 +234,26 @@ SPEED_OPTS       = ["Slow", "Normal", "Fast"]
 DIFFICULTY_OPTS  = ["Easy", "Medium", "Hard"]
 THRESHOLD_PCTS   = [30, 40, 50, 60, 70, 80, 90]
 
-RECORD_DURATION  = 3.0
-COUNTDOWN_STEPS  = 3
-TRIAL_DONE_PAUSE = 1.5
+RECORD_DURATION   = 3.0
+# 5 full seconds, matching the visible 5-4-3-2-1 countdown and the spoken
+# "keep your hand relaxed" cue -- both sized so the patient has real time to
+# settle into a resting position before baseline sampling begins (see
+# _draw_prep/_draw_baseline below; was a rushed 2.0s with no lead-in before
+# this revision).
+BASELINE_DURATION = 5.0
+COUNTDOWN_STEPS   = 3
+TRIAL_DONE_PAUSE  = 1.5
+# Fixed-length announcement screens (prep / complete) auto-advance once their
+# own spoken clip has had time to finish -- sized from the LONGER of the
+# English/Filipino rendered clip lengths (assets/audio/calibration_prep[_fil]
+# .mp3: en 6.88s / fil 8.70s; calibration_complete[_fil].mp3: en 5.08s / fil
+# 7.39s -- see generate_calibration_audio.py) plus a small buffer, not a
+# guess, so neither language's instruction is ever cut off and the next
+# stage never starts over it. "ready" (the
+# per-trial Start-button screen) deliberately has NO timer here -- the
+# therapist advances it manually.
+PREP_DURATION     = 9.3
+COMPLETE_DURATION = 8.0
 
 # ── per-game Advanced Settings parameters ──────────────────────────────────────
 # Each entry is a real, independently-overridable constant read by that game's
@@ -196,63 +263,96 @@ TRIAL_DONE_PAUSE = 1.5
 # preset card is picked and to restore via "Reset to Preset". "key" is the
 # calibration_result["params"] key the game checks (falling back to its own
 # difficulty dict when absent, so normal non-customized sessions are
-# unaffected). Games not listed here (Whack-a-Mole) have not been
-# individually audited for overridable constants, so they get no
-# game-specific rows -- only the generic Speed control that already applies
-# to the games listed in GAMES_USING_SPEED.
+# unaffected). All 10 games now have a schema entry here (Whack-a-Mole was
+# the one gap, now filled -- see wm_* below). Every "Required Grip Strength"/
+# "Required Finger Flexion"/"Required Wrist Rotation" row across every game
+# uses the same Easy=30%/Medium=70%/Hard=90% anchor: the % a patient must
+# reach, relative to THEIR OWN calibrated resting->peak range, not a raw
+# sensor value.
 GAME_PARAM_SCHEMA = {
     "Basketball": [
-        {"key": "bb_goal",       "label": "Target Score",       "unit": "pts", "is_goal": True,
-         "min": 5,  "max": 30,  "step": 1,
-         "presets": {"Easy": 10,   "Medium": 15,   "Hard": 20}},
-        {"key": "bb_zone_width", "label": "Target Zone Size",   "unit": "%",
+        {"key": "bb_goal",            "label": "Target Score",            "unit": "pts", "is_goal": True,
+         "min": 10, "max": 300, "step": 5,
+         "presets": {"Easy": 50,   "Medium": 75,   "Hard": 100}},
+        {"key": "bb_zone_width",      "label": "Target Zone Size",        "unit": "%",
          "min": 5,  "max": 35,  "step": 1, "scale": 0.01,
          "presets": {"Easy": 25,   "Medium": 16,   "Hard": 9}},
+        {"key": "bb_grip_threshold",  "label": "Required Grip Strength",  "unit": "%",
+         "min": 10, "max": 95,  "step": 1, "scale": 0.01,
+         "presets": {"Easy": 30,   "Medium": 70,   "Hard": 90}},
+        {"key": "bb_pointer_speed",   "label": "Pointer Speed",           "unit": "/s",
+         "min": 0.2, "max": 2.0, "step": 0.05,
+         "presets": {"Easy": 0.5,  "Medium": 0.8,  "Hard": 1.1}},
     ],
     "Lemonade": [
-        {"key": "lem_target",         "label": "Lemons Required",         "unit": "lemons", "is_goal": True,
-         "min": 5,   "max": 100, "step": 1,
-         "presets": {"Easy": 15,   "Medium": 30,   "Hard": 50}},
-        {"key": "lem_grip_threshold", "label": "Grip Threshold",          "unit": "%",
-         "min": 20,  "max": 90,  "step": 1, "scale": 0.01,
-         "presets": {"Easy": 35,   "Medium": 45,   "Hard": 55}},
+        {"key": "lem_target",         "label": "Target Score",             "unit": "pts", "is_goal": True,
+         "min": 10, "max": 300, "step": 5,
+         "presets": {"Easy": 50,   "Medium": 75,   "Hard": 100}},
+        {"key": "lem_grip_threshold", "label": "Required Grip Strength",   "unit": "%",
+         "min": 10,  "max": 95,  "step": 1, "scale": 0.01,
+         "presets": {"Easy": 30,   "Medium": 70,   "Hard": 90}},
         {"key": "lem_hold_duration",  "label": "Squeeze Hold Duration",   "unit": "s",
          "min": 0.5, "max": 5.0, "step": 0.1,
          "presets": {"Easy": 0.8,  "Medium": 1.2,  "Hard": 1.6}},
     ],
-    "Piano Tiles": [
-        {"key": "pt_goal",            "label": "Tiles Required",            "unit": "tiles", "is_goal": True,
-         "min": 10,  "max": 80,  "step": 1,
-         "presets": {"Easy": 20,    "Medium": 30,   "Hard": 40}},
-        # No "Finger Flexion Threshold" slider here any more -- Piano Tiles
-        # now calibrates its 5 fingers independently (see
-        # MULTI_SENSOR_CALIBRATION in scenes/therapist_dashboard.py), same
-        # as Whack-a-Mole, which never had a single shared-threshold
-        # Advanced Setting either. GAME_PARAM_SCHEMA always supplies a
-        # preset value for every key it lists (see ToyFactoryGame.on_enter's
-        # own note on this same trap) -- keeping a single-value override
-        # here would silently collide with 5 independent per-finger
-        # calibrated values every session, not just when a therapist
-        # actually customizes it.
+    "Tile Rush": [
+        {"key": "pt_goal",            "label": "Target Score",              "unit": "pts", "is_goal": True,
+         "min": 10, "max": 300, "step": 5,
+         "presets": {"Easy": 50,    "Medium": 75,   "Hard": 100}},
+        {"key": "pt_tile_speed",      "label": "Tile Speed",                 "unit": "px/s",
+         "min": 120, "max": 700, "step": 10,
+         "presets": {"Easy": 260,   "Medium": 340,  "Hard": 420}},
         {"key": "pt_spawn_rate",      "label": "Tile Spawn Interval",       "unit": "s",
          "min": 0.2, "max": 2.0, "step": 0.05,
          "presets": {"Easy": 1.0,  "Medium": 0.7,  "Hard": 0.45}},
+        # Fallback only -- Tile Rush calibrates its 5 fingers independently
+        # (see MULTI_SENSOR_CALIBRATION in scenes/therapist_dashboard.py),
+        # each pass already produces its own real calibration-relative
+        # threshold via the generic adv_threshold_pct mechanism above. This
+        # single override only applies when a finger has no calibration at
+        # all to fall back on.
+        {"key": "pt_flex_threshold",  "label": "Required Finger Flexion",   "unit": "%",
+         "min": 10,  "max": 95,  "step": 1, "scale": 0.01,
+         "presets": {"Easy": 30,   "Medium": 70,   "Hard": 90}},
+    ],
+    "Whack-a-Mole": [
+        {"key": "wm_goal",            "label": "Target Score",               "unit": "pts", "is_goal": True,
+         "min": 10,  "max": 300, "step": 5,
+         "presets": {"Easy": 50,    "Medium": 75,   "Hard": 100}},
+        {"key": "wm_mole_duration",   "label": "Mole Appearance Duration",   "unit": "s",
+         "min": 2.0, "max": 3.0, "step": 0.1,
+         "presets": {"Easy": 3.0,   "Medium": 2.5,  "Hard": 2.0}},
+        {"key": "wm_simultaneous",    "label": "Simultaneous Mole Count",    "unit": "moles",
+         "min": 1,   "max": 3,   "step": 1,
+         "presets": {"Easy": 1,     "Medium": 1,    "Hard": 2}},
+        # Fallback only -- same per-finger-calibration reasoning as Tile
+        # Rush above (Whack-a-Mole calibrates its 5 fingers independently
+        # too).
+        {"key": "wm_flex_threshold",  "label": "Required Finger Flexion",    "unit": "%",
+         "min": 10,  "max": 95,  "step": 1, "scale": 0.01,
+         "presets": {"Easy": 30,    "Medium": 70,   "Hard": 90}},
     ],
     "Apple Catching": [
-        {"key": "ac_goal",        "label": "Apples Required",             "unit": "apples", "is_goal": True,
-         "min": 5,   "max": 60,   "step": 1,
-         "presets": {"Easy": 15,    "Medium": 25,    "Hard": 35}},
+        {"key": "ac_goal",        "label": "Target Score",                "unit": "pts", "is_goal": True,
+         "min": 10,  "max": 300,  "step": 5,
+         "presets": {"Easy": 50,     "Medium": 75,    "Hard": 100}},
         {"key": "ac_apple_speed", "label": "Apple Falling Speed",          "unit": "px/s",
          "min": 100, "max": 800,  "step": 10,
          "presets": {"Easy": 260,   "Medium": 380,   "Hard": 520}},
+        {"key": "ac_simultaneous","label": "Simultaneous Object Count",    "unit": "objects",
+         "min": 1,   "max": 3,    "step": 1,
+         "presets": {"Easy": 1,     "Medium": 1,     "Hard": 2}},
         {"key": "ac_move_speed",  "label": "Basket Movement Sensitivity",  "unit": "px/s",
          "min": 300, "max": 1500, "step": 10,
          "presets": {"Easy": 750,   "Medium": 900,   "Hard": 1050}},
+        {"key": "ac_wrist_requirement", "label": "Required Wrist Rotation", "unit": "%",
+         "min": 10,  "max": 95,   "step": 1, "scale": 0.01,
+         "presets": {"Easy": 30,    "Medium": 70,    "Hard": 90}},
     ],
     "Key and Lock": [
-        {"key": "kl_goal",      "label": "Locks Required",          "unit": "locks", "is_goal": True,
-         "min": 5,   "max": 40,  "step": 1,
-         "presets": {"Easy": 10,   "Medium": 15,   "Hard": 20}},
+        {"key": "kl_goal",      "label": "Target Score",             "unit": "pts", "is_goal": True,
+         "min": 10,  "max": 400, "step": 5,
+         "presets": {"Easy": 80,   "Medium": 120,  "Hard": 160}},
         {"key": "kl_tolerance", "label": "Wrist Angle Tolerance",   "unit": "°",
          "min": 2,   "max": 30,  "step": 1,
          "presets": {"Easy": 15,   "Medium": 8,    "Hard": 3}},
@@ -261,6 +361,9 @@ GAME_PARAM_SCHEMA = {
          # Uniform 2 continuous seconds across every difficulty, per spec --
          # still overridable here.
          "presets": {"Easy": 2.0,  "Medium": 2.0,  "Hard": 2.0}},
+        {"key": "kl_wrist_requirement", "label": "Required Wrist Rotation", "unit": "%",
+         "min": 10,  "max": 95,  "step": 1, "scale": 0.01,
+         "presets": {"Easy": 30,   "Medium": 70,   "Hard": 90}},
     ],
     # Grip threshold and both wrist-movement requirements are deliberately
     # NOT schema'd here -- they come straight from the patient's own
@@ -269,11 +372,13 @@ GAME_PARAM_SCHEMA = {
     # _apply_preset below), which would silently override real per-patient
     # calibration data every session instead of only when the therapist
     # explicitly customizes it -- these rows cover only the pure gameplay
-    # dials that have no calibration source of their own.
+    # dials that have no calibration source of their own, plus a cosmetic-
+    # only Finger Flexion slider (NOT wired into the real grab gate, which
+    # stays grip-only -- see games/toy_factory.py's on_enter() comment).
     "Toy Factory": [
-        {"key": "tf_goal", "label": "Toys to Sort", "unit": "toys", "is_goal": True,
-         "min": 5,   "max": 50,  "step": 1,
-         "presets": {"Easy": 15,   "Medium": 20,   "Hard": 25}},
+        {"key": "tf_goal", "label": "Target Score", "unit": "pts", "is_goal": True,
+         "min": 10,  "max": 300, "step": 5,
+         "presets": {"Easy": 50,   "Medium": 75,   "Hard": 100}},
         {"key": "tf_conveyor_speed",   "label": "Conveyor Speed",          "unit": "px/s",
          "min": 60,  "max": 260, "step": 10,
          "presets": {"Easy": 90,    "Medium": 140,  "Hard": 200}},
@@ -283,14 +388,19 @@ GAME_PARAM_SCHEMA = {
         {"key": "tf_box_tolerance",    "label": "Box-Placement Tolerance", "unit": "%",
          "min": 50,  "max": 150, "step": 5, "scale": 0.01,
          "presets": {"Easy": 125,   "Medium": 100,  "Hard": 80}},
+        {"key": "tf_flex_threshold",   "label": "Required Finger Flexion", "unit": "%",
+         "min": 10,  "max": 95,  "step": 1, "scale": 0.01,
+         "presets": {"Easy": 30,    "Medium": 70,   "Hard": 90}},
     ],
     "Steady Aim": [
-        {"key": "sa_goal",       "label": "Target Shots Required",  "unit": "shots", "is_goal": True,
-         "min": 3,   "max": 25,   "step": 1,
-         "presets": {"Easy": 8,     "Medium": 10,   "Hard": 12}},
-        {"key": "sa_circle_r",   "label": "Aim Tolerance",          "unit": "px",
-         "min": 30,  "max": 160,  "step": 5,
-         "presets": {"Easy": 120,   "Medium": 80,   "Hard": 45}},
+        {"key": "sa_goal",       "label": "Target Score",           "unit": "pts", "is_goal": True,
+         "min": 10,  "max": 400,  "step": 5,
+         "presets": {"Easy": 80,    "Medium": 120,  "Hard": 160}},
+        # Aim Tolerance (the hold-still precision radius) is now a frozen,
+        # non-difficulty constant -- see steady_aim.py's AIM_TOLERANCE_R --
+        # the spec names exactly one Advanced Settings parameter for this
+        # game (Required Wrist Rotation), so this row is intentionally
+        # removed rather than left scaling alongside it.
         {"key": "sa_cursor_spd", "label": "Cursor Sensitivity",    "unit": "",
          "min": 500, "max": 1500, "step": 10,
          "presets": {"Easy": 900,   "Medium": 1000, "Hard": 1100}},
@@ -300,31 +410,41 @@ GAME_PARAM_SCHEMA = {
         {"key": "sa_arrows",     "label": "Arrows Available",      "unit": "arrows",
          "min": 5,   "max": 40,   "step": 1,
          "presets": {"Easy": 20,    "Medium": 16,   "Hard": 14}},
+        {"key": "sa_wrist_requirement", "label": "Required Wrist Rotation", "unit": "%",
+         "min": 10,  "max": 95,   "step": 1, "scale": 0.01,
+         "presets": {"Easy": 30,    "Medium": 70,   "Hard": 90}},
     ],
-    "Feed the Cat": [
-        {"key": "ftc_grip_threshold", "label": "Grip Threshold",            "unit": "%",
-         "min": 15,   "max": 85,   "step": 1, "scale": 0.01,
-         "presets": {"Easy": 30,    "Medium": 45,   "Hard": 60}},
+    "Purrfect Feast": [
+        {"key": "ftc_grip_threshold", "label": "Required Grip Strength",    "unit": "%",
+         "min": 10,   "max": 95,   "step": 1, "scale": 0.01,
+         "presets": {"Easy": 30,    "Medium": 70,   "Hard": 90}},
         {"key": "ftc_move_deadzone",  "label": "Wrist Movement Sensitivity","unit": "%",
          "min": 2,    "max": 25,   "step": 1, "scale": 0.01,
          "presets": {"Easy": 5,     "Medium": 8,    "Hard": 12}},
+        # Presets now match ZONE_TOLERANCE in feed_the_cat.py exactly (they
+        # had drifted apart: 150/110/75 here vs. the game's own 180/135/95 --
+        # the game dict is the real fallback actually read, so this was
+        # silently wrong before).
         {"key": "ftc_zone_tolerance", "label": "Positioning Tolerance",     "unit": "px",
-         "min": 40,   "max": 200,  "step": 5,
-         "presets": {"Easy": 150,   "Medium": 110,  "Hard": 75}},
-        {"key": "ftc_target_cats",   "label": "Cats to Feed",              "unit": "cats", "is_goal": True,
-         "min": 3,    "max": 15,   "step": 1,
-         "presets": {"Easy": 5,     "Medium": 7,    "Hard": 10}},
+         "min": 40,   "max": 220,  "step": 5,
+         "presets": {"Easy": 180,   "Medium": 135,  "Hard": 95}},
+        {"key": "ftc_target_cats",   "label": "Target Score",              "unit": "pts", "is_goal": True,
+         "min": 10,   "max": 300,  "step": 5,
+         "presets": {"Easy": 50,    "Medium": 75,   "Hard": 100}},
+        {"key": "ftc_flex_threshold", "label": "Required Finger Flexion",   "unit": "%",
+         "min": 10,   "max": 95,   "step": 1, "scale": 0.01,
+         "presets": {"Easy": 30,    "Medium": 70,   "Hard": 90}},
     ],
-    "Plant the Garden": [
-        {"key": "ptg_goal",            "label": "Plants to Grow",            "unit": "plants", "is_goal": True,
-         "min": 3,    "max": 25,   "step": 1,
-         "presets": {"Easy": 5,     "Medium": 10,   "Hard": 15}},
-        {"key": "ptg_grip_threshold",  "label": "Grip Threshold",            "unit": "%",
-         "min": 15,   "max": 85,   "step": 1, "scale": 0.01,
-         "presets": {"Easy": 30,    "Medium": 45,   "Hard": 60}},
-        {"key": "ptg_flex_threshold",  "label": "Finger Flexion Threshold",  "unit": "%",
-         "min": 10,   "max": 70,   "step": 1, "scale": 0.01,
-         "presets": {"Easy": 20,    "Medium": 30,   "Hard": 40}},
+    "Garden Wonders": [
+        {"key": "ptg_goal",            "label": "Target Score",              "unit": "pts", "is_goal": True,
+         "min": 10,   "max": 400,  "step": 5,
+         "presets": {"Easy": 80,    "Medium": 120,  "Hard": 160}},
+        {"key": "ptg_grip_threshold",  "label": "Required Grip Strength",    "unit": "%",
+         "min": 10,   "max": 95,   "step": 1, "scale": 0.01,
+         "presets": {"Easy": 30,    "Medium": 70,   "Hard": 90}},
+        {"key": "ptg_flex_threshold",  "label": "Required Finger Flexion",   "unit": "%",
+         "min": 10,   "max": 95,   "step": 1, "scale": 0.01,
+         "presets": {"Easy": 30,    "Medium": 70,   "Hard": 90}},
         {"key": "ptg_move_deadzone",   "label": "Wrist Movement Sensitivity","unit": "%",
          "min": 2,    "max": 25,   "step": 1, "scale": 0.01,
          "presets": {"Easy": 5,     "Medium": 8,    "Hard": 12}},
@@ -334,12 +454,18 @@ GAME_PARAM_SCHEMA = {
         {"key": "ptg_water_hold",      "label": "Watering Hold Duration",    "unit": "s",
          "min": 0.5,  "max": 3.0,  "step": 0.1,
          "presets": {"Easy": 0.8,   "Medium": 1.2,  "Hard": 1.6}},
+        # NEW -- watering is now gated by wrist rotation (a pouring-motion
+        # gesture), not grip; grip's role narrows to can/seed pickup. See
+        # games/plant_the_garden.py's on_enter()/_update_watering().
+        {"key": "ptg_wrist_requirement", "label": "Required Wrist Rotation", "unit": "%",
+         "min": 10,   "max": 95,   "step": 1, "scale": 0.01,
+         "presets": {"Easy": 30,    "Medium": 70,   "Hard": 90}},
     ],
 }
 # Games that read the generic Speed (Slow/Normal/Fast) setting at all --
 # shown as its own Advanced Settings row only for these (showing it for a
 # game that ignores it would be a non-functional control).
-GAMES_USING_SPEED = {"Basketball", "Piano Tiles"}
+GAMES_USING_SPEED = {"Basketball", "Tile Rush"}
 
 
 # ── CalibrationWindow ──────────────────────────────────────────────────────────
@@ -355,7 +481,7 @@ class CalibrationWindow:
         # instead opts into sequential multi-sensor calibration -- each
         # sensor runs through the exact same sensitivity->countdown->
         # recording->trial_done(x3) phases, one after another, before a
-        # single combined Results screen. Only "Plant the Garden" is
+        # single combined Results screen. Only "Garden Wonders" is
         # launched with a list today (see therapist_dashboard.py); every
         # other game's single-string call site, and everything below that
         # only ever sees len(self.game_types) == 1, is unaffected.
@@ -400,6 +526,41 @@ class CalibrationWindow:
         self.pause_t       = 0.0
         self.live_value    = 0.0
 
+        # ── 5-finger flex group (Whack-a-Mole / Tile Rush) ────────────
+        # Normally each entry in self.game_types runs its OWN full
+        # sensitivity->prep->baseline->ready->countdown->recording->
+        # trial_done cycle. The 5 finger-flexion entries are the one
+        # exception: when self.game_types contains all 5 of
+        # _FINGER_FLEX_KEYS back to back, they run through that cycle
+        # TOGETHER, ONCE -- every frame's self.cfg["read"] is replaced with
+        # a read of all 5 channels at once (state["finger_flex"]), so one
+        # shared baseline and the same 3 trials cover all 5 fingers
+        # simultaneously instead of 15 separate trials. See
+        # _is_finger_group_start/_finish_finger_group. self.peak_values
+        # mirrors self.peak_value but per-finger; harmless/unused outside
+        # group mode.
+        self._finger_group_active = False
+        self.peak_values           = [0.0] * len(_FINGER_FLEX_KEYS)
+
+        # ── resting-baseline capture (see THERAPIST_CUES above) ────────
+        # One measured resting value per sensor type, keyed exactly like
+        # self.sensor_results -- {} for every sensor whose baseline hasn't
+        # been captured yet (including every sensor on a brand-new window),
+        # so every .get(..., 0.0) downstream is a safe, correction-free
+        # no-op until a real baseline phase actually runs.
+        self.sensor_baseline  = {}
+        self.baseline_t       = 0.0
+        self._baseline_samples = []
+
+        # ── fixed-length announcement screens ("prep" before baseline,
+        # "complete" after the last trial) -- see PREP_DURATION/
+        # COMPLETE_DURATION above. "ready" (the per-trial Start-button
+        # screen between baseline/trial_done and the next countdown) needs
+        # no timer -- it waits for self._start_trial_rect instead.
+        self._prep_t     = 0.0
+        self._complete_t = 0.0
+        self._start_trial_rect = pygame.Rect(0, 0, 1, 1)
+
         # ── results-phase: preset & advanced settings ─────────────────
         self.selected_preset     = "Medium"   # Easy / Medium / Hard
         self.recommended_preset  = "Medium"   # from _recommend_difficulty(); never
@@ -408,7 +569,7 @@ class CalibrationWindow:
                                                # been edited away from its preset value
 
         # advanced settings (start at Moderate defaults)
-        self.adv_threshold_pct = 60           # int, one of THRESHOLD_PCTS
+        self.adv_threshold_pct = 70           # int, one of THRESHOLD_PCTS -- Medium's anchor
         self.adv_speed         = "Normal"
         self.adv_duration      = "120 s"
         self.adv_difficulty    = "Medium"
@@ -473,6 +634,16 @@ class CalibrationWindow:
         self._preset_card_rects = {}          # {"Easy": Rect, ...}
         self._adv_open_rect     = pygame.Rect(0, 0, 1, 1)   # "Advanced Settings" button (results screen)
 
+        # ── Close confirmation overlay (see _draw_close_confirm) ────────
+        # Clicking the Close button (self._cancel_rect) no longer exits
+        # calibration immediately -- it opens this confirmation first.
+        # Confirming sets self.cancelled (the same flag/behavior as before);
+        # Cancel just dismisses the overlay, leaving the in-progress
+        # calibration's phase/trials/baseline untouched.
+        self._close_confirm_open      = False
+        self._close_confirm_yes_rect  = pygame.Rect(0, 0, 1, 1)
+        self._close_confirm_no_rect   = pygame.Rect(0, 0, 1, 1)
+
         # ── Results screen vertical scroll ──────────────────────────────
         # The results screen's content (banner + results card + difficulty
         # cards + preset summary) can be taller than the 800x480 panel --
@@ -512,6 +683,18 @@ class CalibrationWindow:
         # Results if the whole game_types list was reused.
         if self.sensor_results:
             self._advance_sensor_idx(0)
+            if self.phase == "complete":
+                # Nothing was actually just measured THIS window (every
+                # sensor came from reused_sensors) -- the "Calibration
+                # complete" announcement describes trials that didn't just
+                # happen here, so skip straight to Results instead.
+                self._enter_results()
+        else:
+            # Fresh start, sensor_idx 0 -- _advance_sensor_idx isn't called
+            # in this case (nothing to skip past), so arm the 5-finger group
+            # here instead if game_types opens with one (Whack-a-Mole /
+            # Tile Rush) -- see _is_finger_group_start.
+            self._finger_group_active = self._is_finger_group_start(0)
 
     # ── colour palette ────────────────────────────────────────────────────────
 
@@ -593,6 +776,25 @@ class CalibrationWindow:
     # ── event handling ────────────────────────────────────────────────────────
 
     def handle_event(self, event):
+        # Close confirmation overlay -- swallows ALL input until resolved,
+        # exactly like the results-screen scroll gesture is scoped below but
+        # higher priority: the confirmation must win even over a drag that
+        # started on the results viewport before Close was clicked.
+        if self._close_confirm_open:
+            pos = None
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                raw = event.pos
+                pos = builtins.normalise_pos(raw) if hasattr(builtins, "normalise_pos") else raw
+            elif event.type == pygame.FINGERDOWN:
+                pos = (int(event.x * self.W), int(event.y * self.H))
+            if pos is not None:
+                if self._close_confirm_yes_rect.collidepoint(pos):
+                    self._close_confirm_open = False
+                    self.cancelled = True
+                elif self._close_confirm_no_rect.collidepoint(pos):
+                    self._close_confirm_open = False
+            return
+
         # Results-screen drag-to-scroll needs real down -> motion -> up
         # tracking that this file's fire-on-down click model otherwise
         # doesn't have -- it's handled as its own small state machine,
@@ -617,11 +819,15 @@ class CalibrationWindow:
             self.dark_mode = not self.dark_mode
             return
         if self._cancel_rect.collidepoint(pos):
-            self.cancelled = True
+            self._close_confirm_open = True
             return
 
         if self.phase == "sensitivity":
             if self._begin_rect.collidepoint(pos):
+                self._start_prep()
+
+        elif self.phase == "ready":
+            if self._start_trial_rect.collidepoint(pos):
                 self._start_countdown()
 
         elif self.phase == "results":
@@ -754,36 +960,90 @@ class CalibrationWindow:
         input_handler.update(dt)
         state = input_handler.get_state()
 
-        if self.phase == "countdown":
+        if self.phase == "prep":
+            self._prep_t += dt
+            if self._prep_t >= PREP_DURATION:
+                self._start_baseline()
+
+        elif self.phase == "baseline":
+            if self._finger_group_active:
+                raw5 = [min(1.0, max(0.0, v)) for v in state["finger_flex"]]
+                self.live_value = raw5[0]   # representative only -- see _draw_baseline
+                self._baseline_samples.append(raw5)
+                self.baseline_t += dt
+                if self.baseline_t >= BASELINE_DURATION:
+                    n = len(self._baseline_samples)
+                    for i, name in enumerate(_FINGER_FLEX_KEYS):
+                        avg_i = sum(s[i] for s in self._baseline_samples) / n if n else 0.0
+                        self.sensor_baseline[name] = round(avg_i, 4)
+                    self._start_ready()
+            else:
+                raw = min(1.0, max(0.0, self.cfg["read"](state)))
+                self.live_value = raw
+                self._baseline_samples.append(raw)
+                self.baseline_t += dt
+                if self.baseline_t >= BASELINE_DURATION:
+                    baseline_val = (sum(self._baseline_samples) / len(self._baseline_samples)
+                                     if self._baseline_samples else 0.0)
+                    self.sensor_baseline[self.game_type] = round(baseline_val, 4)
+                    self._start_ready()
+
+        elif self.phase == "ready":
+            pass   # waits for the therapist to tap Start -- see handle_event
+
+        elif self.phase == "countdown":
             self.countdown_t += dt
             if self.countdown_t >= 1.0:
                 self.countdown_t -= 1.0
                 self.countdown   -= 1
                 if self.countdown <= 0:
-                    self.phase      = "recording"
-                    self.record_t   = 0.0
-                    self.peak_value = 0.0
+                    self.phase       = "recording"
+                    self.record_t    = 0.0
+                    self.peak_value  = 0.0
+                    self.peak_values = [0.0] * len(_FINGER_FLEX_KEYS)
 
         elif self.phase == "recording":
-            self.live_value  = min(1.0, max(0.0, self.cfg["read"](state)))
-            self.peak_value  = max(self.peak_value, self.live_value)
-            self.record_t   += dt
-            if self.record_t >= RECORD_DURATION:
-                self.trial_results.append(round(self.peak_value, 4))
-                self.phase   = "trial_done"
-                self.pause_t = 0.0
+            if self._finger_group_active:
+                raw5 = [min(1.0, max(0.0, v)) for v in state["finger_flex"]]
+                self.live_value  = raw5[0]   # representative only -- see _draw_finger_group_readings
+                self.peak_values = [max(p, r) for p, r in zip(self.peak_values, raw5)]
+                self.peak_value  = max(self.peak_values)
+                self.record_t   += dt
+                if self.record_t >= RECORD_DURATION:
+                    self.trial_results.append([round(v, 4) for v in self.peak_values])
+                    self.phase   = "trial_done"
+                    self.pause_t = 0.0
+            else:
+                self.live_value  = min(1.0, max(0.0, self.cfg["read"](state)))
+                self.peak_value  = max(self.peak_value, self.live_value)
+                self.record_t   += dt
+                if self.record_t >= RECORD_DURATION:
+                    self.trial_results.append(round(self.peak_value, 4))
+                    self.phase   = "trial_done"
+                    self.pause_t = 0.0
 
         elif self.phase == "trial_done":
             self.pause_t += dt
             if self.pause_t >= TRIAL_DONE_PAUSE:
                 self.current_trial += 1
                 if self.current_trial >= 3:
-                    if len(self.game_types) > 1:
+                    if self._finger_group_active:
+                        self._finish_finger_group()
+                    elif len(self.game_types) > 1:
                         self._finish_sensor()
                     else:
-                        self._enter_results()
+                        self._enter_complete()
                 else:
-                    self._start_countdown()
+                    # Another trial remains for this sensor -- wait on the
+                    # "ready" screen (rest cue + Start button) rather than
+                    # auto-continuing, so the therapist confirms the patient
+                    # is ready before every trial, not just the first.
+                    self._start_ready()
+
+        elif self.phase == "complete":
+            self._complete_t += dt
+            if self._complete_t >= COMPLETE_DURATION:
+                self._enter_results()
 
     # ── internal transitions ──────────────────────────────────────────────────
 
@@ -798,15 +1058,55 @@ class CalibrationWindow:
             "sensor_name": self.cfg["sensor_name"],
             "trials":      list(self.trial_results),
             "average":     round(avg, 4),
+            "baseline":    self.sensor_baseline.get(self.game_type, 0.0),
         }
         self._advance_sensor_idx(self.sensor_idx + 1)
+
+    def _is_finger_group_start(self, idx):
+        """True when game_types[idx : idx+5] is exactly the 5 finger-
+        flexion entries (Whack-a-Mole / Tile Rush), in order, and NONE of
+        them has already been recorded (a reused-sensor seed never seeds
+        just some of the 5 in practice, but if it ever did, falling back to
+        the plain one-at-a-time path for the remainder is the safe
+        choice -- see the comment by self._finger_group_active)."""
+        end = idx + len(_FINGER_FLEX_KEYS)
+        if end > len(self.game_types):
+            return False
+        if self.game_types[idx:end] != _FINGER_FLEX_KEYS:
+            return False
+        return not any(k in self.sensor_results for k in _FINGER_FLEX_KEYS)
+
+    def _finish_finger_group(self):
+        """Counterpart to _finish_sensor() for the 5-finger group -- splits
+        the 3 shared trials (each trial_results entry is a 5-long list, one
+        peak per finger -- see update()'s "recording" branch) back into 5
+        independent sensor_results rows, one per finger, in EXACTLY the
+        shape _finish_sensor() itself produces. Everything downstream
+        (_advance_sensor_idx's terminal branch, _enter_results,
+        _recommend_difficulty, _accept_multi_sensor, the Results screen)
+        already expects that shape and needs no group-specific handling at
+        all once this has run."""
+        for i, name in enumerate(_FINGER_FLEX_KEYS):
+            trials_i = [round(t[i], 4) for t in self.trial_results]
+            avg_i = sum(trials_i) / len(trials_i) if trials_i else 0.0
+            self.sensor_results[name] = {
+                "sensor_name": SENSOR_CFG[name]["sensor_name"],
+                "trials":      trials_i,
+                "average":     round(avg_i, 4),
+                "baseline":    self.sensor_baseline.get(name, 0.0),
+            }
+        self._finger_group_active = False
+        self._advance_sensor_idx(self.sensor_idx + len(_FINGER_FLEX_KEYS))
 
     def _advance_sensor_idx(self, start_idx):
         """Move to the next sensor in game_types (from start_idx onward)
         that still needs live trials, skipping any sensor already present
         in self.sensor_results -- whether pre-seeded via reused_sensors at
         construction or just finished live in this same multi-sensor run.
-        Lands that sensor on its own fresh "sensitivity" screen. Once every
+        Lands that sensor on its own fresh "sensitivity" screen -- or, if it
+        starts a 5-finger group (see _is_finger_group_start), arms
+        self._finger_group_active so update()/draw read/show all 5 channels
+        together instead of just self.game_type's own one. Once every
         sensor is accounted for, enters the combined Results screen, first
         restoring self.trial_results from the LAST sensor in game_types
         order -- the same sensor whose trial_results _enter_results() would
@@ -817,9 +1117,10 @@ class CalibrationWindow:
         while idx < len(self.game_types) and self.game_types[idx] in self.sensor_results:
             idx += 1
         if idx < len(self.game_types):
-            self.sensor_idx     = idx
-            self.game_type       = self.game_types[idx]
-            self.cfg              = SENSOR_CFG.get(self.game_type, SENSOR_CFG["Grip Strength"])
+            self.sensor_idx           = idx
+            self.game_type             = self.game_types[idx]
+            self.cfg                    = SENSOR_CFG.get(self.game_type, SENSOR_CFG["Grip Strength"])
+            self._finger_group_active = self._is_finger_group_start(idx)
             self.current_trial    = 0
             self.trial_results    = []
             self.phase             = "sensitivity"
@@ -831,12 +1132,59 @@ class CalibrationWindow:
         self.sensor_idx = len(self.game_types) - 1
         self.game_type   = last_sensor
         self.cfg          = SENSOR_CFG.get(self.game_type, SENSOR_CFG["Grip Strength"])
-        self._enter_results()
+        self._finger_group_active = False
+        self._enter_complete()
+
+    def _start_prep(self):
+        self.phase   = "prep"
+        self._prep_t = 0.0
+
+    def _start_baseline(self):
+        self.phase           = "baseline"
+        self.baseline_t       = 0.0
+        self.live_value       = 0.0
+        self._baseline_samples = []
+
+    def _start_ready(self):
+        self.phase = "ready"
 
     def _start_countdown(self):
         self.phase       = "countdown"
         self.countdown   = COUNTDOWN_STEPS
         self.countdown_t = 0.0
+
+    def _enter_complete(self):
+        """Brief spoken+visual confirmation (see THERAPIST_CUES["complete"]
+        and assets/audio/calibration_complete[_fil].mp3) shown once, right after
+        the LAST sensor's last trial -- not after every sensor in a
+        multi-sensor run, only the final one -- before the Results screen
+        itself opens. Auto-advances after COMPLETE_DURATION; see update()."""
+        self.phase       = "complete"
+        self._complete_t = 0.0
+
+    @staticmethod
+    def _rescale(raw, baseline):
+        """Rescales a raw 0-1 sensor reading so the patient's own relaxed
+        resting position reads as 0 and their calibrated max still reads as
+        1, instead of a resting bend/preload eating into the usable range.
+        A no-op (returns raw unchanged, clamped) when baseline is 0."""
+        denom = 1.0 - baseline
+        if denom <= 1e-6:
+            return max(0.0, min(1.0, raw - baseline))
+        return max(0.0, min(1.0, (raw - baseline) / denom))
+
+    @staticmethod
+    def _baseline_threshold(avg, baseline, pct):
+        """threshold_pct applied to the RANGE ABOVE the resting baseline,
+        not to the raw average -- so a sensor with a nonzero resting value
+        (e.g. a flex sensor that still reads something with the hand at
+        rest) doesn't give the patient "free" progress toward the
+        threshold just for resting. Reduces exactly to the original
+        `avg * pct / 100` when baseline is 0."""
+        span = avg - baseline
+        if span <= 1e-6:
+            return round(baseline, 4)
+        return round(baseline + span * pct / 100.0, 4)
 
     def _enter_results(self):
         self.phase = "results"
@@ -850,11 +1198,17 @@ class CalibrationWindow:
         self._apply_preset(self.recommended_preset)
 
     def _recommend_difficulty(self):
+        """Easy = 0-50%, Medium = 51-80%, Hard = 81-100% of the patient's own
+        calibrated resting->peak range -- the same bands every difficulty
+        parameter in GAME_PARAM_SCHEMA is anchored to (see the 30/70/90
+        presets there)."""
         avg = (sum(self.trial_results) / len(self.trial_results)
                if self.trial_results else 0.0)
-        if avg < 0.33:
+        baseline = self.sensor_baseline.get(self.game_type, 0.0)
+        effective_avg = self._rescale(avg, baseline)
+        if effective_avg < 0.50:
             return "Easy"
-        if avg < 0.66:
+        if effective_avg < 0.80:
             return "Medium"
         return "Hard"
 
@@ -922,8 +1276,9 @@ class CalibrationWindow:
         if len(self.game_types) > 1:
             self._accept_multi_sensor()
             return
-        avg = sum(self.trial_results) / len(self.trial_results) if self.trial_results else 0.0
-        threshold = round(avg * self.adv_threshold_pct / 100.0, 4)
+        avg      = sum(self.trial_results) / len(self.trial_results) if self.trial_results else 0.0
+        baseline = self.sensor_baseline.get(self.game_type, 0.0)
+        threshold = self._baseline_threshold(avg, baseline, self.adv_threshold_pct)
         params = {
             "threshold":     threshold,
             "threshold_pct": self.adv_threshold_pct,
@@ -940,6 +1295,7 @@ class CalibrationWindow:
             "sensitivity": self.sensitivity,
             "trials":      list(self.trial_results),
             "average":     round(avg, 4),
+            "baseline":    baseline,
             "threshold":   threshold,
             "preset":      self.selected_preset,
             "recommended": self.recommended_preset,
@@ -951,7 +1307,7 @@ class CalibrationWindow:
 
     def _accept_multi_sensor(self):
         """Multi-sensor calibration only (len(self.game_types) > 1 -- today
-        just Plant the Garden). Builds TWO things:
+        just Garden Wonders). Builds TWO things:
           - self.multi_sensor_results: one flat, save_calibration()-shaped
             row per sensor, so the dashboard can record one DB row per
             sensor exactly like a normal single-sensor calibration (no DB
@@ -979,9 +1335,11 @@ class CalibrationWindow:
         extra = {}
         for sensor_type in self.game_types:
             data = self.sensor_results.get(sensor_type) or {
-                "sensor_name": SENSOR_CFG[sensor_type]["sensor_name"], "trials": [], "average": 0.0}
-            avg = data["average"]
-            thr = round(avg * threshold_pct / 100.0, 4)
+                "sensor_name": SENSOR_CFG[sensor_type]["sensor_name"], "trials": [], "average": 0.0,
+                "baseline": 0.0}
+            avg      = data["average"]
+            baseline = data.get("baseline", 0.0)
+            thr = self._baseline_threshold(avg, baseline, threshold_pct)
             row_params = dict(shared_params)
             row_params["threshold"] = thr
             self.multi_sensor_results.append({
@@ -991,6 +1349,7 @@ class CalibrationWindow:
                 "sensitivity": self.sensitivity,
                 "trials":      data["trials"],
                 "average":     avg,
+                "baseline":    baseline,
                 "threshold":   thr,
                 "preset":      self.selected_preset,
                 "recommended": self.recommended_preset,
@@ -998,18 +1357,27 @@ class CalibrationWindow:
                 "dark_mode":   self.dark_mode,
                 "params":      row_params,
             })
-            sensors_block[sensor_type] = {"average": avg, "threshold": thr, "trials": data["trials"]}
+            sensors_block[sensor_type] = {"average": avg, "baseline": baseline,
+                                           "threshold": thr, "trials": data["trials"]}
 
+            # grip_rest/wrist_min/wrist_max below feed every game's existing
+            # _normalize_grip/_normalize_tilt (see games/*.py) unchanged --
+            # those already compute (raw - rest) / (mx - rest) /
+            # (raw - wmin) / (wmax - wmin); plugging the real measured
+            # baseline in here (instead of the old hardcoded 0.0/symmetric
+            # range) is the only change those formulas need.
             if sensor_type == "Grip Strength":
-                extra["grip_rest"] = 0.0
-                extra["grip_max"]  = max(avg, 0.05)
+                extra["grip_rest"] = baseline
+                extra["grip_max"]  = max(avg, baseline + 0.05)
             elif sensor_type == "Wrist Rotation":
-                extra["wrist_min"] = -max(avg, 0.05)
-                extra["wrist_max"] =  max(avg, 0.05)
+                half_range = max(avg - baseline, 0.05)
+                extra["wrist_min"] = -half_range
+                extra["wrist_max"] =  half_range
             elif sensor_type == "Finger Flexion":
                 extra["flex_threshold"] = thr if thr > 0 else input_handler.FLEX_THRESH
 
-        primary = sensors_block.get(self.game_type, {"average": 0.0, "threshold": 0.0, "trials": []})
+        primary = sensors_block.get(self.game_type,
+                                     {"average": 0.0, "baseline": 0.0, "threshold": 0.0, "trials": []})
         merged_params = dict(shared_params)
         merged_params["threshold"] = primary["threshold"]
 
@@ -1020,6 +1388,7 @@ class CalibrationWindow:
             "sensitivity": self.sensitivity,
             "trials":      primary["trials"],
             "average":     primary["average"],
+            "baseline":    primary.get("baseline", 0.0),
             "threshold":   primary["threshold"],
             "preset":      self.selected_preset,
             "recommended": self.recommended_preset,
@@ -1043,6 +1412,13 @@ class CalibrationWindow:
         self.game_type       = self.game_types[0]
         self.cfg              = SENSOR_CFG.get(self.game_type, SENSOR_CFG["Grip Strength"])
         self.sensor_results   = {}
+        # Resting position may have shifted since the last attempt (e.g. a
+        # regrip, a different arm rest) -- recapture it fresh rather than
+        # reusing a stale baseline.
+        self.sensor_baseline  = {}
+        self._prep_t          = 0.0
+        self._complete_t      = 0.0
+        self._finger_group_active = self._is_finger_group_start(0)
 
     # ── draw ─────────────────────────────────────────────────────────────────
 
@@ -1069,7 +1445,10 @@ class CalibrationWindow:
         row_h  = _bh
         tog_w  = row_h * 2
         if self.phase != "advanced":
-            close_r = pygame.Rect(W - pad_r - row_h, top_h // 2 - row_h // 2, row_h, row_h)
+            # Wider than the toggle/back buttons -- this is a labeled pill,
+            # not a square icon (see the close_r drawing below).
+            close_w = self._scw(170)
+            close_r = pygame.Rect(W - pad_r - close_w, top_h // 2 - row_h // 2, close_w, row_h)
             toggle_right = close_r.left - gap
         else:
             close_r = None
@@ -1116,23 +1495,38 @@ class CalibrationWindow:
                                          + self._scw(14),
                                          top_h // 2 - gn_s.get_height() // 2))
         else:
-            title_txt = f"Sensor Calibration — {self.cfg['sensor_name']}"
-            if len(self.game_types) > 1:
-                title_txt += f"  ({self.sensor_idx + 1} of {len(self.game_types)})"
+            if self._finger_group_active:
+                # All 5 fingers calibrate together as ONE step now (see
+                # _finish_finger_group) -- "(1 of 5)" would misreport it as
+                # 5 separate sequential passes.
+                title_txt = "Sensor Calibration — All Finger Flex Sensors"
+            else:
+                title_txt = f"Sensor Calibration — {self.cfg['sensor_name']}"
+                if len(self.game_types) > 1:
+                    title_txt += f"  ({self.sensor_idx + 1} of {len(self.game_types)})"
             title_s = self._fit_title(title_txt, controls_left_x - self._scw(32) - self._scw(16), C["text"])
             surface.blit(title_s, (self._scw(32),
                                     top_h // 2 - title_s.get_height() // 2))
 
-        # ── Light/Dark toggle + Close button -- the EXACT same sliding
-        # track+knob component and close_button.png asset as
-        # therapist_dashboard.py's own top-right bar (see
-        # _draw_top_right_bar there), not a separate implementation.
+        # ── Light/Dark toggle (EXACT same sliding track+knob component as
+        # therapist_dashboard.py's own top-right bar) + a dedicated "Close"
+        # button for calibration. Deliberately NOT the plain close_button.png
+        # X used elsewhere in the dashboard -- calibration can be mid-
+        # measurement when a therapist needs to back out fast (e.g. patient
+        # discomfort), and a small corner X is both easy to miss and easy to
+        # mistake for "close this view" the way it behaves everywhere else in
+        # the app. Clicking it opens a confirmation dialog (see
+        # _close_confirm_open / _draw_close_confirm) rather than exiting
+        # immediately -- only confirming there sets self.cancelled (-> return
+        # to Game Configuration / Patient Dashboard, see handle_event and
+        # therapist_dashboard.py's own win.cancelled handling).
         if close_r is not None:
-            close_img = _img("close_button.png", row_h)
-            if close_img is not None:
-                surface.blit(close_img, close_img.get_rect(center=close_r.center))
-            else:
-                pygame.draw.circle(surface, C["red"], close_r.center, row_h // 2)
+            pygame.draw.rect(surface, C["red"], close_r, border_radius=close_r.height // 2)
+            pygame.draw.rect(surface, (255, 255, 255), close_r,
+                             max(1, int(2 * self._FS)), border_radius=close_r.height // 2)
+            ex_s = self._fit_text(self._bold_font_path, self._sc(21), "Close",
+                                  close_r.width - self._scw(16), (255, 255, 255), self._sc(13))
+            surface.blit(ex_s, ex_s.get_rect(center=close_r.center))
             self._cancel_rect = close_r
 
         tr = pygame.Rect(controls_left_x, top_h // 2 - row_h // 2, tog_w, row_h)
@@ -1153,12 +1547,50 @@ class CalibrationWindow:
                               W, H - top_h - self._sc(14))
         {
             "sensitivity":  self._draw_sensitivity,
+            "prep":         self._draw_prep,
+            "baseline":     self._draw_baseline,
+            "ready":        self._draw_ready,
             "countdown":    self._draw_countdown,
             "recording":    self._draw_recording,
             "trial_done":   self._draw_trial_done,
+            "complete":     self._draw_complete,
             "results":      self._draw_results,
             "advanced":     self._draw_advanced_settings,
         }.get(self.phase, lambda s, a, c: None)(surface, content, C)
+
+        # ── Close confirmation overlay -- drawn last so it covers everything
+        # above, including whichever phase screen is currently showing. ────
+        if self._close_confirm_open:
+            self._draw_close_confirm(surface)
+
+    def _dialog_fonts(self):
+        """The font set draw_confirm_dialog needs, from this window's OWN
+        Lexend-based font set (self.fnt) -- not therapist_dashboard.py's
+        Poppins one, so the confirmation stays visually consistent with the
+        rest of THIS screen's own typography."""
+        return {"title": self.fnt["head2"], "body": self.fnt["body"], "btn": self.fnt["bold"]}
+
+    def _draw_close_confirm(self, surface):
+        """Confirms before actually closing calibration (see handle_event's
+        _cancel_rect handling) -- reuses therapist_dashboard.py's own
+        standardized draw_confirm_dialog for the same dim-overlay/icon/
+        title/body/button layout and interaction pattern every other
+        confirmation in RecovR uses. Imported lazily: therapist_dashboard.py
+        is what imports CalibrationWindow (not the other way around), so a
+        module-level import here would be circular -- by the time any
+        CalibrationWindow instance actually draws, that module is already
+        fully loaded."""
+        from scenes.therapist_dashboard import draw_confirm_dialog
+        cr, xr = draw_confirm_dialog(
+            surface, self.W, self.H, tt=self._tt, sc=self._sc,
+            fonts=self._dialog_fonts(), icon="warning", accent=(205, 45, 45),
+            title="Close Calibration?",
+            body="This will interrupt the ongoing calibration. Any progress "
+                 "on the current sensor will be lost.",
+            confirm_label="Close", cancel_label="Cancel",
+            confirm_hov=self._close_confirm_yes_rect.collidepoint(pygame.mouse.get_pos()),
+            cancel_hov=self._close_confirm_no_rect.collidepoint(pygame.mouse.get_pos()))
+        self._close_confirm_yes_rect, self._close_confirm_no_rect = cr, xr
 
     # ── phases: sensitivity / countdown / recording / trial_done ───────────────
     # All four share one compact 800x480 monitoring layout (therapist-facing:
@@ -1171,6 +1603,125 @@ class CalibrationWindow:
     def _draw_sensitivity(self, surface, area, C):
         self._draw_live_monitor(surface, area, C, "Waiting", show_begin=True)
 
+    def _draw_cue_box(self, surface, lx, cy, rw, C, text, label="Therapist cue:"):
+        """Shared box used by the prep/baseline/ready/complete announcement
+        screens -- a short, ON-SCREEN-ONLY operational instruction for the
+        THERAPIST (see THERAPIST_CUES), never spoken aloud. The patient
+        hears a longer, separate narration instead (see
+        recovr/patient_app/scenes/calibrating.py). Returns the y position
+        immediately below the box."""
+        cue_h = self._sc(76)
+        cue_r = pygame.Rect(lx, cy, rw, cue_h)
+        pygame.draw.rect(surface, C["panel2"], cue_r, border_radius=12)
+        pygame.draw.rect(surface, C["accent"], cue_r, 1, border_radius=12)
+        pad = self._scw(16)
+        cue_lbl = self.fnt["smallb"].render(label, True, C["sub"])
+        surface.blit(cue_lbl, (cue_r.x + pad, cue_r.y + self._sc(8)))
+        cue_s = self._fit_text(self._bold_font_path, self._sc(23), text,
+                               cue_r.width - pad * 2, C["text"], self._sc(16))
+        surface.blit(cue_s, (cue_r.x + pad,
+                             cue_r.y + self._sc(8) + cue_lbl.get_height() + self._sc(2)))
+        return cy + cue_h + self._sc(14)
+
+    def _draw_timer_bar(self, surface, lx, cy, rw, C, remaining, total):
+        """Thin progress bar + "X.Xs" readout shared by every fixed-length
+        auto-advancing screen (prep / baseline / complete)."""
+        frac = 1.0 - (remaining / total if total else 0.0)
+        bar_w = rw - self._scw(90)
+        bar_h = self._sc(18)
+        self._draw_bar(surface, lx, cy, bar_w, bar_h, frac, C)
+        tm_s = self.fnt["bold"].render(f"{remaining:.1f}s", True, C["text"])
+        surface.blit(tm_s, (lx + bar_w + self._scw(14), cy + (bar_h - tm_s.get_height()) // 2))
+
+    def _draw_prep(self, surface, area, C):
+        """Preparation announcement, before the baseline countdown starts --
+        gives the patient (and the therapist) real time to get ready before
+        anything is measured (see PREP_DURATION). Auto-advances into
+        "baseline" on its own; no button needed here."""
+        W, H = self.W, self.H
+        lx = self._scw(40)
+        rw = W - lx * 2
+        cy = area.y + self._sc(6)
+
+        tl_s = self.fnt["head2"].render("Preparing for Calibration", True, C["text"])
+        surface.blit(tl_s, (lx, cy))
+        st_s = self.fnt["head2"].render("Preparation", True, C["accent"])
+        surface.blit(st_s, st_s.get_rect(topright=(lx + rw, cy)))
+        cy += tl_s.get_height() + self._sc(14)
+
+        cy = self._draw_cue_box(surface, lx, cy, rw, C, THERAPIST_CUES["prep"])
+        cy += self._sc(10)
+        self._draw_timer_bar(surface, lx, cy, rw, C,
+                             max(0.0, PREP_DURATION - self._prep_t), PREP_DURATION)
+
+    def _draw_baseline(self, surface, area, C):
+        """Resting-baseline capture -- a visible 5-4-3-2-1 countdown (see
+        BASELINE_DURATION) while the patient's resting sensor value is
+        continuously sampled; the digit shown and the sampling window are
+        driven by this same self.baseline_t, so they can never drift apart.
+        On-screen only; see THERAPIST_CUES["baseline"]."""
+        W, H = self.W, self.H
+        lx = self._scw(40)
+        rw = W - lx * 2
+        cy = area.y + self._sc(6)
+
+        tl_s = self.fnt["head2"].render("Establishing Resting Baseline", True, C["text"])
+        surface.blit(tl_s, (lx, cy))
+        st_s = self.fnt["head2"].render("Baseline", True, C["accent"])
+        surface.blit(st_s, st_s.get_rect(topright=(lx + rw, cy)))
+        cy += tl_s.get_height() + self._sc(10)
+
+        cy = self._draw_cue_box(surface, lx, cy, rw, C, THERAPIST_CUES["baseline"])
+
+        count = max(1, int(BASELINE_DURATION) - int(min(self.baseline_t, BASELINE_DURATION - 1e-3)))
+        count_s = self.fnt["big"].render(str(count), True, C["accent"])
+        surface.blit(count_s, count_s.get_rect(midtop=(lx + rw // 2, cy)))
+        cy += count_s.get_height() + self._sc(4)
+
+        card_h = self._sc(84)
+        live_r = pygame.Rect(lx, cy, rw, card_h)
+        self._draw_reading_card(surface, live_r, C, "Resting Reading",
+                                f"{self.live_value:.3f}", C["accent"], font=self.fnt["big2"])
+        cy += card_h + self._sc(10)
+
+        self._draw_timer_bar(surface, lx, cy, rw, C,
+                             max(0.0, BASELINE_DURATION - self.baseline_t), BASELINE_DURATION)
+
+    def _draw_ready(self, surface, area, C):
+        """Waits for the therapist to confirm the patient is ready before
+        EVERY trial, not just the first -- see THERAPIST_CUES["ready"]/
+        ["between"] and the Start button below. Entered once right after
+        baseline (trial 1) and again after each completed trial that isn't
+        the sensor's last (trials 2 and 3)."""
+        W, H = self.W, self.H
+        cx = area.centerx
+        lx = self._scw(40)
+        rw = W - lx * 2
+        cy = area.y + self._sc(6)
+
+        is_first = self.current_trial == 0
+        tl_s = self.fnt["head2"].render(
+            f"Ready for Trial {self.current_trial + 1} of 3", True, C["text"])
+        surface.blit(tl_s, (lx, cy))
+        st_s = self.fnt["head2"].render("Waiting", True, C["sub"])
+        surface.blit(st_s, st_s.get_rect(topright=(lx + rw, cy)))
+        cy += tl_s.get_height() + self._sc(10)
+
+        cue = THERAPIST_CUES["ready"] if is_first else THERAPIST_CUES["between"]
+        cy = self._draw_cue_box(surface, lx, cy, rw, C, cue)
+
+        dot_r = self._sc(10)   # must match _draw_trial_dots' own internal dot_r
+        label_h = self.fnt["small"].get_height()
+        self._draw_trial_dots(surface, cx, cy + dot_r, C, current=self.current_trial)
+        cy += dot_r * 2 + self._sc(4) + label_h + self._sc(16)
+
+        start_h = self._tt(44)
+        start_r = pygame.Rect(cx - self._scw(190), cy, self._scw(380), start_h)
+        pygame.draw.rect(surface, C["accent"], start_r, border_radius=14)
+        b_s = self.fnt["bold"].render(f"Start Trial {self.current_trial + 1}", True, C["white"])
+        surface.blit(b_s, b_s.get_rect(center=start_r.center))
+        self._start_trial_rect = start_r
+
     def _draw_countdown(self, surface, area, C):
         self._draw_live_monitor(surface, area, C, "Waiting")
 
@@ -1179,6 +1730,27 @@ class CalibrationWindow:
 
     def _draw_trial_done(self, surface, area, C):
         self._draw_live_monitor(surface, area, C, "Completed")
+
+    def _draw_complete(self, surface, area, C):
+        """Brief "Calibration complete" confirmation shown once, right after
+        the LAST sensor's last trial -- not after every sensor in a
+        multi-sensor run, only the final one -- before the Results screen
+        opens (see THERAPIST_CUES["complete"] / COMPLETE_DURATION). Auto-
+        advances; no button needed here."""
+        W, H = self.W, self.H
+        lx = self._scw(40)
+        rw = W - lx * 2
+        cy = area.y + self._sc(20)
+
+        tl_s = self.fnt["med"].render("Calibration Complete!", True, C["green"])
+        surface.blit(tl_s, tl_s.get_rect(midtop=(lx + rw // 2, cy)))
+        cy += tl_s.get_height() + self._sc(18)
+
+        cy = self._draw_cue_box(surface, lx, cy, rw, C, THERAPIST_CUES["complete"],
+                                label="Next step:")
+        cy += self._sc(10)
+        self._draw_timer_bar(surface, lx, cy, rw, C,
+                             max(0.0, COMPLETE_DURATION - self._complete_t), COMPLETE_DURATION)
 
     def _draw_live_monitor(self, surface, area, C, status, show_begin=False):
         """Flow layout (each row positioned from the actual rendered height
@@ -1206,6 +1778,16 @@ class CalibrationWindow:
         surface.blit(st_s, st_s.get_rect(topright=(lx + rw, cy)))
         cy += tl_s.get_height() + self._sc(5)
 
+        # row 1b -- recording-only therapist cue (see THERAPIST_CUES /
+        # _recording_cue_for). One compact line, not the larger boxed cue
+        # the prep/baseline/ready/complete screens use, so this stays
+        # within the tight 800x480 height budget documented above.
+        if status == "Recording":
+            cue_s = self._fit_text(self._bold_font_path, self._sc(21),
+                                   _recording_cue_for(self.game_type), rw, C["accent"], self._sc(15))
+            surface.blit(cue_s, (lx, cy))
+            cy += cue_s.get_height() + self._sc(5)
+
         # row 2 -- Live Reading / Peak Reading cards, SIDE BY SIDE. Grip/Flex
         # show the raw 0-1 sensor scale (no invented unit, no misleading
         # "%" -- same 3dp formatting the Results screen already uses).
@@ -1225,7 +1807,13 @@ class CalibrationWindow:
         peak_r = pygame.Rect(lx + card_w + card_gap, cy, card_w, card_h)
         cy += card_h + self._sc(5)
 
-        if is_wrist:
+        if self._finger_group_active:
+            # All 5 fingers read simultaneously -- self.live_value/
+            # peak_value are scalars here (see update()'s "recording"
+            # branch) so they can't drive the normal Live/Peak cards
+            # without losing 4 of the 5 readings; show all 5 instead.
+            self._draw_finger_group_readings(surface, lx, live_r.y, rw, card_h, C, status)
+        elif is_wrist:
             if status == "Recording":
                 raw_tilt = input_handler.get_state()["tilt_x"]
                 deadzone = 0.03
@@ -1243,19 +1831,21 @@ class CalibrationWindow:
                         else self.peak_value * 90 if status == "Recording" else None)
             peak_txt = f"{peak_deg:.0f}°" if peak_deg is not None else "—"
             tag_col = C["accent"]
+            self._draw_reading_card(surface, live_r, C, "Live Reading", live_txt,
+                                    C["accent"], font=self.fnt["big2"],
+                                    tag=live_tag, tag_col=tag_col)
+            self._draw_reading_card(surface, peak_r, C, "Peak Reading", peak_txt,
+                                    C["green"], font=self.fnt["big2"])
         else:
             live_val = self.live_value if status == "Recording" else None
             peak_val = (self.trial_results[-1] if status == "Completed" and self.trial_results
                         else self.peak_value if status == "Recording" else None)
             live_txt = f"{live_val:.3f}" if live_val is not None else "—"
             peak_txt = f"{peak_val:.3f}" if peak_val is not None else "—"
-            live_tag, tag_col = None, None
-
-        self._draw_reading_card(surface, live_r, C, "Live Reading", live_txt,
-                                C["accent"], font=self.fnt["big2"],
-                                tag=live_tag, tag_col=tag_col)
-        self._draw_reading_card(surface, peak_r, C, "Peak Reading", peak_txt,
-                                C["green"], font=self.fnt["big2"])
+            self._draw_reading_card(surface, live_r, C, "Live Reading", live_txt,
+                                    C["accent"], font=self.fnt["big2"])
+            self._draw_reading_card(surface, peak_r, C, "Peak Reading", peak_txt,
+                                    C["green"], font=self.fnt["big2"])
 
         # row 3 -- recording countdown (existing RECORD_DURATION/record_t
         # timing, shown as real remaining seconds -- not a sensor percentage)
@@ -1325,6 +1915,33 @@ class CalibrationWindow:
             surface.blit(tag_s, (r.x + pad + val_s.get_width() + self._scw(18),
                                  val_y + val_s.get_height() - tag_s.get_height()))
 
+    def _draw_finger_group_readings(self, surface, lx, cy, rw, card_h, C, status):
+        """5-at-once equivalent of the Live/Peak reading cards above, used
+        only while self._finger_group_active (Whack-a-Mole / Tile Rush) --
+        one compact card per finger showing its own live + peak reading, so
+        the therapist can see all 5 channels moving together instead of
+        just one representative scalar (self.live_value/peak_value)."""
+        names = ["Thumb", "Index", "Middle", "Ring", "Pinky"]
+        gap = self._scw(10)
+        card_w = (rw - gap * (len(names) - 1)) // len(names)
+        live_vals = (input_handler.get_state()["finger_flex"] if status == "Recording" else None)
+        peak_vals = (self.trial_results[-1] if status == "Completed" and self.trial_results
+                     else self.peak_values if status == "Recording" else None)
+        pad = self._scw(10)
+        for i, nm in enumerate(names):
+            r = pygame.Rect(lx + i * (card_w + gap), cy, card_w, card_h)
+            pygame.draw.rect(surface, C["panel"], r, border_radius=12)
+            pygame.draw.rect(surface, C["border"], r, 1, border_radius=12)
+            lbl_s = self.fnt["small"].render(nm, True, C["sub"])
+            surface.blit(lbl_s, (r.x + pad, r.y + self._sc(8)))
+            lv_txt = f"{live_vals[i]:.2f}" if live_vals is not None else "—"
+            pv_txt = f"pk {peak_vals[i]:.2f}" if peak_vals is not None else "pk —"
+            lv_s = self.fnt["bold"].render(lv_txt, True, C["accent"])
+            surface.blit(lv_s, (r.x + pad, r.y + self._sc(8) + lbl_s.get_height() + self._sc(4)))
+            pv_s = self.fnt["small"].render(pv_txt, True, C["green"])
+            surface.blit(pv_s, (r.x + pad,
+                                r.y + self._sc(8) + lbl_s.get_height() + lv_s.get_height() + self._sc(8)))
+
     # ── phase: results ────────────────────────────────────────────────────────
 
     def _fmt_trial(self, val):
@@ -1377,7 +1994,8 @@ class CalibrationWindow:
         y += ban_h + u(16)
 
         # ── B. Calibration Results card ────────────────────────────────
-        res_h = u(230)
+        res_h = u(250)   # +20 over the original 230 -- headroom for the
+                         # "Resting baseline removed" line added below
         res_r = pygame.Rect(lx, y, rw, res_h)
         pygame.draw.rect(surface, C["panel"],  res_r, border_radius=12)
         pygame.draw.rect(surface, C["border"], res_r, 1, border_radius=12)
@@ -1412,12 +2030,17 @@ class CalibrationWindow:
         divx = res_r.x + u(160)
         pygame.draw.line(surface, C["border"], (divx, strip_y), (divx, res_r.bottom - u(10)), 1)
 
-        thr_now = round(avg * self.adv_threshold_pct / 100.0, 3)
+        baseline = self.sensor_baseline.get(self.game_type, 0.0)
+        thr_now = self._baseline_threshold(avg, baseline, self.adv_threshold_pct)
         thr_disp = self._fmt_trial(thr_now)
         surface.blit(self.fnt["smallb"].render(f"Sensitivity: {self.sensitivity}", True, C["sub"]),
                      (divx + u(16), strip_y + u(4)))
         surface.blit(self.fnt["body"].render(f"Active threshold: {thr_disp}", True, C["accent"]),
                      (divx + u(16), strip_y + u(32)))
+        if baseline > 0:
+            base_disp = self._fmt_trial(baseline)
+            surface.blit(self.fnt["small"].render(f"Resting baseline removed: {base_disp}", True, C["sub"]),
+                         (divx + u(16), strip_y + u(58)))
         y += res_h + u(16)
 
         # ── C. Select Difficulty (3 compact cards) ────────────────────
@@ -1679,8 +2302,10 @@ class CalibrationWindow:
         # generic: Threshold %
         if cy + row_h <= max_rows_y:
             row_label("Threshold %", cy)
-            thr_now = round((sum(self.trial_results) / len(self.trial_results)
-                             if self.trial_results else 0.0) * self.adv_threshold_pct / 100.0, 3)
+            _adv_avg = (sum(self.trial_results) / len(self.trial_results)
+                        if self.trial_results else 0.0)
+            thr_now = self._baseline_threshold(
+                _adv_avg, self.sensor_baseline.get(self.game_type, 0.0), self.adv_threshold_pct)
             stepper(cy, f"{self.adv_threshold_pct}% = {thr_now:.3f}", kind="threshold")
             pygame.draw.line(surface, C["border"], (rows_r.x + u(10), cy + row_h),
                              (rows_r.right - u(10), cy + row_h), 1)
@@ -1735,8 +2360,15 @@ class CalibrationWindow:
                    else C["panel2"])
             pygame.draw.circle(surface, col,   (dx, y), dot_r)
             pygame.draw.circle(surface, C["border"], (dx, y), dot_r, 1)
-            lbl = (f"{self.trial_results[i]:.2f}" if i < len(self.trial_results)
-                   else f"Trial {i + 1}")
+            # Finger-group trials store a 5-long list (one peak per finger,
+            # see update()'s "recording" branch) -- no single number
+            # summarizes that, so show "Done" instead of trying to format
+            # a list as a float.
+            if i < len(self.trial_results):
+                val = self.trial_results[i]
+                lbl = "Done" if isinstance(val, list) else f"{val:.2f}"
+            else:
+                lbl = f"Trial {i + 1}"
             ls = self.fnt["small"].render(lbl, True, C["sub"])
             surface.blit(ls, ls.get_rect(midtop=(dx, y + dot_r + self._sc(4))))
 

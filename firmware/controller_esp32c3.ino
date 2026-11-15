@@ -16,20 +16,20 @@
 //     S3  -> D6  (GPIO21)
 //     EN  -> GND (always enabled)
 //   FSR402      -> MUX channel C5
-//   Flex Sensor -> MUX channel C0   (legacy single-flex games: Piano Tiles,
-//                                    Plant the Garden, Steady Aim)
-//   Push Button -> MUX channel C10  (pull-down resistor to GND)
 //   MPU6050     -> I2C  SDA=D4(GPIO6)  SCL=D5(GPIO7)
+//   No push button is wired -- the "buttons" byte in the BLE packet below
+//   is always sent as 0 (kept so the packet layout/size never changes).
 //
-//   Whack-a-Mole (5-finger glove) -- PLACEHOLDER WIRING:
-//   the five CH_FLEX_* constants below are NOT yet verified against the real
-//   glove. Flash firmware/mux_channel_verify/mux_channel_verify.ino, flex one
-//   finger at a time, note which MUX channel (C0-C15) moves for each finger,
-//   then replace the five placeholder numbers below with the real ones
-//   before relying on per-finger gameplay. Until then they all read the same
-//   physical sensor as CH_FLEX, which is harmless (every finger reports the
-//   same value, matching this firmware's previous single-sensor behavior)
-//   but gives no real finger-to-finger differentiation.
+//   5-finger flex glove -- VERIFIED WIRING: Thumb=C0, Index=C1, Middle=C2,
+//   Ring=C3, Pinky=C4 (sequential). Used independently by Tile Rush and
+//   Whack-a-Mole (state["finger_flex"], 5 separate channels). Plant the
+//   Garden instead uses only the Thumb channel (C0) as its single legacy
+//   "Finger Flexion" reading (state["tilt_y"]) -- same physical sensor,
+//   not a second one. Steady Aim and Purrfect Feast use NO flex sensor at
+//   all today (per scenes/therapist_dashboard.py's MULTI_SENSOR_CALIBRATION
+//   -- Steady Aim is Wrist Rotation only, Purrfect Feast is Grip + Wrist
+//   only). If Purrfect Feast is meant to need flex too, that's a game-logic
+//   change, not a wiring one -- flag it separately.
 //
 // BLE Packet (19 bytes, little-endian, 50 Hz) -- must match
 // sensors/ble_receiver.py PACKET_FORMAT "<HHHHHHHBhh":
@@ -76,16 +76,14 @@
 // -- MUX channels -------------------------------------------------------------
 #define CH_FLEX    0   // C0  Flex Sensor 2.2 (legacy single-flex games)
 #define CH_FSR     5   // C5  FSR402
-#define CH_BUTTON  10  // C10 Push button
 
-// Whack-a-Mole 5-finger glove -- PLACEHOLDERS, see the header comment
-// above. All five default to CH_FLEX (C0) until verified with
-// firmware/mux_channel_verify/mux_channel_verify.ino.
-#define CH_FLEX_THUMB   0   // TODO: confirm via mux_channel_verify.ino
-#define CH_FLEX_INDEX   0   // TODO: confirm via mux_channel_verify.ino
-#define CH_FLEX_MIDDLE  0   // TODO: confirm via mux_channel_verify.ino
-#define CH_FLEX_RING    0   // TODO: confirm via mux_channel_verify.ino
-#define CH_FLEX_PINKY   0   // TODO: confirm via mux_channel_verify.ino
+// Whack-a-Mole 5-finger glove -- verified wiring, see the header comment
+// above (sequential C0-C4, Thumb through Pinky).
+#define CH_FLEX_THUMB   0   // C0
+#define CH_FLEX_INDEX   1   // C1
+#define CH_FLEX_MIDDLE  2   // C2
+#define CH_FLEX_RING    3   // C3
+#define CH_FLEX_PINKY   4   // C4
 
 // -- BLE identity (must match sensors/ble_receiver.py) ------------------------
 #define DEVICE_NAME  "RecovR-Controller"
@@ -220,8 +218,7 @@ void loop() {
     uint16_t flex_middle_raw = readMuxChannel(CH_FLEX_MIDDLE);
     uint16_t flex_ring_raw   = readMuxChannel(CH_FLEX_RING);
     uint16_t flex_pinky_raw  = readMuxChannel(CH_FLEX_PINKY);
-    uint16_t btn_adc  = readMuxChannel(CH_BUTTON);
-    uint8_t  buttons  = (btn_adc > 2047) ? 0x01 : 0x00;
+    uint8_t  buttons  = 0;   // no physical push button wired
 
     // Read MPU6050 -> raw int16 counts (16384 LSB/g at +/-2g)
     int16_t accel_x = 0, accel_y = 0;
@@ -256,10 +253,17 @@ void loop() {
     unsigned long printGap = deviceConnected ? 200 : 2000;
     if (now - lastPrint >= printGap) {
         lastPrint = now;
-        Serial.printf("%s grip=%4u flex=%4u T=%4u I=%4u M=%4u R=%4u P=%4u btn=%u ax=%6d ay=%6d\n",
-                      deviceConnected ? "[LIVE]" : "[ADV ]",
-                      grip_raw, flex_raw, flex_thumb_raw, flex_index_raw,
-                      flex_middle_raw, flex_ring_raw, flex_pinky_raw,
-                      buttons, accel_x, accel_y);
+        Serial.println(deviceConnected ? "[LIVE]" : "[ADV ]");
+        Serial.printf("  fsr402: %u\n",         grip_raw);
+        Serial.printf("  flex sensor c0: %u\n", flex_thumb_raw);
+        Serial.printf("  flex sensor c1: %u\n", flex_index_raw);
+        Serial.printf("  flex sensor c2: %u\n", flex_middle_raw);
+        Serial.printf("  flex sensor c3: %u\n", flex_ring_raw);
+        Serial.printf("  flex sensor c4: %u\n", flex_pinky_raw);
+        if (mpuOK) {
+            Serial.printf("  mpu6050: ax=%d ay=%d\n", accel_x, accel_y);
+        } else {
+            Serial.println("  mpu6050: not found");
+        }
     }
 }

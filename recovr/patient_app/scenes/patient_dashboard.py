@@ -55,24 +55,24 @@ _SEX_SPRITES = {"male": "patient_male.png", "female": "patient_female.png"}
 # screen already uses (see games/*.py _draw_results()).
 _GAME_ICONS = {
     "Basketball":        "basketball_icon.png",
-    "Piano Tiles":        "piano_tiles_icon.png",
+    "Tile Rush":        "piano_tiles_icon.png",
     "Lemonade":           "lemonade_icon.png",
     "Apple Catching":     "apple_catching_icon.png",
     "Key and Lock":       "key_and_lock_icon.png",
-    "Plant the Garden":   "plant_the_garden_icon.png",
+    "Garden Wonders":   "plant_the_garden_icon.png",
     "Steady Aim":         "steady_aim_icon.png",
-    "Feed the Cat":       "feed_the_cat_icon.png",
+    "Purrfect Feast":       "feed_the_cat_icon.png",
     "Toy Factory":        "bear_toy_factory.png",
 }
 _GAME_METRIC_LABELS = {
     "Basketball":        "Shots Made",
-    "Piano Tiles":        "Tiles Hit",
+    "Tile Rush":        "Tiles Hit",
     "Lemonade":           "Lemons Squeezed",
     "Apple Catching":     "Apples Caught",
     "Key and Lock":       "Locks Opened",
-    "Plant the Garden":   "Plants Grown",
+    "Garden Wonders":   "Plants Grown",
     "Steady Aim":         "Shots Fired",
-    "Feed the Cat":       "Cats Fed",
+    "Purrfect Feast":       "Cats Fed",
     "Toy Factory":        "Toys Sorted",
 }
 

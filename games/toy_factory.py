@@ -42,8 +42,11 @@ from audio import (start_music, stop_music, pause_music, resume_music,
                     game_bgm_path, play_success, play_error, play_completion, play_click)
 from constants import get_theme, is_dark_mode, GAME_W, GAME_H
 from games.game_header import draw_game_header, HEADER_BOTTOM
-from games.hud import draw_target_pill, TARGET_POS
+from games.hud import (draw_target_pill, TARGET_POS, draw_tutorial_badge, draw_feedback_banner,
+                        draw_controls_panel, controls_panel_rect)
+from games.tutorial_hints import TutorialHints, TutorialStep
 from games.round_complete import draw_round_complete_overlay
+from i18n import tr
 
 # Real MPU6050 Y-axis tilt (accel_y) -- see games/steady_aim.py's own copy
 # of this exact import/rationale. Scoped to this file only.
@@ -53,8 +56,8 @@ except Exception:
     _ble = None
 
 # ── difficulty-scaled parameters ────────────────────────────────────────────
-GOAL      = {"Easy": 15, "Medium": 20, "Hard": 25}   # Target Mode: toys to sort
-DURATION  = {"Easy": 90, "Medium": 75, "Hard": 60}   # Timed Mode: session length (s)
+GOAL      = {"Easy": 50, "Medium": 75, "Hard": 100}   # Target Mode: points
+DURATION  = {"Easy": 300, "Medium": 420, "Hard": 600} # Timed Mode: session length (s) -- 5/7/10 min
 
 CONVEYOR_SPEED_PRESET    = {"Easy": 90,  "Medium": 140, "Hard": 200}  # px/s, Advanced-Settings-overridable
 # Wide enough that only ~5 toys are ever on the belt at once: a toy travels
@@ -68,16 +71,26 @@ BOX_TOLERANCE_PRESET     = {"Easy": 1.25,"Medium": 1.0, "Hard": 0.8}  # multipli
 
 # Grip: a real calibrated threshold is used whenever available (see
 # on_enter()) -- these are only the fallback if calibration was skipped.
-DEFAULT_GRIP_THRESHOLD = {"Easy": 0.30, "Medium": 0.45, "Hard": 0.60}
+# 30/70/90% -- same Easy/Medium/Hard anchor used for every "Required Grip
+# Strength"/"Required Finger Flexion"/"Required Wrist Rotation" parameter
+# across every game (the % of the patient's own calibrated range required).
+DEFAULT_GRIP_THRESHOLD = {"Easy": 0.30, "Medium": 0.70, "Hard": 0.90}
 RELEASE_MARGIN = 0.70   # release threshold = grab threshold * this
+
+# Cosmetic-only Advanced Settings display value ("Required Finger Flexion")
+# -- Toy Factory's actual grab gate stays grip-only (see _update_grip/
+# _try_grab below, unchanged); this exists so the setting is visible/
+# editable in Advanced Settings without changing real grab behavior.
+FLEX_THRESHOLD_DISPLAY = {"Easy": 0.30, "Medium": 0.70, "Hard": 0.90}
 
 # Wrist: "how much of the patient's OWN calibrated average movement is
 # required to reach full hand speed" -- Easy asks for well under their
 # calibrated average (forgiving/sensitive), Hard asks for MORE than their
 # calibrated average (must move further than they did in calibration), per
 # spec 8's "greater wrist movement requirement". Falls back to a flat
-# average if a wrist axis was never actually calibrated.
-WRIST_REQUIREMENT_FRAC = {"Easy": 0.60, "Medium": 0.85, "Hard": 1.15}
+# average if a wrist axis was never actually calibrated. Same 30/70/90%
+# anchor as every other rebanded threshold in this task.
+WRIST_REQUIREMENT_FRAC = {"Easy": 0.30, "Medium": 0.70, "Hard": 0.90}
 DEFAULT_WRIST_AVG      = {"Easy": 0.35, "Medium": 0.45, "Hard": 0.55}
 WRIST_DEADZONE = 0.08
 
@@ -137,6 +150,10 @@ BOX_BOTTOM_Y      = BOX_TOP_Y + BOX_HEIGHT
 
 HAND_X_MIN, HAND_X_MAX = int(0.045 * GAME_W), int(0.955 * GAME_W)
 HAND_Y_MIN, HAND_Y_MAX = CONVEYOR_TOP_Y - int(0.09 * GAME_H), BOX_TOP_Y + int(BOX_HEIGHT * 0.22)
+
+# Affected-hand adaptation: this game's art is drawn for a LEFT hand by
+# default. See self.hand_flipped (on_enter) / _draw_hand / _hand_tip_local.
+DEFAULT_HAND = "left"
 
 TOY_BOX = (150, 175)   # on-conveyor/held toy sprite bounding box
 TOY_HELD_SCALE = 1.25  # a grabbed toy renders larger -- makes the grab read clearly
@@ -216,6 +233,19 @@ class ToyFactoryGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
         cal_params = self.cal.get("params", {})
         self._session_init(data, GOAL, DURATION, self.difficulty, cal_goal_key="tf_goal")
+        # Mirror the hand sprite + its fingertip/thumb interaction geometry
+        # when the patient's affected hand is the opposite of this game's
+        # default -- see _hand_tip_local/_toy_hold_offset below. Grab/landing
+        # detection (_try_grab/_check_landing) reads hand_x/hand_y directly,
+        # never the sprite, so this never touches hitboxes or scoring.
+        self.hand_flipped = bool(self.affected_hand) and self.affected_hand != DEFAULT_HAND
+        # Every session gets a minimum read time on the How-To-Play screen --
+        # a curious first squeeze/tilt shouldn't be able to skip past the
+        # instructions before the patient has had any chance to read them
+        # (the patient's own sensor input can dismiss this screen even in
+        # the dual-monitor production flow -- see
+        # recovr/patient_app/games/generic_adapter.py's handle_event()).
+        self._instructions_min_t = 2.5
 
         self.conveyor_speed   = cal_params.get("tf_conveyor_speed", CONVEYOR_SPEED_PRESET[self.difficulty])
         self.spawn_gap        = SPAWN_GAP[self.difficulty]
@@ -242,6 +272,12 @@ class ToyFactoryGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
         self.grab_threshold = _cal_val("Grip Strength", "threshold", DEFAULT_GRIP_THRESHOLD[self.difficulty])
         self.release_threshold = self.grab_threshold * RELEASE_MARGIN
+
+        # Cosmetic-only -- exposed in Advanced Settings as "Required Finger
+        # Flexion" but never read by the real grab gate (grip alone stays
+        # the sole gate, see _update_grip/_try_grab).
+        self.flex_threshold_display = cal_params.get(
+            "tf_flex_threshold", FLEX_THRESHOLD_DISPLAY[self.difficulty])
 
         wh_avg = _cal_val("Wrist Horizontal", "average", DEFAULT_WRIST_AVG[self.difficulty])
         wv_avg = _cal_val("Wrist Vertical", "average", DEFAULT_WRIST_AVG[self.difficulty])
@@ -276,16 +312,28 @@ class ToyFactoryGame(SessionModeMixin, FatigueMixin, BaseScreen):
             "open": _load_image_fit("hand_toy_factory.png", int(hand_ref_h * 0.75), hand_ref_h),
             "grab": _load_image_fit("hand_grab_toy_factory.png", int(hand_ref_h * 0.75), hand_ref_h),
         }
+        if self.hand_flipped:
+            self._hand_imgs = {
+                k: (pygame.transform.flip(img, True, False) if img is not None else None)
+                for k, img in self._hand_imgs.items()
+            }
         ref = self._hand_imgs["open"]
         if ref is not None:
             rw, rh = ref.get_size()
-            self._hand_tip_local = (0.789 * rw, 0.087 * rh)
+            tip_frac_x, thumb_frac_x = 0.789, 1.0
+            if self.hand_flipped:
+                # Mirror the x-fractions to match the now-flipped artwork --
+                # the fingertip/thumb that used to sit toward the right edge
+                # of the sprite now sits the same distance from the LEFT
+                # edge instead.
+                tip_frac_x, thumb_frac_x = 1.0 - tip_frac_x, 1.0 - thumb_frac_x
+            self._hand_tip_local = (tip_frac_x * rw, 0.087 * rh)
             # A held toy is centred in the PINCER GAP between the index
             # fingertip (_hand_tip_local) and the thumb tip (also measured
             # off the art), not pinned to the index tip alone -- that's
             # what makes it read as cradled BETWEEN the fingers (per the
             # reference photo) instead of floating off to one side of them.
-            thumb_tip_local = (1.0 * rw, 0.185 * rh)
+            thumb_tip_local = (thumb_frac_x * rw, 0.185 * rh)
             self._toy_hold_offset = ((thumb_tip_local[0] - self._hand_tip_local[0]) / 2,
                                       (thumb_tip_local[1] - self._hand_tip_local[1]) / 2)
         else:
@@ -311,6 +359,21 @@ class ToyFactoryGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self._init_fatigue()
         self._reset()
         self._show_instructions = True
+
+        # Tutorial-only: sequential on-screen coaching during actual
+        # gameplay (see games/tutorial_hints.py), picking up once the
+        # How-To-Play card is dismissed.
+        self._tutorial_hints = TutorialHints([
+            TutorialStep(lambda g: tr("toyfactory.tut.1", g.language),
+                         anchor=lambda g: (GAME_W // 2, CONVEYOR_TOP_Y),
+                         done=lambda g, t: g._held_toy is not None),
+            TutorialStep(lambda g: tr("toyfactory.tut.2", g.language),
+                         anchor=lambda g: (GAME_W // 2, BOX_TOP_Y),
+                         done=lambda g, t: g.score >= 1),
+            TutorialStep(lambda g: (tr("toyfactory.tut.3.target", g.language, goal=g.goal)
+                                     if g.session_mode == "target" else
+                                     tr("toyfactory.tut.3.timed", g.language))),
+        ]) if self.tutorial else None
 
     def _reset(self):
         self.game_over          = False
@@ -373,7 +436,7 @@ class ToyFactoryGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
     def handle_event(self, event):
         if self._show_instructions:
-            if (event.type == pygame.KEYDOWN or
+            if self._instructions_min_t <= 0 and (event.type == pygame.KEYDOWN or
                     (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1) or
                     input_handler.was_pressed(event, "action")):
                 self._show_instructions = False
@@ -442,7 +505,10 @@ class ToyFactoryGame(SessionModeMixin, FatigueMixin, BaseScreen):
     # ── update ───────────────────────────────────────────────────────────
 
     def update(self, dt):
-        if self._show_instructions or self.game_over:
+        if self._show_instructions:
+            self._instructions_min_t = max(0.0, self._instructions_min_t - dt)
+            return
+        if self.game_over:
             return
 
         live = input_handler.get_state()
@@ -452,10 +518,6 @@ class ToyFactoryGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
         self._update_fatigue(dt, self._state)
         if self.fatigue_paused or self.paused:
-            return
-
-        if self._session_tick(dt):
-            self._end_game()
             return
 
         self._update_hand(dt)
@@ -503,6 +565,19 @@ class ToyFactoryGame(SessionModeMixin, FatigueMixin, BaseScreen):
             self.feedback = (self.feedback[0], self.feedback[1], self.feedback[2] - dt)
             if self.feedback[2] <= 0:
                 self.feedback = None
+
+        if self._tutorial_hints:
+            self._tutorial_hints.update(self, dt)
+
+        # Checked LAST, after this frame's own grab/drop/sort logic has
+        # already run -- Timed Mode's duration expiring on the exact same
+        # frame as a successful sort must never preempt it (the old
+        # position, before that logic, could do exactly that and silently
+        # drop the final point). time_left is floored at 0 by
+        # _session_tick() itself, so this still ends the session on every
+        # subsequent frame.
+        if self._session_tick(dt):
+            self._end_game()
 
     def _spawn_toy(self):
         key = random.choice(TOY_KEYS)
@@ -625,6 +700,8 @@ class ToyFactoryGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self.manager.go_to("therapist_dashboard")
 
     def _save_session(self, status):
+        if not self._session_should_save():
+            return
         try:
             from database import Database
             db = Database()
@@ -722,6 +799,8 @@ class ToyFactoryGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
         draw_game_header(surface, "Toy Factory", self.difficulty,
                           self._session_header_time(), self.score, GAME_W, GAME_H)
+        if self.tutorial:
+            draw_tutorial_badge(surface)
 
         # Lower than the header, like every other game's tracker, but NOT
         # all the way down at the shared TARGET_POS -- the delivery boxes
@@ -730,8 +809,8 @@ class ToyFactoryGame(SessionModeMixin, FatigueMixin, BaseScreen):
                           (TARGET_POS[0], BOX_TOP_Y - 110), T["ACCENT"], self._font_target)
 
         if self.feedback:
-            msg = self._font_fb.render(self.feedback[0], True, self.feedback[1])
-            surface.blit(msg, (GAME_W // 2 - msg.get_width() // 2, int(GAME_H * 0.10)))
+            draw_feedback_banner(surface, self.feedback, self._font_fb,
+                                  (GAME_W // 2, int(GAME_H * 0.10)))
 
         pb     = self._pause_btn_rect
         pb_col = T["ACCENT"]
@@ -743,6 +822,9 @@ class ToyFactoryGame(SessionModeMixin, FatigueMixin, BaseScreen):
         bx2 = pb.left + pb.width // 2 + 4
         pygame.draw.rect(surface, pb_col, (bx1, by2, bw2, bh2), border_radius=2)
         pygame.draw.rect(surface, pb_col, (bx2, by2, bw2, bh2), border_radius=2)
+
+        if self._tutorial_hints:
+            self._tutorial_hints.draw(surface, self)
 
         if self.paused: self._draw_pause(surface)
         self._draw_fatigue_overlay(surface)
@@ -777,15 +859,23 @@ class ToyFactoryGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # ratio. Same outer card box (position + max size) as _draw_results'
         # Round Complete card -- the two screens read as stages of one
         # interface rather than two differently-proportioned popups.
-        card_name = f"toy_factory_how_to_play_{'dark' if is_dark_mode() else 'light'}.png"
+        card_name = (f"toy_factory_how_to_play_{'dark' if is_dark_mode() else 'light'}"
+                     f"{'_fil' if self.language == 'fil' else ''}.png")
         top_margin, bottom_reserved = int(GAME_H * 0.05), int(GAME_H * 0.17)
         card = _load_image_fit(card_name, int(GAME_W * 0.50), GAME_H - top_margin - bottom_reserved)
         if card is not None:
             cr = card.get_rect(center=(GAME_W // 2, GAME_H // 2))
             surface.blit(card, cr)
-        # Just the card, centered -- no extra text/descriptions. No "press
-        # any key" prompt either -- the patient never starts the game
+        # Code-drawn "Controls" supplement in the card's own side margin --
+        # spells out the same loop the card already shows, in plain text.
+        # No "press any key" prompt -- the patient never starts the game
         # themselves, only the therapist's own START control does.
+        lang = self.language
+        draw_controls_panel(surface, controls_panel_rect(top_margin, bottom_reserved), [
+            (tr("toyfactory.ctrl.tilt.action", lang), tr("toyfactory.ctrl.tilt.desc", lang)),
+            (tr("toyfactory.ctrl.squeeze.action", lang), tr("toyfactory.ctrl.squeeze.desc", lang)),
+            (tr("toyfactory.ctrl.release.action", lang), tr("toyfactory.ctrl.release.desc", lang)),
+        ])
 
     def _draw_results(self, surface):
         T = get_theme()

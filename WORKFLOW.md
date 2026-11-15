@@ -336,7 +336,7 @@ Displays computed metrics across all sessions:
 | Game | Skill Targeted |
 |------|---------------|
 | Basketball | Grip Strength |
-| Piano Tiles | Finger Flexion |
+| Tile Rush | Finger Flexion |
 | Steady Aim | Wrist Rotation |
 
 Click a game card to select it (blue highlight).
@@ -463,7 +463,7 @@ Session results (score, duration, difficulty) are saved to the database automati
 
 ---
 
-### Game 2 — Piano Tiles (Finger Flexion)
+### Game 2 — Tile Rush (Finger Flexion)
 
 **How to play:**
 - 5 vertical lanes (one per finger: A S D F G keys).

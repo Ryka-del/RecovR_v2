@@ -30,8 +30,8 @@ def game_music_path(game: str, difficulty: str) -> str:
 # on-disk filenames, exact capitalization/spacing preserved.
 _GAME_BGM = {
     "Apple Catching":   "apple_catching.mp3",
-    "Plant the Garden": "plant_the_garden.mp3",
-    "Feed the Cat":     "feed_the_cat.mp3",
+    "Garden Wonders": "plant_the_garden.mp3",
+    "Purrfect Feast":     "feed_the_cat.mp3",
     "Steady Aim":       "Steady Aim.mp3",
     "Key and Lock":     "Key and Lock.mp3",
     "Whack-a-Mole":     "whack-a-mole.mp3",

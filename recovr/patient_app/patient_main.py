@@ -556,7 +556,8 @@ class PatientApp:
         elif self.mode == CALIBRATING:
             if DUAL:
                 progress = (snap or {}).get("calibration_progress") or {}
-                self.s_calibrating.draw_live(self.screen, progress)
+                lang = (snap or {}).get("config", {}).get("language", "en")
+                self.s_calibrating.draw_live(self.screen, progress, lang=lang)
             else:
                 self.s_calibrating.draw(self.screen, min(1.0, self.mode_t / CALIBRATION_SECONDS))
         else:
@@ -611,6 +612,9 @@ class PatientApp:
             "session_mode": config.get("session_mode", "target"),
             "target_reps": config.get("target_reps"),
             "duration_sec": config.get("duration_sec"),
+            "tutorial": bool(config.get("tutorial", False)),
+            "affected_hand": config.get("affected_hand", ""),
+            "language": config.get("language", "en"),
         }
         if DUAL:
             # apply the therapist's light/dark choice to constants BEFORE the

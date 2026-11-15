@@ -15,15 +15,24 @@ from sensors.input_handler import input_handler
 from audio import play_success, play_error, play_completion, start_music, stop_music, game_music_path, play_click
 from constants import get_theme, is_dark_mode, GAME_W, GAME_H
 from games.game_header import draw_game_header
-from games.hud import draw_target_pill, TARGET_POS
+from games.hud import (draw_target_pill, TARGET_POS, draw_tutorial_badge, draw_feedback_banner,
+                        draw_controls_panel, controls_panel_rect)
+from games.tutorial_hints import TutorialHints, TutorialStep
 from games.round_complete import draw_round_complete_overlay
+from i18n import tr
 
-GOALS      = {"Easy": 10, "Medium": 15, "Hard": 20}   # Target Mode: shots to make to complete
-DURATION   = {"Easy": 40,  "Medium": 35,  "Hard": 30}  # Timed Mode: session length in seconds
+GOALS      = {"Easy": 50, "Medium": 75, "Hard": 100}   # Target Mode: points to reach
+DURATION   = {"Easy": 300,  "Medium": 420,  "Hard": 600}  # Timed Mode: session length in seconds (5/7/10 min)
 ZONE_WIDTH = {"Easy": 0.25, "Medium": 0.16, "Hard": 0.09}
 ZONE_SPEED = {"Easy": 0.0,  "Medium": 0.18, "Hard": 0.28}
-
-RAMP_UP = 0.6   # grip rises at 0.6 units/sec while squeezing
+# Required Grip Strength -- % of the patient's own calibrated grip_rest->
+# grip_max span (same 0-1 `raw` value _normalize() already produces) needed
+# to register a squeeze at all. Replaces the old flat, non-calibration,
+# non-difficulty `raw > 0.1` constant.
+GRIP_THRESHOLD = {"Easy": 0.30, "Medium": 0.70, "Hard": 0.90}
+# Pointer Speed -- how fast the grip needle rises per second while
+# squeezing (replaces the old flat RAMP_UP constant).
+POINTER_SPEED = {"Easy": 0.5, "Medium": 0.8, "Hard": 1.1}
 
 BAR_W, BAR_H = 60, 500
 BAR_X = GAME_W - 140
@@ -50,6 +59,15 @@ BALL_R_HOOP = 34
 # approaches zero, same as any real projectile) passes quickly instead of
 # reading as the animation stalling.
 GRAVITY = 8000.0
+
+# The DESCENT only (apex -> hoop -> ground) uses its own, gentler constant --
+# the rise keeps GRAVITY's snappier feel (and avoids reintroducing the
+# apex-stall look the comment above already fixed once), while the fall
+# itself reads as noticeably slower, per feedback that it dropped too fast.
+# _shoot()'s own t_fall/_shot_duration math already derives from whichever
+# constant is used here, so the shrink-to-hoop-size cue and the "reached the
+# hoop" timing stay in sync with the real, slower trajectory.
+FALL_GRAVITY = 4800.0
 
 _RIM_COL   = (220,  85,  20)
 _RIM_DARK  = (140,  50,  10)
@@ -144,21 +162,37 @@ def _ring_pos(hcx, hcy, img, extra_y=0):
     return img.get_rect(midtop=(hcx, hcy + int(img.get_height() * 0.03) + extra_y))
 
 
-def _draw_hand(surface, bx, by):
+def _draw_hand(surface, bx, by, flipped=False):
     """The hand cradling the ball at its resting position -- shown only
     while the ball is not in flight. Anchored to the ball's own live
-    position (which is randomized each round), not a fixed spot."""
+    position (which is randomized each round), not a fixed spot.
+
+    flipped=True mirrors the sprite left-right for a patient whose
+    affected hand is Right (the art's own default pose is Left-handed --
+    see BasketballGame.DEFAULT_HAND)."""
     img = _load_image_fit("hand_basketball.png", 460, 640)
     if img is None:
         return
+    if flipped:
+        key = ("fit-flip", "hand_basketball.png", 460, 640)
+        if key not in _img_cache:
+            _img_cache[key] = pygame.transform.flip(img, True, False)
+        img = _img_cache[key]
     # The palm/fingers sit near the upper-right of this asset's own crop,
     # roughly where the ball should nestle -- anchor that point to the
     # ball's center rather than the image's own top-left corner. A larger
     # anchor_x pulls the hand further left relative to the (fixed) ball
     # position, so the ball reads as sitting further right under the
-    # fingers instead of centered in the palm.
+    # fingers instead of centered in the palm. Flipping the image mirrors
+    # every local x-coordinate about the image's own center (local x ->
+    # width - x), so the same anchor_x formula (unmirrored) is applied
+    # first and then mirrored the same way, rather than re-deriving it --
+    # that keeps this one formula the single source of truth for where the
+    # palm sits in the unflipped artwork.
     anchor_x = int(img.get_width() * 1.05)
     anchor_y = int(img.get_height() * 0.24)
+    if flipped:
+        anchor_x = img.get_width() - anchor_x
     surface.blit(img, (bx - anchor_x, by - anchor_y))
 
 
@@ -316,6 +350,11 @@ def _draw_vertical_gradient_rect(surface, rect, top_col, bot_col, radius):
 
 class BasketballGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
+    # This game's hand artwork is drawn left-handed by default -- a patient
+    # whose affected (profile) hand is Right gets the sprite mirrored
+    # instead (see on_enter's self.hand_flipped / _draw_hand's flipped arg).
+    DEFAULT_HAND = "left"
+
     def on_enter(self, data):
         self.account_id = data.get("account_id")
         self.account    = data.get("account")
@@ -329,9 +368,19 @@ class BasketballGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # override, fall back to the normal per-difficulty preset.
         cal_params  = self.cal.get("params", {})
         self._session_init(data, GOALS, DURATION, self.difficulty, cal_goal_key="bb_goal")
+        self.hand_flipped = bool(self.affected_hand) and self.affected_hand != self.DEFAULT_HAND
+        # Every session gets a minimum read time on the How-To-Play screen --
+        # a curious first squeeze shouldn't be able to skip past the
+        # instructions before the patient has had any chance to read them
+        # (the patient's own sensor input can dismiss this screen even in
+        # the dual-monitor production flow -- see
+        # recovr/patient_app/games/generic_adapter.py's handle_event()).
+        self._instructions_min_t = 2.5
         self.zone_w = cal_params.get("bb_zone_width", ZONE_WIDTH[self.difficulty])
         _spd_map    = {"Slow": 0.07, "Normal": 0.18, "Fast": 0.32}
         self.zone_speed = _spd_map.get(data.get("speed", "Normal"), 0.18)
+        self.grip_threshold = cal_params.get("bb_grip_threshold", GRIP_THRESHOLD[self.difficulty])
+        self.ramp_up        = cal_params.get("bb_pointer_speed", POINTER_SPEED[self.difficulty])
 
         self.game_over           = False
         self.game_over_score     = 0
@@ -357,6 +406,24 @@ class BasketballGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self._init_fatigue()
         self._reset()
         self._show_instructions = True
+
+        # Tutorial-only: sequential on-screen coaching during actual
+        # gameplay (see games/tutorial_hints.py), picking up once the
+        # How-To-Play card is dismissed. Reacts to the same state the game
+        # itself drives -- never a separate/duplicated check.
+        self._tutorial_hints = TutorialHints([
+            TutorialStep(lambda g: tr("basketball.tut.1", g.language),
+                         anchor=lambda g: (BAR_X + BAR_W // 2, BAR_Y),
+                         done=lambda g, t: g._squeezing),
+            TutorialStep(lambda g: tr("basketball.tut.2", g.language),
+                         anchor=lambda g: (BAR_X + BAR_W // 2, BAR_Y + BAR_H // 2),
+                         done=lambda g, t: g.score >= 1),
+            TutorialStep(lambda g: tr("basketball.tut.3", g.language),
+                         done=lambda g, t: t >= 3.0),
+            TutorialStep(lambda g: (tr("basketball.tut.4.target", g.language, goal=g.goal)
+                                     if g.session_mode == "target" else
+                                     tr("basketball.tut.4.timed", g.language))),
+        ]) if self.tutorial else None
 
     def _reset(self):
         self.game_over           = False
@@ -407,7 +474,7 @@ class BasketballGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
     def handle_event(self, event):
         if self._show_instructions:
-            if (event.type == pygame.KEYDOWN or
+            if self._instructions_min_t <= 0 and (event.type == pygame.KEYDOWN or
                     (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1) or
                     input_handler.was_pressed(event, "action")):
                 self._show_instructions    = False
@@ -477,16 +544,15 @@ class BasketballGame(SessionModeMixin, FatigueMixin, BaseScreen):
     # ------------------------------------------------------------------ #
 
     def update(self, dt):
-        if self._show_instructions or self.game_over:
+        if self._show_instructions:
+            self._instructions_min_t = max(0.0, self._instructions_min_t - dt)
+            return
+        if self.game_over:
             return
 
         self._state = input_handler.get_state()
         self._update_fatigue(dt, self._state)
         if self.fatigue_paused or self.paused:
-            return
-
-        if self._session_tick(dt):
-            self._end_game()
             return
 
         raw = self._normalize(self._state["grip"])
@@ -504,7 +570,7 @@ class BasketballGame(SessionModeMixin, FatigueMixin, BaseScreen):
         in_zone    = (self.zone_pos - half) <= needle_now <= (self.zone_pos + half)
 
         was_squeezing   = self._squeezing
-        self._squeezing = raw > 0.1
+        self._squeezing = raw > self.grip_threshold
 
         # Release detection -- scoring is decided HERE, by the grip-release
         # condition alone. A correct release always scores; the shot that
@@ -529,20 +595,20 @@ class BasketballGame(SessionModeMixin, FatigueMixin, BaseScreen):
             self._cooldown -= dt
 
         # Zone movement — moves only while relaxed
-        if self.zone_speed > 0 and raw <= 0.1:
+        if self.zone_speed > 0 and raw <= self.grip_threshold:
             self.zone_pos += self.zone_dir * self.zone_speed * dt
             if self.zone_pos > 0.55: self.zone_dir = -1
             if self.zone_pos < 0.10: self.zone_dir =  1
 
         # Needle: rises while squeezing, drops to 0 instantly on release
-        if raw > 0.1:
-            self._grip = min(1.0, self._grip + RAMP_UP * dt)
+        if raw > self.grip_threshold:
+            self._grip = min(1.0, self._grip + self.ramp_up * dt)
         else:
             self._grip = 0.0
 
         # Ball physics
         if self.ball_active:
-            self.ball_vy += GRAVITY * dt
+            self.ball_vy += (FALL_GRAVITY if self._above_ring else GRAVITY) * dt
             if not self._above_ring:
                 self.ball_x += self.ball_vx * dt
             self.ball_y += self.ball_vy * dt
@@ -591,6 +657,19 @@ class BasketballGame(SessionModeMixin, FatigueMixin, BaseScreen):
         if self.score_flash > 0:
             self.score_flash -= dt
 
+        if self._tutorial_hints:
+            self._tutorial_hints.update(self, dt)
+
+        # Checked LAST, after this frame's own grip-release/scoring has
+        # already run -- Timed Mode's duration expiring on the exact same
+        # frame as a successful release must never preempt that release
+        # (the old position, before the scoring block above, could do
+        # exactly that and silently drop the final point). time_left is
+        # floored at 0 by _session_tick() itself, so this is still checked
+        # -- and still ends the session -- on every subsequent frame.
+        if self._session_tick(dt):
+            self._end_game()
+
     def _rand_ball_x(self):
         """Return a random ball rest x that avoids the hoop centre."""
         if random.random() < 0.5:
@@ -624,7 +703,7 @@ class BasketballGame(SessionModeMixin, FatigueMixin, BaseScreen):
         rise   = by0 - apex_y
         fall   = hcy - apex_y
         t_rise = math.sqrt(2 * rise / GRAVITY)
-        t_fall = math.sqrt(2 * fall / GRAVITY)
+        t_fall = math.sqrt(2 * fall / FALL_GRAVITY)
         t_total = t_rise + t_fall
 
         self.ball_x      = bx0
@@ -652,7 +731,8 @@ class BasketballGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # banner all baked in) -- replaces the hand-drawn panel. Per-theme,
         # cropped to its own opaque content (it ships with transparent side
         # padding for the drop shadow) then fit preserving aspect ratio.
-        card_name = f"basketball_how_to_play_{'dark' if is_dark_mode() else 'light'}.png"
+        card_name = (f"basketball_how_to_play_{'dark' if is_dark_mode() else 'light'}"
+                     f"{'_fil' if self.language == 'fil' else ''}.png")
         # Same outer card box (position + max size) as _draw_results' Round
         # Complete card -- the two screens read as stages of one interface
         # rather than two differently-proportioned popups.
@@ -661,9 +741,16 @@ class BasketballGame(SessionModeMixin, FatigueMixin, BaseScreen):
         if card is not None:
             cr = card.get_rect(center=(GAME_W // 2, GAME_H // 2))
             surface.blit(card, cr)
-        # Just the card, centered -- no extra text/descriptions. No "press
-        # any key" prompt either -- the patient never starts the game
+        # Code-drawn "Controls" supplement in the card's own side margin --
+        # spells out the same loop the card already shows, in plain text.
+        # No "press any key" prompt -- the patient never starts the game
         # themselves, only the therapist's own START control does.
+        lang = self.language
+        draw_controls_panel(surface, controls_panel_rect(top_margin, bottom_reserved), [
+            (tr("basketball.ctrl.squeeze.action", lang), tr("basketball.ctrl.squeeze.desc", lang)),
+            (tr("basketball.ctrl.hold.action", lang), tr("basketball.ctrl.hold.desc", lang)),
+            (tr("basketball.ctrl.release.action", lang), tr("basketball.ctrl.release.desc", lang)),
+        ])
 
     def _exit_to_game_config(self):
         import builtins
@@ -676,6 +763,8 @@ class BasketballGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self.manager.go_to("therapist_dashboard")
 
     def _save_session(self, status):
+        if not self._session_should_save():
+            return
         try:
             from database import Database
             db = Database()
@@ -753,7 +842,7 @@ class BasketballGame(SessionModeMixin, FatigueMixin, BaseScreen):
         _draw_hoop_back(surface, self.hoop_x, self.hoop_y)
         _draw_basketball(surface, int(self.ball_x), int(self.ball_y), self.ball_r)
         if not self.ball_active:
-            _draw_hand(surface, self.ball_x, self.ball_y)
+            _draw_hand(surface, self.ball_x, self.ball_y, flipped=self.hand_flipped)
         _draw_hoop_front(surface, self.hoop_x, self.hoop_y)
 
         # Grip bar
@@ -788,11 +877,16 @@ class BasketballGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # HUD
         draw_game_header(surface, "Basketball", self.difficulty,
                           self._session_header_time(), self.score, GAME_W, GAME_H)
+        if self.tutorial:
+            draw_tutorial_badge(surface)
 
         # Feedback
         if self.feedback:
-            msg = self._font_fb.render(self.feedback[0], True, self.feedback[1])
-            surface.blit(msg, (GAME_W // 2 - msg.get_width() // 2, GAME_H // 2 - 60))
+            draw_feedback_banner(surface, self.feedback, self._font_fb,
+                                  (GAME_W // 2, GAME_H // 2 - 60))
+
+        if self._tutorial_hints:
+            self._tutorial_hints.draw(surface, self)
 
         if self.paused:
             self._draw_pause(surface)

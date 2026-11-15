@@ -43,6 +43,11 @@ class SessionConfig:
     speed: str = "Normal"
     dark_mode: bool = False             # mirror of the live theme for the game payload
     calibration: dict = field(default_factory=dict)   # calibration_result passed to the game
+    tutorial: bool = False              # Tutorial launch: game skips save_session() + shows a badge
+    affected_hand: str = ""             # patient's affected hand ("Left"/"Right"/"") -- see
+                                         # games/session_mode.py's self.affected_hand
+    language: str = "en"                # patient-facing instruction language ("en"/"fil") -- see
+                                         # games/session_mode.py's self.language / i18n.py's tr()
 
     def apply(self, data: dict) -> None:
         """Update fields from a partial dict (unknown keys ignored)."""
@@ -82,6 +87,13 @@ class SessionConfig:
             self.dark_mode = bool(data["dark_mode"])
         if "calibration" in data and isinstance(data["calibration"], dict):
             self.calibration = dict(data["calibration"])
+        if "tutorial" in data:
+            self.tutorial = bool(data["tutorial"])
+        if "affected_hand" in data:
+            self.affected_hand = str(data["affected_hand"] or "").strip()
+        if "language" in data:
+            lang = str(data["language"] or "en").strip().lower()
+            self.language = lang if lang in ("en", "fil") else "en"
 
 
 @dataclass

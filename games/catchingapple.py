@@ -19,13 +19,27 @@ from audio import (start_music, stop_music, pause_music, resume_music,
                     game_bgm_path, play_completion, play_click)
 from constants import get_theme, is_dark_mode, GAME_W, GAME_H
 from games.game_header import draw_game_header, HEADER_BOTTOM
-from games.hud import draw_target_pill, TARGET_POS
+from games.hud import (draw_target_pill, TARGET_POS, draw_tutorial_badge,
+                        draw_controls_panel, controls_panel_rect)
+from games.tutorial_hints import TutorialHints, TutorialStep
 from games.round_complete import draw_round_complete_overlay
+from i18n import tr
 
 APPLE_SPEED  = {"Easy": 260, "Medium": 380, "Hard": 520}
 MOVE_SPEED   = {"Easy": 750, "Medium": 900, "Hard": 1050}
-APPLE_GOAL   = {"Easy": 15,  "Medium": 25,  "Hard": 35}   # Target Mode: apples to catch to complete
-DURATION     = {"Easy": 60,  "Medium": 50,  "Hard": 40}   # Timed Mode: session length in seconds
+APPLE_GOAL   = {"Easy": 50,  "Medium": 75,  "Hard": 100}  # Target Mode: points (see APPLE_TYPES/INSECT_POINTS)
+DURATION     = {"Easy": 300, "Medium": 420, "Hard": 600}  # Timed Mode: session length in seconds
+# "Required Wrist Rotation" -- how far (as a fraction of the patient's own
+# calibrated resting<->peak wrist range, via _normalize_tilt below) the
+# wrist must rotate before basket movement registers at all. Same 30/70/90%
+# anchor as every other rebanded threshold in this task. Applied identically
+# whether BLE-connected or in keyboard Test Mode (see update()) -- there
+# used to be no registration threshold at all on the BLE path and a
+# hardcoded, non-calibrated 0.1 on the keyboard path; this replaces both.
+WRIST_REQUIREMENT = {"Easy": 0.30, "Medium": 0.70, "Hard": 0.90}
+# "Simultaneous Object Count" -- how many falling objects may be active at
+# once. Easy/Medium keep the original single-object feel; Hard allows 2.
+SIMULTANEOUS = {"Easy": 1, "Medium": 1, "Hard": 2}
 
 # basket_back_apple_catching.png / basket_front_apple_catching.png are each
 # one fused illustration -- woven basket AND the hands holding it, baked
@@ -48,24 +62,28 @@ CATCH_HOLD_DURATION = 0.80
 BASKET_BOTTOM_MARGIN = 40
 
 # ── apple tiers / insects ───────────────────────────────────────────────────
-# (type name, asset filename, points, probability among apples -- the three
-# probabilities sum to 1.0). A fresh independent roll each spawn.
+# (type name, asset filename, points). A fresh independent roll each spawn
+# via the FLAT, top-level cumulative probabilities below (_spawn_object) --
+# insect/normal/golden/rainbow sum to 100% directly, not a nested "insect
+# chance, then split the remainder" roll like before.
 APPLE_TYPES = [
-    ("normal",  "normal_apple_apple_catching.png",  1, 0.60),
-    ("golden",  "golden_apple_apple_catching.png",  3, 0.30),
-    ("rainbow", "rainbow_apple_apple_catching.png", 5, 0.10),
+    ("normal",  "normal_apple_apple_catching.png",  1),
+    ("golden",  "golden_apple_apple_catching.png",  3),
+    ("rainbow", "rainbow_apple_apple_catching.png", 5),
 ]
 INSECT_TYPES = [
     ("caterpillar", "caterpillar_apple_catching.png"),
     ("ladybug",     "ladybug_apple_catching.png"),
     ("wasp",        "wasp_apple_catching.png"),
 ]
-INSECT_POINTS = 3
-# Insects are a separate category layered on top of the apple draw above
-# (the spec gives apple tiers explicit probabilities but no insect
-# probability) -- each spawn has this independent chance of being an insect
-# instead of rolling an apple tier at all.
-INSECT_SPAWN_CHANCE = 0.15
+INSECT_POINTS = -2   # a caught insect is a PENALTY now, not a bonus
+# Flat top-level spawn probabilities (cumulative thresholds used directly in
+# _spawn_object): Insect 15%, Normal apple 70%, Golden apple 10%, Rainbow
+# apple 5% -- sums to exactly 100%.
+INSECT_CHANCE  = 0.15
+NORMAL_CHANCE  = 0.70
+GOLDEN_CHANCE  = 0.10
+RAINBOW_CHANCE = 0.05
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _img_cache = {}
@@ -152,7 +170,16 @@ class AppleCatchingGame(SessionModeMixin, FatigueMixin, BaseScreen):
         cal_params       = self.cal.get("params", {})
         self.apple_speed = cal_params.get("ac_apple_speed", APPLE_SPEED[self.difficulty])
         self.move_speed  = cal_params.get("ac_move_speed", MOVE_SPEED[self.difficulty])
+        self.wrist_requirement = cal_params.get("ac_wrist_requirement", WRIST_REQUIREMENT[self.difficulty])
+        self.simultaneous = int(cal_params.get("ac_simultaneous", SIMULTANEOUS[self.difficulty]))
         self._session_init(data, APPLE_GOAL, DURATION, self.difficulty, cal_goal_key="ac_goal")
+        # Every session gets a minimum read time on the How-To-Play screen --
+        # a curious first tilt shouldn't be able to skip past the
+        # instructions before the patient has had any chance to read them
+        # (the patient's own sensor input can dismiss this screen even in
+        # the dual-monitor production flow -- see
+        # recovr/patient_app/games/generic_adapter.py's handle_event()).
+        self._instructions_min_t = 2.5
 
         self._bg_img = _load_image_cover("bg_apple_catching.png", GAME_W, GAME_H)
 
@@ -168,7 +195,7 @@ class AppleCatchingGame(SessionModeMixin, FatigueMixin, BaseScreen):
             "basket_front_apple_catching.png", basket_crop, *BASKET_SIZE)
 
         self._apple_imgs  = {name: _load_image_fit(fname, *APPLE_SIZE)
-                              for name, fname, _, _ in APPLE_TYPES}
+                              for name, fname, _ in APPLE_TYPES}
         self._insect_imgs = {name: _load_image_fit(fname, *INSECT_SIZE)
                               for name, fname in INSECT_TYPES}
 
@@ -193,6 +220,20 @@ class AppleCatchingGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self._reset()
         self._show_instructions = True
 
+        # Tutorial-only: sequential on-screen coaching during actual
+        # gameplay (see games/tutorial_hints.py), picking up once the
+        # How-To-Play card is dismissed.
+        self._tutorial_hints = TutorialHints([
+            TutorialStep(lambda g: tr("applecatching.tut.1", g.language),
+                         anchor=lambda g: (int(g.basket_x), int(GAME_H * 0.78)),
+                         done=lambda g, t: g.reps >= 1),
+            TutorialStep(lambda g: tr("applecatching.tut.2", g.language),
+                         done=lambda g, t: t >= 3.0),
+            TutorialStep(lambda g: (tr("applecatching.tut.3.target", g.language, goal=g.goal)
+                                     if g.session_mode == "target" else
+                                     tr("applecatching.tut.3.timed", g.language))),
+        ]) if self.tutorial else None
+
     def _reset(self):
         self.game_over          = False
         self.game_over_score    = 0
@@ -204,10 +245,10 @@ class AppleCatchingGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self._session_reset()
         self.start_time  = pygame.time.get_ticks()
         self.basket_x    = float(GAME_W // 2)
-        self.caught_active = False
-        self.caught_timer  = 0.0
         self._basket_opening_rect = pygame.Rect(0, 0, 1, 1)
-        self._spawn_object()
+        self._objects = []   # up to self.simultaneous concurrent falling objects
+        while len(self._objects) < self.simultaneous:
+            self._spawn_object()
 
         self.shaking      = False
         self.shake_timer   = 0.0
@@ -216,47 +257,54 @@ class AppleCatchingGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self._state = {"tilt_x": 0.0}
 
     def _spawn_object(self):
-        """Pick the next falling object -- an apple tier (60/30/10 -> +1/+3/+5)
-        or, independently, an insect (+3) -- and its spawn position. An
-        apple's rotation is rolled fresh here and then held fixed for as
-        long as it falls (see update(), which never touches obj_angle
-        again); insects are not rotated, per spec."""
-        if random.random() < INSECT_SPAWN_CHANCE:
+        """Append one new falling object -- an apple tier or, independently,
+        an insect -- to self._objects, at its own spawn position. A FLAT,
+        top-level cumulative roll now decides which (Insect 15% / Normal
+        70% / Golden 10% / Rainbow 5%), not a nested "insect chance, then
+        split the apple remainder" roll. An apple's rotation is rolled
+        fresh here and held fixed for as long as it falls; insects are not
+        rotated, per spec."""
+        obj = {"caught_active": False, "caught_timer": 0.0}
+        r = random.random()
+        if r < INSECT_CHANCE:
             name, _ = random.choice(INSECT_TYPES)
-            self.obj_kind   = "insect"
-            self.obj_type   = name
-            self.obj_points = INSECT_POINTS
-            base_img        = self._insect_imgs.get(name)
-            self.obj_angle  = 0.0
+            obj["kind"]   = "insect"
+            obj["type"]   = name
+            obj["points"] = INSECT_POINTS
+            base_img      = self._insect_imgs.get(name)
+            obj["angle"]  = 0.0
+        elif r < INSECT_CHANCE + NORMAL_CHANCE:
+            name, _, points = APPLE_TYPES[0]   # "normal"
+            obj["kind"], obj["type"], obj["points"] = "apple", name, points
+            base_img      = self._apple_imgs.get(name)
+            obj["angle"]  = random.uniform(0.0, 360.0)
+        elif r < INSECT_CHANCE + NORMAL_CHANCE + GOLDEN_CHANCE:
+            name, _, points = APPLE_TYPES[1]   # "golden"
+            obj["kind"], obj["type"], obj["points"] = "apple", name, points
+            base_img      = self._apple_imgs.get(name)
+            obj["angle"]  = random.uniform(0.0, 360.0)
         else:
-            r, cum, chosen = random.random(), 0.0, APPLE_TYPES[-1]
-            for tier in APPLE_TYPES:
-                cum += tier[3]
-                if r < cum:
-                    chosen = tier
-                    break
-            name, _, points, _ = chosen
-            self.obj_kind   = "apple"
-            self.obj_type   = name
-            self.obj_points = points
-            base_img        = self._apple_imgs.get(name)
-            self.obj_angle  = random.uniform(0.0, 360.0)
+            name, _, points = APPLE_TYPES[2]   # "rainbow"
+            obj["kind"], obj["type"], obj["points"] = "apple", name, points
+            base_img      = self._apple_imgs.get(name)
+            obj["angle"]  = random.uniform(0.0, 360.0)
 
         # Rotate once per spawn (not per frame) around the unrotated image's
         # own center -- pygame.transform.rotate's returned surface is
         # re-centered automatically, so blitting it via get_rect(center=..)
         # keeps the apple's position from shifting when it is rotated.
-        if base_img is not None and self.obj_angle:
-            self.obj_draw_img = pygame.transform.rotate(base_img, self.obj_angle)
+        if base_img is not None and obj["angle"]:
+            obj["draw_img"] = pygame.transform.rotate(base_img, obj["angle"])
         else:
-            self.obj_draw_img = base_img
+            obj["draw_img"] = base_img
 
-        draw_w = self.obj_draw_img.get_width()  if self.obj_draw_img is not None else APPLE_SIZE[0]
-        draw_h = self.obj_draw_img.get_height() if self.obj_draw_img is not None else APPLE_SIZE[1]
+        draw_w = obj["draw_img"].get_width()  if obj["draw_img"] is not None else APPLE_SIZE[0]
+        draw_h = obj["draw_img"].get_height() if obj["draw_img"] is not None else APPLE_SIZE[1]
         # Clamp to the ROTATED (possibly wider) bounding box so a
         # diagonally-rotated apple can never spawn clipped off-screen.
-        self.obj_x = float(random.randint(0, max(0, GAME_W - draw_w)))
-        self.obj_y = -float(draw_h)
+        obj["x"] = float(random.randint(0, max(0, GAME_W - draw_w)))
+        obj["y"] = -float(draw_h)
+        self._objects.append(obj)
 
     def _basket_rect(self):
         """The whole fused sprite (basket + hands baked into one image),
@@ -280,11 +328,11 @@ class AppleCatchingGame(SessionModeMixin, FatigueMixin, BaseScreen):
         r.top     = basket_rect.top
         return r
 
-    def _obj_rect(self):
-        img = self.obj_draw_img
+    def _obj_rect(self, obj):
+        img = obj["draw_img"]
         w = img.get_width()  if img is not None else APPLE_SIZE[0]
         h = img.get_height() if img is not None else APPLE_SIZE[1]
-        return pygame.Rect(int(self.obj_x), int(self.obj_y), w, h)
+        return pygame.Rect(int(obj["x"]), int(obj["y"]), w, h)
 
     def _caught_draw_pos(self, basket_rect):
         """Where a caught object sits while the catch animation plays --
@@ -307,7 +355,7 @@ class AppleCatchingGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
     def handle_event(self, event):
         if self._show_instructions:
-            if (event.type == pygame.KEYDOWN or
+            if self._instructions_min_t <= 0 and (event.type == pygame.KEYDOWN or
                     (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1) or
                     input_handler.was_pressed(event, "action")):
                 self._show_instructions = False
@@ -374,7 +422,10 @@ class AppleCatchingGame(SessionModeMixin, FatigueMixin, BaseScreen):
                 return
 
     def update(self, dt):
-        if self._show_instructions or self.game_over:
+        if self._show_instructions:
+            self._instructions_min_t = max(0.0, self._instructions_min_t - dt)
+            return
+        if self.game_over:
             return
 
         self._state = input_handler.get_state()
@@ -382,60 +433,69 @@ class AppleCatchingGame(SessionModeMixin, FatigueMixin, BaseScreen):
         if self.fatigue_paused or self.paused:
             return
 
-        if self._session_tick(dt):
-            self._end_game()
-            return
-
-        if input_handler.connected:
-            tilt_norm = self._normalize_tilt(self._state["tilt_x"])
+        # Required Wrist Rotation: _normalize_tilt already maps raw tilt to
+        # a signed -1..1 fraction of the patient's own calibrated range
+        # (identity when no calibration exists -- its default wrist_min/max
+        # of -1.0/1.0 makes it a no-op), so the SAME calibration-relative
+        # deadzone now gates BOTH the BLE-connected and keyboard Test-Mode
+        # paths identically -- there used to be no registration threshold
+        # at all on the BLE path and a hardcoded, uncalibrated 0.1 on the
+        # keyboard path.
+        tilt_norm = self._normalize_tilt(self._state["tilt_x"])
+        if abs(tilt_norm) >= self.wrist_requirement:
             self.basket_x += self.move_speed * dt * tilt_norm
-        else:
-            tx = self._state["tilt_x"]
-            if abs(tx) > 0.1:
-                self.basket_x += self.move_speed * dt * tx
         self.basket_x = max(BASKET_SIZE[0]//2,
                              min(GAME_W - BASKET_SIZE[0]//2, self.basket_x))
 
         basket_rect = self._basket_rect()
         self._basket_opening_rect = self._opening_rect(basket_rect)
 
-        if self.caught_active:
-            # The caught object stays glued to the basket (see draw()'s
-            # _caught_draw_pos, keyed off basket_rect) instead of falling,
-            # so it never visually drops through the bottom, until the
-            # catching animation finishes.
-            self.caught_timer -= dt
-            if self.caught_timer <= 0:
-                self.caught_active = False
-                self._spawn_object()
-        else:
-            self.obj_y += self.apple_speed * dt
-            obj_rect = self._obj_rect()
+        for obj in list(self._objects):
+            if obj["caught_active"]:
+                # The caught object stays glued to the basket (see draw()'s
+                # _caught_draw_pos, keyed off basket_rect) instead of
+                # falling, so it never visually drops through the bottom,
+                # until the catching animation finishes.
+                obj["caught_timer"] -= dt
+                if obj["caught_timer"] <= 0:
+                    self._objects.remove(obj)
+                continue
+
+            obj["y"] += self.apple_speed * dt
+            obj_rect = self._obj_rect(obj)
 
             if self._basket_opening_rect.colliderect(obj_rect):
-                self.score += self.obj_points
+                self.score += obj["points"]
                 self.reps  += 1
-                self.caught_active = True
-                self.caught_timer  = CATCH_HOLD_DURATION
+                obj["caught_active"] = True
+                obj["caught_timer"]  = CATCH_HOLD_DURATION
                 # Catch sound plays for apples only -- insects are caught
                 # silently (per spec).
-                if self.obj_kind == "apple" and self._catch_sound:
+                if obj["kind"] == "apple" and self._catch_sound:
                     self._catch_sound.play()
+                # Basket shake: an insect being CAUGHT is one of exactly two
+                # shake triggers (the other is an apple-type MISS, below) --
+                # never on an apple catch, never on an insect miss.
+                if obj["kind"] == "insect":
+                    self.shaking     = True
+                    self.shake_timer = SHAKE_DURATION
                 if self._session_target_reached():
                     self._end_game()
                     return
-            elif self.obj_y > GAME_H:
+            elif obj["y"] > GAME_H:
                 # Missed -- it simply falls out of view and is replaced, no
                 # sound/blast effect (removed per spec). The basket shake is
-                # an apple-miss cue only -- insects were never meant to be
-                # caught, so missing one isn't a "miss" and shouldn't shake
-                # the basket. Read obj_kind BEFORE respawning, since
-                # _spawn_object() immediately overwrites it for the next one.
-                missed_kind = self.obj_kind
-                self._spawn_object()
+                # an apple-type-miss cue only -- insects were never meant to
+                # be caught, so missing one isn't a "miss" and shouldn't
+                # shake the basket.
+                missed_kind = obj["kind"]
+                self._objects.remove(obj)
                 if missed_kind == "apple":
                     self.shaking     = True
                     self.shake_timer = SHAKE_DURATION
+
+        while len(self._objects) < self.simultaneous:
+            self._spawn_object()
 
         if self.shaking:
             self.shake_timer -= dt
@@ -444,6 +504,18 @@ class AppleCatchingGame(SessionModeMixin, FatigueMixin, BaseScreen):
             else:
                 self.shaking      = False
                 self.shake_offset = 0
+
+        if self._tutorial_hints:
+            self._tutorial_hints.update(self, dt)
+
+        # Checked LAST, after this frame's own catch logic has already run
+        # -- Timed Mode's duration expiring on the exact same frame as a
+        # catch must never preempt it (the old position, before that
+        # logic, could do exactly that and silently drop the final point).
+        # time_left is floored at 0 by _session_tick() itself, so this
+        # still ends the session on every subsequent frame.
+        if self._session_tick(dt):
+            self._end_game()
 
     def _exit_to_game_config(self):
         import builtins
@@ -456,6 +528,8 @@ class AppleCatchingGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self.manager.go_to("therapist_dashboard")
 
     def _save_session(self, status):
+        if not self._session_should_save():
+            return
         try:
             from database import Database
             db = Database()
@@ -502,15 +576,18 @@ class AppleCatchingGame(SessionModeMixin, FatigueMixin, BaseScreen):
         if self._basket_back_img is not None:
             surface.blit(self._basket_back_img, basket_rect)
 
-        # ...then the falling/caught object, so a caught one is sandwiched
+        # ...then the falling/caught objects, so a caught one is sandwiched
         # behind the front rim (see item 3 of the spec: behind front, in
         # front of back)...
-        if self.obj_draw_img is not None:
-            if self.caught_active:
-                r = self.obj_draw_img.get_rect(center=self._caught_draw_pos(basket_rect))
-                surface.blit(self.obj_draw_img, r)
+        for obj in self._objects:
+            img = obj["draw_img"]
+            if img is None:
+                continue
+            if obj["caught_active"]:
+                r = img.get_rect(center=self._caught_draw_pos(basket_rect))
+                surface.blit(img, r)
             else:
-                surface.blit(self.obj_draw_img, (int(self.obj_x), int(self.obj_y)))
+                surface.blit(img, (int(obj["x"]), int(obj["y"])))
 
         # ...then the front rim on top, so it occludes a caught object
         # exactly like the real rim would.
@@ -519,6 +596,8 @@ class AppleCatchingGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
         draw_game_header(surface, "Apple Catching", self.difficulty,
                           self._session_header_time(), self.score, GAME_W, GAME_H)
+        if self.tutorial:
+            draw_tutorial_badge(surface)
 
         draw_target_pill(surface, self._session_progress_text("apples"),
                           TARGET_POS, T["ACCENT"], self._font_target)
@@ -534,6 +613,9 @@ class AppleCatchingGame(SessionModeMixin, FatigueMixin, BaseScreen):
         bx2 = pb.left + pb.width // 2 + 4
         pygame.draw.rect(surface, pb_col, (bx1, by2, bw2, bh2), border_radius=2)
         pygame.draw.rect(surface, pb_col, (bx2, by2, bw2, bh2), border_radius=2)
+
+        if self._tutorial_hints:
+            self._tutorial_hints.draw(surface, self)
 
         if self.paused: self._draw_pause(surface)
         self._draw_fatigue_overlay(surface)
@@ -552,15 +634,22 @@ class AppleCatchingGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # ratio. Same outer card box (position + max size) as _draw_results'
         # Round Complete card -- the two screens read as stages of one
         # interface rather than two differently-proportioned popups.
-        card_name = f"apple_catching_how_to_play_{'dark' if is_dark_mode() else 'light'}.png"
+        card_name = (f"apple_catching_how_to_play_{'dark' if is_dark_mode() else 'light'}"
+                     f"{'_fil' if self.language == 'fil' else ''}.png")
         top_margin, bottom_reserved = int(GAME_H * 0.05), int(GAME_H * 0.17)
         card = _load_image_fit(card_name, int(GAME_W * 0.50), GAME_H - top_margin - bottom_reserved)
         if card is not None:
             cr = card.get_rect(center=(GAME_W // 2, GAME_H // 2))
             surface.blit(card, cr)
-        # Just the card, centered -- no extra text/descriptions. No "press
-        # any key" prompt either -- the patient never starts the game
+        # Code-drawn "Controls" supplement in the card's own side margin --
+        # spells out the same loop the card already shows, in plain text.
+        # No "press any key" prompt -- the patient never starts the game
         # themselves, only the therapist's own START control does.
+        lang = self.language
+        draw_controls_panel(surface, controls_panel_rect(top_margin, bottom_reserved), [
+            (tr("applecatching.ctrl.tilt.action", lang), tr("applecatching.ctrl.tilt.desc", lang)),
+            (tr("applecatching.ctrl.catch.action", lang), tr("applecatching.ctrl.catch.desc", lang)),
+        ])
 
     def _draw_results(self, surface):
         T = get_theme()

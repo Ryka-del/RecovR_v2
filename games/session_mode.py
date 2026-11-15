@@ -70,6 +70,25 @@ class SessionModeMixin:
                 return None
             return n if n > 0 else None
 
+        # Tutorial launch (Session Readiness Checklist's "Tutorial" chip) --
+        # live gameplay runs exactly as normal, but the session is never
+        # persisted (see _session_should_save()/each game's own
+        # _save_session()) and games/hud.py's badge marks it on-screen.
+        self.tutorial = bool(data.get("tutorial"))
+
+        # Patient's affected hand, from their profile (patients.affected_hand,
+        # "Left"/"Right"/"") -- normalized to lowercase here once so every
+        # game compares against a plain "left"/"right"/"" string. A game that
+        # adapts to this (see e.g. games/basketball.py's DEFAULT_HAND) reads
+        # this field directly; games that don't adapt simply never read it.
+        self.affected_hand = (data.get("affected_hand")
+                               or (data.get("patient") or {}).get("affected_hand")
+                               or "").strip().lower()
+
+        # Patient-facing instruction language for this session ("en"/"fil"),
+        # chosen by the therapist's Language chip -- see i18n.py's tr().
+        self.language = data.get("language") or "en"
+
         cal_params = (data.get("calibration") or {}).get("params", {})
         if self.session_mode == "target":
             target = _positive_int(data.get("target_reps"))
@@ -99,9 +118,16 @@ class SessionModeMixin:
         return False
 
     def _session_target_reached(self):
-        """Target Mode only -- True the instant self.reps reaches self.goal.
-        Timed Mode always returns False (it ends via _session_tick() instead)."""
-        return self.session_mode == "target" and self.reps >= self.goal
+        """Target Mode only -- True the instant self.score reaches self.goal.
+        Timed Mode always returns False (it ends via _session_tick() instead).
+        Compares SCORE, not reps -- several games award a variable number of
+        points per successful action (e.g. a rare/epic item worth more than
+        a common one, or a penalty for a wrong catch), so the therapist's
+        configured "reach N points" goal has to track the same number shown
+        on screen as the score, not a flat per-action rep count. For every
+        game where one rep is always worth exactly one point, score == reps
+        and this is a no-op."""
+        return self.session_mode == "target" and self.score >= self.goal
 
     def _session_header_time(self):
         """The value to feed games/game_header.py's draw_game_header (it
@@ -117,6 +143,11 @@ class SessionModeMixin:
     def _session_progress_text(self, noun):
         """"12/20 shots" in Target Mode, "12 shots" in Timed Mode."""
         return f"{self._session_count_text()} {noun}"
+
+    def _session_should_save(self):
+        """Call from the top of the game's own _save_session(status) -- a
+        Tutorial run never reaches the patient's history/reports."""
+        return not self.tutorial
 
     def _session_result_fields(self):
         """Merge into every save_session() call (see games/*.py _save_session())."""

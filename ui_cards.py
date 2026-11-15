@@ -109,35 +109,30 @@ def draw_state_card(surface, *, title, subtitle, accent, kind="break", dim=True,
         ov.fill((6, 10, 18, 175))
         surface.blit(ov, (0, 0))
 
-    card_w = int(min(W * 0.62, H * 1.15))
-    card_h = int(H * 0.46)
-    card = pygame.Rect(0, 0, card_w, card_h)
-    card.center = (W // 2, H // 2)
+    # Was far too wide relative to its own height (card_w up to 1.15x
+    # card_h) -- a wide-short shape like that reads as cramped top-to-bottom
+    # while wasting space left-to-right. card_w is fixed by the window size
+    # alone (never by content), so text wrapping is always the same
+    # regardless of how much vertical margin is added below -- ref_h is a
+    # FIXED reference (not the final card height) that every font size,
+    # the icon radius, and every inter-block gap scale from, so adding more
+    # top/bottom margin can never also grow the text into wrapping harder
+    # and overflowing -- it was exactly that coupling (margins and font
+    # size both tied to one growing card_h) that caused the hint line to
+    # spill past the card's own bottom edge the first time this was tuned.
+    card_w = int(min(W * 0.52, H * 0.95))
+    ref_h  = int(H * 0.56)
 
-    shadow = pygame.Surface((card.width + 24, card.height + 24), pygame.SRCALPHA)
-    pygame.draw.rect(shadow, (0, 0, 0, 90), shadow.get_rect(), border_radius=int(card_h * 0.12))
-    surface.blit(shadow, (card.x - 12, card.y - 4))
+    icon_r = int(ref_h * 0.155)
+    title_font = _font("Poppins-SemiBold.ttf", ref_h * 0.135)
+    sub_font   = _font("Poppins-Regular.ttf", ref_h * 0.07)
+    extra_font = _font("Poppins-Regular.ttf", ref_h * 0.052)
+    hint_font  = _font("Poppins-Medium.ttf", ref_h * 0.055)
+    max_text_w = int(card_w * 0.88)
 
-    radius = int(card_h * 0.11)
-    pygame.draw.rect(surface, panel_color, card, border_radius=radius)
-    pygame.draw.rect(surface, accent, card, max(2, int(card_h * 0.012)), border_radius=radius)
-
-    icon_r = int(card_h * 0.155)
-    icon_cy = card.top + int(card_h * 0.20)
-    _draw_icon(surface, (card.centerx, icon_cy), icon_r, kind, accent)
-
-    title_font = _font("Poppins-SemiBold.ttf", card_h * 0.135)
-    sub_font   = _font("Poppins-Regular.ttf", card_h * 0.07)
-    extra_font = _font("Poppins-Regular.ttf", card_h * 0.052)
-    hint_font  = _font("Poppins-Medium.ttf", card_h * 0.055)
-    max_text_w = int(card_w * 0.84)
-
-    # Two passes: first RENDER every line (so its real pixel height is known
-    # -- a font's nominal point size understates its rendered height) and
-    # measure the whole block, then pick a start y that's guaranteed to fit
-    # between the icon and the card's bottom edge instead of a fixed offset
-    # that could overflow the roundest corner for the content-heaviest card
-    # (Take a Break: title + subtitle + extra_lines + hint all at once).
+    # Render every line now (so its real pixel height is known -- a font's
+    # nominal point size understates its rendered height) to measure the
+    # whole text block before laying anything out.
     blocks = []   # (surface, color) pairs in draw order, each with its own post-gap baked in via a sentinel None
 
     def _add(text, font, color, gap_before, gap_after):
@@ -148,20 +143,39 @@ def draw_state_card(surface, *, title, subtitle, accent, kind="break", dim=True,
         for line in _wrap(text, font, max_text_w):
             blocks.append((font.render(line, True, color), gap_after))
 
-    _add(title, title_font, title_color, 0, int(card_h * 0.015))
-    _add(subtitle, sub_font, subtitle_color, int(card_h * 0.03), int(card_h * 0.018))
+    _add(title, title_font, title_color, 0, int(ref_h * 0.015))
+    _add(subtitle, sub_font, subtitle_color, int(ref_h * 0.03), int(ref_h * 0.018))
     if extra_lines:
         for i, (text, color) in enumerate(extra_lines):
-            _add(text, extra_font, color, int(card_h * 0.025) if i == 0 else 0, int(card_h * 0.012))
-    _add(hint, hint_font, accent, int(card_h * 0.03), 0)
+            _add(text, extra_font, color, int(ref_h * 0.025) if i == 0 else 0, int(ref_h * 0.012))
+    _add(hint, hint_font, accent, int(ref_h * 0.03), 0)
+    text_h = sum((s.get_height() if s is not None else gap) for s, gap in blocks)
 
-    total_h = sum((s.get_height() if s is not None else gap) for s, gap in blocks)
-    top_gap = int(card_h * 0.095)
-    bottom_pad = int(card_h * 0.05)
-    ty = icon_cy + icon_r + top_gap
-    if ty + total_h > card.bottom - bottom_pad:
-        ty = max(icon_cy + icon_r + int(card_h * 0.04), card.bottom - bottom_pad - total_h)
+    # The card's own height is DERIVED from its content plus these two
+    # explicit margins, rather than the other way around -- guarantees
+    # real breathing room top and bottom, by construction, instead of a
+    # fixed fraction that different amounts of content could overflow.
+    top_margin    = int(H * 0.05)
+    icon_gap      = int(ref_h * 0.095)   # icon bottom -> first text line
+    bottom_margin = int(H * 0.075)
+    card_h = top_margin + icon_r * 2 + icon_gap + text_h + bottom_margin
+    card_w = max(card_w, int(ref_h * 1.3))   # stay sensible if content is short
 
+    card = pygame.Rect(0, 0, card_w, card_h)
+    card.center = (W // 2, H // 2)
+
+    shadow = pygame.Surface((card.width + 24, card.height + 24), pygame.SRCALPHA)
+    pygame.draw.rect(shadow, (0, 0, 0, 90), shadow.get_rect(), border_radius=int(ref_h * 0.12))
+    surface.blit(shadow, (card.x - 12, card.y - 4))
+
+    radius = int(ref_h * 0.11)
+    pygame.draw.rect(surface, panel_color, card, border_radius=radius)
+    pygame.draw.rect(surface, accent, card, max(2, int(ref_h * 0.012)), border_radius=radius)
+
+    icon_cy = card.top + top_margin + icon_r
+    _draw_icon(surface, (card.centerx, icon_cy), icon_r, kind, accent)
+
+    ty = icon_cy + icon_r + icon_gap
     for s, gap in blocks:
         if s is None:
             ty += gap

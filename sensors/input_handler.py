@@ -7,9 +7,10 @@ BLE mode (when RecovR-Controller is connected via Bluetooth):
   Flex Sensor → state["fingers"]     edge-detected, all 5 lanes fire together
   5x Flex     → state["finger_flex"] 0.0–1.0 x5 (Thumb/Index/Middle/Ring/Pinky
                 independent raw readings -- Whack-a-Mole; see FINGER_NAMES.
-                Until the real 5-finger glove wiring is confirmed (see
-                firmware/controller_esp32c3.ino), all five duplicate the
-                single legacy flex sensor, same as state["fingers"] above.)
+                Verified wiring: MUX C0-C4, Thumb through Pinky (see
+                firmware/controller_esp32c3.ino). A controller still on the
+                old 9-byte firmware falls back to duplicating the single
+                legacy flex sensor across all five -- see below.)
   MPU6050 X   → state["tilt_x"]     −1.0–1.0  (wrist left/right rotation)
   Push Button → synthetic pygame KEYDOWN K_RETURN (rising edge only)
 
@@ -151,13 +152,13 @@ class InputHandler:
         # True only on the frame the sensor crosses the threshold (rising edge)
         self._fingers = [is_bent and not was_bent] * 5
 
-        # Whack-a-Mole -- 5 independent raw flex readings (0.0-1.0).
-        # raw["flex_thumb_raw"] etc. default to duplicating flex_raw when the
-        # controller is still on the old 9-byte firmware or the 5-finger
-        # glove wiring hasn't been verified yet (see ble_receiver.py /
-        # firmware/controller_esp32c3.ino) -- same value on every finger,
-        # which is harmless (no false differentiation) rather than a crash
-        # or a frozen reading.
+        # Whack-a-Mole / Tile Rush -- 5 independent raw flex readings
+        # (0.0-1.0), verified wiring MUX C0-C4 (see
+        # firmware/controller_esp32c3.ino). raw["flex_thumb_raw"] etc. only
+        # fall back to duplicating flex_raw when the controller is still on
+        # the old 9-byte firmware (see ble_receiver.py) -- same value on
+        # every finger, harmless (no false differentiation) rather than a
+        # crash or a frozen reading.
         self._finger_flex = [
             _clamp(raw.get("flex_thumb_raw",  raw["flex_raw"]) / 4095.0, 0.0, 1.0),
             _clamp(raw.get("flex_index_raw",  raw["flex_raw"]) / 4095.0, 0.0, 1.0),

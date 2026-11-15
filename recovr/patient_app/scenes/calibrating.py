@@ -25,6 +25,7 @@ Two call paths:
 import os
 import pygame
 
+from i18n import tr
 from recovr.patient_app.scenes.common import (
     PALETTE, fill_bg, draw_lines, draw_progress,
     recovr_gradient, draw_recovr_wordmark, draw_glass_card, _IMG_DIR,
@@ -34,26 +35,30 @@ from recovr.patient_app.scenes.common import (
 _SENSOR_CONTENT = {
     "grip": {
         "asset":           "grip.png",
-        "heading":         "Let's check your grip!",
-        "instruction":     "Squeeze your hand when your therapist tells you.",
-        "feedback_label":  "Your squeeze",
-        "feedback_msg":    "Keep going!",
+        "heading":         "calib.sensor.grip.heading",
+        "instruction":     "calib.sensor.grip.instruction",
+        "feedback_label":  "calib.sensor.grip.feedback_label",
+        "feedback_msg":    "calib.sensor.grip.feedback_msg",
     },
     "flex": {
         "asset":           "flex.png",
-        "heading":         "Let's check your finger movement!",
-        "instruction":     "Bend your fingers, then relax when your therapist tells you.",
-        "feedback_label":  "Finger movement",
-        "feedback_msg":    "Keep going!",
+        "heading":         "calib.sensor.flex.heading",
+        "instruction":     "calib.sensor.flex.instruction",
+        "feedback_label":  "calib.sensor.flex.feedback_label",
+        "feedback_msg":    "calib.sensor.flex.feedback_msg",
     },
     "wrist": {
         "asset":           "wrist.png",
-        "heading":         "Let's check your wrist movement!",
-        "instruction":     "Slowly move your wrist to the left and right when your therapist tells you.",
-        "feedback_label":  "Wrist angle",
-        "feedback_msg":    "Move left and right!",
+        "heading":         "calib.sensor.wrist.heading",
+        "instruction":     "calib.sensor.wrist.instruction",
+        "feedback_label":  "calib.sensor.wrist.feedback_label",
+        "feedback_msg":    "calib.sensor.wrist.feedback_msg",
     },
 }
+# NOTE: the four text fields above (heading/instruction/feedback_label/
+# feedback_msg) hold i18n.py KEYS, not literal display text -- draw_live()
+# resolves them with tr(key, lang) at render time so the same content dict
+# serves both languages. Only "asset" is a literal filename.
 
 NAVY_TEXT   = (7, 23, 71)          # primary heading/label text, light theme
 SUB_TEXT    = (74, 92, 128)        # secondary instruction line, light theme
@@ -79,6 +84,130 @@ CARD_H_FRAC      = 0.16
 GAP_CARD_DOTS    = 0.020
 DOTS_H_FRAC      = 0.042
 BOTTOM_PAD_FRAC  = 0.025
+
+# ── "prep" phase content (shown once, before baseline even starts -- see
+# scenes/calibration_window.py's "prep" phase / CalibrationWindow._start_
+# prep()) -- its own dedicated screen, distinct from "baseline"'s, even
+# though both are pre-trial and both use the relax-themed illustration. ──
+_PREP_CONTENT = {
+    "grip": {
+        "asset":           "grip.png",
+        "heading":         "calib.prep.heading",
+        "instruction":     "calib.prep.instruction",
+        "feedback_label":  "calib.prep.feedback_label",
+        "feedback_msg":    "calib.prep.feedback_msg",
+    },
+    "flex": {
+        "asset":           "flex.png",
+        "heading":         "calib.prep.heading",
+        "instruction":     "calib.prep.instruction",
+        "feedback_label":  "calib.prep.feedback_label",
+        "feedback_msg":    "calib.prep.feedback_msg",
+    },
+    "wrist": {
+        "asset":           "wrist.png",
+        "heading":         "calib.prep.heading",
+        "instruction":     "calib.prep.instruction",
+        "feedback_label":  "calib.prep.feedback_label",
+        "feedback_msg":    "calib.prep.feedback_msg",
+    },
+}
+
+# ── resting-baseline content (shown only during the "baseline" phase's
+# 5-4-3-2-1 countdown -- see scenes/calibration_window.py's phase list) --
+# reuses the same illustration as the matching _SENSOR_CONTENT entry, with
+# its own relax-and-rest heading/instruction, and a "feedback_label"/
+# "feedback_msg" pair so the existing feedback-card drawing code below needs
+# no special casing. ──
+_BASELINE_CONTENT = {
+    "grip": {
+        "asset":           "grip.png",
+        "heading":         "calib.baseline.grip.heading",
+        "instruction":     "calib.baseline.grip.instruction",
+        "feedback_label":  "calib.baseline.feedback_label",
+        "feedback_msg":    "calib.baseline.feedback_msg",
+    },
+    "flex": {
+        "asset":           "flex.png",
+        "heading":         "calib.baseline.flex.heading",
+        "instruction":     "calib.baseline.flex.instruction",
+        "feedback_label":  "calib.baseline.feedback_label",
+        "feedback_msg":    "calib.baseline.feedback_msg",
+    },
+    "wrist": {
+        "asset":           "wrist.png",
+        "heading":         "calib.baseline.wrist.heading",
+        "instruction":     "calib.baseline.wrist.instruction",
+        "feedback_label":  "calib.baseline.feedback_label",
+        "feedback_msg":    "calib.baseline.feedback_msg",
+    },
+}
+
+# Shown during the "complete" phase (see scenes/calibration_window.py's
+# _enter_complete()) -- not keyed by sensor, since this is one combined
+# wrap-up message after the LAST sensor's last trial, not a per-sensor
+# instruction.
+_COMPLETE_CONTENT = {
+    "heading":     "calib.complete.heading",
+    "instruction": "calib.complete.instruction",
+}
+
+# ── spoken cues ───────────────────────────────────────────────────────────
+# Pre-generated clips (offline TTS rendered once ahead of time, not
+# synthesized live) for every calibration stage that speaks to the patient.
+# Missing/unreadable files degrade silently (same convention as every other
+# sound effect in this project -- see audio.py's own _get_sound), so a
+# screen with no audio asset yet still works, just silently.
+#
+# Every sensor's "trial 1" clip is named "..._first.wav" -- a naming
+# leftover from when a one-time multi-sensor preamble made a first-trial
+# clip differ from a later one; there is now only ever one clip per sensor
+# for this moment, always used regardless of which sensor/step it is.
+_AUDIO_DIR = os.path.abspath(os.path.join(
+    os.path.dirname(__file__), "..", "..", "..", "assets", "audio"))
+_sound_cache: dict = {}
+
+
+def _cue_audio_name(progress, lang="en"):
+    """Resolves which spoken clip (if any) belongs to this exact
+    progress snapshot. Returns None for phases that are never spoken
+    (countdown/recording/trial_done carry only the ON-SCREEN, therapist-
+    facing cue -- see THERAPIST_CUES in scenes/calibration_window.py).
+    `lang` == "fil" appends "_fil" to the base filename. Both languages are
+    pre-generated via edge-tts (natural neural voices, offline, one-time --
+    see generate_calibration_audio.py) and shipped as .mp3; this project's
+    pygame-ce build loads Sound() from .mp3 directly, confirmed working."""
+    phase  = progress.get("phase")
+    sensor = progress.get("sensor")
+    suffix, ext = ("_fil", "mp3") if lang == "fil" else ("", "mp3")
+    if phase == "prep":
+        return f"calibration_prep{suffix}.{ext}"
+    if phase == "baseline":
+        return f"calibration_countdown{suffix}.{ext}"
+    if phase == "complete":
+        return f"calibration_complete{suffix}.{ext}"
+    if phase == "ready" and sensor in _SENSOR_CONTENT:
+        attempt = progress.get("attempt_index") or 1
+        if attempt == 1:
+            return f"calibration_ready_{sensor}_first{suffix}.{ext}"
+        return f"calibration_between{suffix}.{ext}"
+    return None
+
+
+def _play_cue(name):
+    snd = _sound_cache.get(name)
+    if snd is None and name not in _sound_cache:
+        try:
+            snd = pygame.mixer.Sound(os.path.join(_AUDIO_DIR, name))
+        except Exception:
+            snd = None
+        _sound_cache[name] = snd
+    if snd is not None:
+        try:
+            snd.play()
+        except Exception:
+            pass
+
 
 _FONT_DIR = os.path.abspath(os.path.join(
     os.path.dirname(__file__), "..", "..", "..", "assets", "font"))
@@ -154,6 +283,13 @@ def _fit_illustration(name, max_w, max_h):
 
 class CalibratingScreen:
 
+    def __init__(self):
+        # (phase, sensor, step_index, attempt_index) last played a spoken
+        # cue for -- so each instruction fires exactly once per stage
+        # transition instead of restarting every frame draw_live() is
+        # called.
+        self._last_cue_key = None
+
     def draw(self, surface, frac=None, message=None):
         """Prototype-only generic progress screen -- unchanged."""
         fill_bg(surface)
@@ -168,13 +304,36 @@ class CalibratingScreen:
     #  Production dual-monitor: live, per-sensor calibration screen
     # ------------------------------------------------------------------
 
-    def draw_live(self, surface: pygame.Surface, progress: dict | None):
+    def draw_live(self, surface: pygame.Surface, progress: dict | None, lang: str = "en"):
         W, H = surface.get_size()
         surface.blit(recovr_gradient(W, H), (0, 0))
 
         progress = progress or {}
         sensor = progress.get("sensor", "")
-        content = _SENSOR_CONTENT.get(sensor)
+        phase  = progress.get("phase")
+
+        # One spoken cue per stage transition -- keyed on everything that
+        # distinguishes one stage from the next (phase/sensor/step/attempt),
+        # so re-entering "ready" for trial 2 plays the "between trials" cue
+        # again without replaying it every single frame in between. `lang`
+        # is included so a (rare, mid-calibration) language change replays
+        # the current cue in the new language instead of staying silent.
+        # See _cue_audio_name for which phases are spoken at all.
+        cue_key = (phase, sensor, progress.get("step_index"), progress.get("attempt_index"), lang)
+        if cue_key != self._last_cue_key:
+            self._last_cue_key = cue_key
+            name = _cue_audio_name(progress, lang)
+            if name:
+                _play_cue(name)
+
+        if phase == "complete":
+            self._draw_complete(surface, W, H, lang)
+            return
+
+        is_baseline_like = phase in ("prep", "baseline")
+        content_dict = (_PREP_CONTENT if phase == "prep" else
+                        _BASELINE_CONTENT if phase == "baseline" else _SENSOR_CONTENT)
+        content = content_dict.get(sensor)
         if content is None:
             # patient_main.py only switches the patient screen into
             # CALIBRATING once a real, known sensor is already live (see its
@@ -218,7 +377,7 @@ class CalibratingScreen:
         # -- heading -------------------------------------------------------
         head_font = _font(int(H * HEAD_SIZE_FRAC), "ExtraBold")
         head_max_w = int(W * 0.86)
-        head_lines = _wrap(content["heading"], head_font, head_max_w)
+        head_lines = _wrap(tr(content["heading"], lang), head_font, head_max_w)
         for ln in head_lines:
             s = head_font.render(ln, True, head_col)
             surface.blit(s, s.get_rect(midtop=(W // 2, y)))
@@ -228,7 +387,7 @@ class CalibratingScreen:
         # -- instruction subheading -----------------------------------------
         sub_font = _font(int(H * SUB_SIZE_FRAC), "Medium")
         sub_max_w = int(W * 0.78)
-        sub_lines = _wrap(content["instruction"], sub_font, sub_max_w)
+        sub_lines = _wrap(tr(content["instruction"], lang), sub_font, sub_max_w)
         for ln in sub_lines:
             s = sub_font.render(ln, True, sub_col)
             surface.blit(s, s.get_rect(midtop=(W // 2, y)))
@@ -251,6 +410,17 @@ class CalibratingScreen:
             iw, ih = img.get_size()
             surface.blit(img, (W // 2 - iw // 2, illu_top + (illu_max_h - ih) // 2))
 
+        # -- 5-4-3-2-1 baseline countdown -- same digit the therapist screen
+        # shows (see CalibrationWindow._draw_baseline), driven by the same
+        # countdown_seconds the therapist side computed off its own
+        # baseline_t, so the two screens can never disagree on the count.
+        if phase == "baseline":
+            secs = progress.get("countdown_seconds")
+            if secs:
+                count_font = _font(int(H * HEAD_SIZE_FRAC * 1.6), "ExtraBold")
+                count_s = count_font.render(str(int(secs)), True, bar_fill)
+                surface.blit(count_s, count_s.get_rect(center=(W // 2, illu_top + illu_max_h // 2)))
+
         # -- feedback container ------------------------------------------
         card = pygame.Rect(0, card_top, int(W * CARD_W_FRAC), card_h)
         card.centerx = W // 2
@@ -263,8 +433,8 @@ class CalibratingScreen:
         pad_y = int(card.height * 0.16)
         lbl_font = _font(int(card.height * 0.21), "SemiBold")
         msg_font = _font(int(card.height * 0.21), "SemiBold")
-        lbl_s = lbl_font.render(content["feedback_label"], True, head_col)
-        msg_s = msg_font.render(content["feedback_msg"], True, bar_fill)
+        lbl_s = lbl_font.render(tr(content["feedback_label"], lang), True, head_col)
+        msg_s = msg_font.render(tr(content["feedback_msg"], lang), True, bar_fill)
         row_y = card.top + pad_y
         surface.blit(lbl_s, (card.left + pad_x, row_y))
         surface.blit(msg_s, msg_s.get_rect(topright=(card.right - pad_x, row_y)))
@@ -281,11 +451,51 @@ class CalibratingScreen:
             fill_rect = pygame.Rect(bar_rect.left, bar_rect.top, fill_w, bar_h)
             pygame.draw.rect(surface, bar_fill, fill_rect, border_radius=bar_h // 2)
 
-        # -- attempt dots + label ------------------------------------------
-        attempt_idx = max(1, min(3, int(progress.get("attempt_index") or 1)))
-        attempt_cnt = max(1, int(progress.get("attempt_count") or 3))
-        self._draw_attempt_row(surface, W, card.bottom + int(H * GAP_CARD_DOTS),
-                               dots_h, attempt_idx, attempt_cnt, head_col, bar_fill, dark)
+        # -- attempt dots + label -- skipped during prep/baseline: trials
+        # (and the "Attempt X of 3" they count) haven't started yet. -------
+        if not is_baseline_like:
+            attempt_idx = max(1, min(3, int(progress.get("attempt_index") or 1)))
+            attempt_cnt = max(1, int(progress.get("attempt_count") or 3))
+            self._draw_attempt_row(surface, W, card.bottom + int(H * GAP_CARD_DOTS),
+                                   dots_h, attempt_idx, attempt_cnt, head_col, bar_fill, dark)
+
+    def _draw_complete(self, surface, W, H, lang="en"):
+        """Brief wrap-up screen shown once, right after the last sensor's
+        last trial -- see scenes/calibration_window.py's "complete" phase
+        (CalibrationWindow._enter_complete) and _COMPLETE_CONTENT above."""
+        dark = PALETTE["bg"][0] < 40
+        head_col = PALETTE["text"] if dark else NAVY_TEXT
+        sub_col  = PALETTE["text"] if dark else SUB_TEXT
+        accent   = PALETTE["accent"] if dark else ACCENT_BLUE
+
+        y = int(H * TOP_PAD_FRAC)
+        logo_box_w, logo_box_h = int(W * 0.46), int(H * LOGO_H_FRAC)
+        draw_recovr_wordmark(surface, W // 2, y, logo_box_w, logo_box_h)
+
+        cy = H // 2 - int(H * 0.10)
+
+        # Simple celebratory checkmark circle -- programmatic, not a new
+        # image asset, since nothing suitable already ships in assets/images.
+        r = int(H * 0.09)
+        pygame.draw.circle(surface, accent, (W // 2, cy), r)
+        pygame.draw.circle(surface, (255, 255, 255), (W // 2, cy), r, max(2, int(r * 0.08)))
+        check_w = int(r * 0.9)
+        p1 = (W // 2 - check_w // 2, cy)
+        p2 = (W // 2 - check_w // 8, cy + check_w // 2)
+        p3 = (W // 2 + check_w // 2, cy - check_w // 3)
+        pygame.draw.lines(surface, (255, 255, 255), False, [p1, p2, p3], max(3, int(r * 0.14)))
+
+        y = cy + r + int(H * 0.05)
+        head_font = _font(int(H * HEAD_SIZE_FRAC), "ExtraBold")
+        head_s = head_font.render(tr(_COMPLETE_CONTENT["heading"], lang), True, head_col)
+        surface.blit(head_s, head_s.get_rect(midtop=(W // 2, y)))
+        y += head_s.get_height() + int(H * GAP_HEAD_SUB)
+
+        sub_font = _font(int(H * SUB_SIZE_FRAC), "Medium")
+        for ln in _wrap(tr(_COMPLETE_CONTENT["instruction"], lang), sub_font, int(W * 0.7)):
+            s = sub_font.render(ln, True, sub_col)
+            surface.blit(s, s.get_rect(midtop=(W // 2, y)))
+            y += s.get_height()
 
     def _draw_attempt_row(self, surface, W, y, row_h, attempt_idx, attempt_cnt, text_col, accent, dark):
         """Three circles -- filled = completed, larger filled = the current
