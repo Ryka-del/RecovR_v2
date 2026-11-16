@@ -9,20 +9,27 @@ PURE VIEW. `draw(surface, snapshot)` only *reads* the shared session snapshot:
                    completed_reps, duration_sec, session_mode,
                    configured_duration_seconds}, ...],   # newest first
       "stats":   {total_sessions, time_elapsed_sec, goals_completed} | None,
+      "progress": {"grip"|"flex"|"wrist": {"current_pct", "delta_pct"?}},
+                  # Rehabilitation Progress card data -- a category key is
+                  # simply ABSENT when that patient has no calibration
+                  # history for it yet (see below), never a fake 0%.
   }
   snapshot["config"] -> therapist_name (display only)
   theme              -> constants.get_theme() via scenes.common.PALETTE
 
-`history` and `stats` are real database.py columns/queries (see
-database.py's `sessions` table and `get_patient_progress_summary()`), pushed
-by scenes/therapist_dashboard.py's `_push_selected_patient()` and carried
-verbatim through recovr/shared/session_state.py -- nothing here is invented.
-The one card with no backing data at all (Rehabilitation Progress's
-Grip Strength / Finger Control / Wrist Movement sub-metrics -- there is no
-per-session sensor-performance persistence anywhere in the app, only a
-one-time calibration baseline and transient live telemetry that is never
-saved) is drawn in an explicit "not yet available" state rather than a
-fabricated percentage.
+`history`, `stats`, and `progress` are all real database.py columns/queries
+(see database.py's `sessions`/`calibrations` tables,
+`get_patient_progress_summary()`, and `get_calibrations()`), pushed by
+scenes/therapist_dashboard.py's `_push_selected_patient()`/
+`_compute_rehab_progress()` and carried verbatim through
+recovr/shared/session_state.py -- nothing here is invented. `progress`'s
+Grip Strength / Finger Control / Wrist Movement sub-metrics come from the
+patient's own calibration history across every game they've played (grouped
+by sensor type, see `_CAL_SENSOR_KEY` in therapist_dashboard.py): each
+category shows its most recent calibration's measured level, and once at
+least 2 calibrations exist for that sensor, the change since the very first
+one. A category with zero calibration history yet still draws the explicit
+"not yet available" state rather than a fabricated percentage.
 
 It holds NO session / game / auth / comms logic, so the whole look here can
 be redesigned without touching patient_main.py, the state machine or the
@@ -320,8 +327,9 @@ class PatientDashboardScreen:
         return pygame.Rect(rect.left + pad_x, content_top,
                            rect.width - 2 * pad_x, rect.bottom - pad_y - content_top)
 
-    def _draw_progress_card(self, surface, rect, C, accent):
+    def _draw_progress_card(self, surface, rect, C, accent, progress):
         content = self._card_shell(surface, rect, "Rehabilitation Progress", "chart", C, accent)
+        progress = progress or {}
 
         ring_d = min(int(content.width * 0.34), content.height)
         ring_r = ring_d // 2
@@ -331,14 +339,31 @@ class PatientDashboardScreen:
         ring_rect.center = ring_c
         _alpha_circle(surface, C["track"], ring_c, ring_r - ring_w // 2, ring_w)
 
+        # Overall = the average of whichever categories have real calibration
+        # history (skip the rest) -- stays the original "—"/"Not tracked yet"
+        # only when NONE of the 3 have any data at all yet.
+        avail_pcts = [v["current_pct"] for v in progress.values() if "current_pct" in v]
+        overall = round(sum(avail_pcts) / len(avail_pcts)) if avail_pcts else None
+
         f_pct = _font("Bold", max(18, int(ring_d * 0.26)))
         f_sub = _font("Medium", max(11, int(ring_d * 0.09)))
-        pct_s = f_pct.render("—", True, C["muted"])
-        sub_s = f_sub.render("Not tracked yet", True, C["muted"])
+        if overall is not None:
+            frac = max(0.0, min(1.0, overall / 100.0))
+            if frac > 0:
+                start_ang = -math.pi / 2
+                end_ang = start_ang + frac * 2 * math.pi
+                arc_rect = pygame.Rect(0, 0, ring_d - ring_w, ring_d - ring_w)
+                arc_rect.center = ring_c
+                pygame.draw.arc(surface, accent, arc_rect, -end_ang, -start_ang, ring_w)
+            pct_s = f_pct.render(f"{overall}%", True, C["heading"])
+            sub_s = f_sub.render("Overall", True, C["muted"])
+        else:
+            pct_s = f_pct.render("—", True, C["muted"])
+            sub_s = f_sub.render("Not tracked yet", True, C["muted"])
         # The dash + label are one vertically-centred group inside the ring
         # (not two independently-placed lines) -- their combined height is
-        # centred on the ring's own centre, so "Not tracked yet" can never
-        # drift down toward the stroke regardless of font metrics.
+        # centred on the ring's own centre, so the sub-label can never drift
+        # down toward the stroke regardless of font metrics.
         inner_gap = max(2, int(ring_d * 0.035))
         block_h = pct_s.get_height() + inner_gap + sub_s.get_height()
         block_top = ring_c[1] - block_h // 2
@@ -347,11 +372,14 @@ class PatientDashboardScreen:
 
         rows_x = content.left + ring_d + int(content.width * 0.06)
         rows_w = content.right - rows_x
-        rows = [("hand", "Grip Strength"), ("finger", "Finger Control"), ("wrist", "Wrist Movement")]
+        # kind (icon/draw key) -> (label, progress dict key)
+        rows = [("hand", "Grip Strength", "grip"), ("finger", "Finger Control", "flex"),
+                ("wrist", "Wrist Movement", "wrist")]
         row_h = content.height / len(rows)
         f_lbl = _font("Medium", max(13, int(row_h * 0.26)))
         f_val = _font("SemiBold", max(12, int(row_h * 0.22)))
-        for i, (kind, label) in enumerate(rows):
+        any_missing = False
+        for i, (kind, label, cat) in enumerate(rows):
             ry = content.top + int(row_h * i)
             icon_sz = int(row_h * 0.58)
             irect = pygame.Rect(rows_x, 0, icon_sz, icon_sz)
@@ -372,14 +400,30 @@ class PatientDashboardScreen:
             bar_h = max(6, int(row_h * 0.16))
             bar_r = pygame.Rect(lbl_x, bar_y, max(1, bar_w), bar_h)
             _alpha_rect(surface, C["track"], bar_r, border_radius=bar_h // 2)
-            val_s = f_val.render("Not yet available", True, C["muted"])
+
+            entry = progress.get(cat)
+            if entry and "current_pct" in entry:
+                cur = max(0, min(100, entry["current_pct"]))
+                fill_w = max(bar_h, int(bar_w * cur / 100))
+                _alpha_rect(surface, (*accent, 255), pygame.Rect(lbl_x, bar_y, fill_w, bar_h),
+                           border_radius=bar_h // 2)
+                delta = entry.get("delta_pct")
+                val_txt = f"{cur}%" if delta is None else f"{cur}% ({delta:+d}%)"
+                val_s = f_val.render(val_txt, True, accent)
+            else:
+                any_missing = True
+                val_s = f_val.render("Not yet available", True, C["muted"])
             surface.blit(val_s, (lbl_x, bar_y + bar_h + int(row_h * 0.05)))
 
-        note = _font("Regular", max(11, int(rect.height * 0.034))).render(
-            "Detailed mobility metrics aren't tracked by the system yet.", True, C["muted"])
-        if note.get_width() <= rect.width - int(rect.width * 0.09):
-            surface.blit(note, (rect.left + int(rect.width * 0.045),
-                                rect.bottom - int(rect.height * 0.05) - note.get_height()))
+        # Only shown while at least one category still has no calibration
+        # history -- once all 3 have real data the disclaimer no longer
+        # applies.
+        if any_missing:
+            note = _font("Regular", max(11, int(rect.height * 0.034))).render(
+                "Detailed mobility metrics aren't tracked by the system yet.", True, C["muted"])
+            if note.get_width() <= rect.width - int(rect.width * 0.09):
+                surface.blit(note, (rect.left + int(rect.width * 0.045),
+                                    rect.bottom - int(rect.height * 0.05) - note.get_height()))
 
     def _draw_summary_card(self, surface, rect, C, accent, stats):
         content = self._card_shell(surface, rect, "Rehabilitation Summary", "clipboard", C, accent)
@@ -578,6 +622,7 @@ class PatientDashboardScreen:
         name = (sel.get("full_name") or "Patient").strip() or "Patient"
         history = sel.get("history") or []
         stats = sel.get("stats")
+        progress = sel.get("progress")
         sex_sprite = _SEX_SPRITES.get(str(sel.get("sex") or "").strip().lower())
 
         dark = PALETTE["bg"][0] < 40
@@ -681,7 +726,7 @@ class PatientDashboardScreen:
         latest_r = pygame.Rect(margin, row2_y, left_w, int(row_h))
         next_r   = pygame.Rect(margin + left_w + col_gap, row2_y, right_w, int(row_h))
 
-        self._draw_progress_card(surface, progress_r, C, accent)
+        self._draw_progress_card(surface, progress_r, C, accent, progress)
         self._draw_summary_card(surface, summary_r, C, accent, stats)
         self._draw_latest_session_card(surface, latest_r, C, accent, history)
         self._draw_next_session_card(surface, next_r, C, accent_blue, t_ms)

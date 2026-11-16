@@ -273,6 +273,27 @@ class SessionStore:
                         "time_elapsed_sec": int(stats_in.get("time_elapsed_sec", 0) or 0),
                         "goals_completed":  int(stats_in.get("goals_completed", 0) or 0),
                     }
+                # Rehabilitation Progress card data -- real per-sensor-category
+                # calibration-history figures (see
+                # TherapistDashboardScene._compute_rehab_progress()), keyed
+                # "grip"/"flex"/"wrist". A category is simply absent when that
+                # patient has no calibration history for it yet (the Patient
+                # Dashboard keeps its existing "Not yet available" placeholder
+                # in that case) rather than being coerced to a fake 0%.
+                progress_in = data.get("progress")
+                progress = {}
+                if isinstance(progress_in, dict):
+                    for cat in ("grip", "flex", "wrist"):
+                        entry_in = progress_in.get(cat)
+                        if not isinstance(entry_in, dict):
+                            continue
+                        cur = entry_in.get("current_pct")
+                        if cur is None:
+                            continue
+                        entry = {"current_pct": int(cur)}
+                        if entry_in.get("delta_pct") is not None:
+                            entry["delta_pct"] = int(entry_in["delta_pct"])
+                        progress[cat] = entry
                 self._state.selected_patient = {
                     "id":        data.get("id"),
                     "full_name": str(data.get("full_name", "")),
@@ -280,6 +301,7 @@ class SessionStore:
                     "history":   hist,     # recent sessions for the Patient Dashboard
                     "stats":     stats,    # aggregate counts, or None if unavailable --
                                             # see database.py's get_patient_progress_summary()
+                    "progress":  progress,  # {} when no calibration history exists yet
                 }
             else:
                 self._state.selected_patient = {}

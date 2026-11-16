@@ -2809,6 +2809,46 @@ class TherapistDashboardScene:
         return bool(patient and self.selected_patient
                     and self.selected_patient.get("id") == patient.get("id"))
 
+    def _compute_rehab_progress(self, patient_id):
+        """Real data for the Patient Dashboard's "Rehabilitation Progress"
+        card -- built entirely from calibration history already in the DB,
+        no new persistence. Groups every calibration row this patient has
+        (across every game they've ever played) into the same 3 buckets
+        _CAL_SENSOR_KEY already uses (grip/flex/wrist), via each row's own
+        game_type. Per bucket:
+          - 0 rows: omitted entirely (card shows its existing placeholder).
+          - >=1 row: "current_pct" = the most recent row's own calibrated
+            "average" reading (already a real 0-1 measured value), as a %.
+          - >=2 rows: also "delta_pct" = % change in that same average
+            between the patient's FIRST-ever calibration for this sensor
+            and their most recent one -- the actual progress-over-time
+            signal, computed purely from real historical rows."""
+        try:
+            rows = self.db.get_calibrations(self.account["id"], patient_id=patient_id)
+        except Exception:
+            return {}
+        by_cat = {"grip": [], "flex": [], "wrist": []}
+        for r in rows:
+            cat = _CAL_SENSOR_KEY.get(r.get("game_type"))
+            avg = r.get("average")
+            at  = r.get("calibrated_at")
+            if cat in by_cat and avg is not None and at:
+                try:
+                    by_cat[cat].append((str(at), float(avg)))
+                except (TypeError, ValueError):
+                    pass
+        progress = {}
+        for cat, pts in by_cat.items():
+            if not pts:
+                continue
+            pts.sort(key=lambda p: p[0])   # chronological (calibrated_at is a sortable timestamp string)
+            first_avg, latest_avg = pts[0][1], pts[-1][1]
+            entry = {"current_pct": round(max(0.0, min(1.0, latest_avg)) * 100)}
+            if len(pts) >= 2 and first_avg > 1e-6:
+                entry["delta_pct"] = round((latest_avg - first_avg) / first_avg * 100)
+            progress[cat] = entry
+        return progress
+
     def _push_selected_patient(self):
         if not _DUAL_MONITOR:
             return
@@ -2846,9 +2886,11 @@ class TherapistDashboardScene:
                 stats = self.db.get_patient_progress_summary(p["id"])
         except Exception:
             pass
+        progress = self._compute_rehab_progress(p["id"])
         therapist_link.set_selected_patient(
             {"id": p.get("id"), "full_name": p.get("full_name", ""),
-             "sex": p.get("sex", ""), "history": hist, "stats": stats})
+             "sex": p.get("sex", ""), "history": hist, "stats": stats,
+             "progress": progress})
 
     def _set_selected_patient(self, patient):
         """Set (patient dict) or clear (None) the selected session patient and
