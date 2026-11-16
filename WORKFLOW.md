@@ -554,7 +554,12 @@ Session results (score, duration, difficulty) are saved to the database automati
 
 ## 15. Close Button (✕)
 
-A dark-red **✕** button is always visible in the **top-right corner** of the screen (except during active game sessions and while the Calibration Window is open). Click it at any time to close the application.
+A dark-red **✕** button is always visible in the **top-right corner** of the screen (except during active game sessions, while the Calibration Window is open, and during a Patient Sharing/Transferring confirmation). Clicking it — or closing the window any other way (Alt+F4, the OS window-close control) — opens a **"Close RecovR?"** confirmation dialog instead of exiting immediately:
+
+- **Yes, Close** — exits the application. On a Raspberry Pi deployment, this is also the only action that may power off the Pi itself (see Section 18).
+- **Cancel** — dismisses the dialog; the application keeps running exactly as it was.
+
+The Welcome screen uses a distinct square close icon; every other screen uses the standard round one. Both behave identically.
 
 ---
 
@@ -588,3 +593,30 @@ Calibration records are stored separately and include all 3 trial values, the av
 | Missed game action | Blast/error sound |
 | Session completes | Level complete fanfare |
 | During gameplay | Looping sci-fi background music |
+
+---
+
+## 18. Raspberry Pi Deployment: Automatic Start & Shutdown
+
+On a Raspberry Pi set up for production use, RecovR starts and stops itself —
+the therapist never needs a keyboard or a terminal for normal day-to-day use.
+
+**Starting up:** the system opens RecovR automatically as soon as the Pi
+finishes booting into its desktop, with no login or command needed. If the
+application ever crashes, it restarts itself automatically; if it keeps
+crashing repeatedly in a short window, it stops retrying rather than looping
+forever, so a real problem surfaces instead of hiding behind endless
+restarts.
+
+**Shutting down:** the Pi only powers itself off after the therapist
+deliberately closes the app and confirms **"Yes, Close"** in the dialog
+described in Section 15. Every other way the app could stop — a crash, an
+unplugged controller causing an error, a forced shutdown, or simply pulling
+the power — leaves the Pi running normally. This is deliberate: automatic
+shutdown is a convenience for the one clean, intentional way of ending a
+session, never something that happens as a side effect of something going
+wrong.
+
+This behavior is specific to the Raspberry Pi production deployment; on a
+Windows development machine, RecovR starts and stops exactly as any desktop
+application normally would, and never powers the computer off.
