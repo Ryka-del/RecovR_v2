@@ -133,7 +133,7 @@ def _wrap(text, font, max_w):
     return lines or [""]
 
 
-class WaitingScreen:
+class ProductionWaitingScreen:
 
     def __init__(self):
         self._t0 = None                      # first-draw timestamp (deterministic start)

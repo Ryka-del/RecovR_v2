@@ -254,7 +254,14 @@ class RegisterScene:
         self.role_open = False
 
         last_field_rect = self.fields[-1]["rect"]
-        btn_y  = last_field_rect.bottom + int(45 * (height / 1080))
+        # Reserve room for a validation message ("X is required.") between
+        # the last field and the Register button -- previously the button
+        # sat only ~20px below where the message itself was drawn, so the
+        # two overlapped. Reserved unconditionally so the button/login link
+        # don't jump position when a message appears/disappears.
+        self._err_msg_y = last_field_rect.bottom + int(16 * (height / 1080))
+        err_block_h = self.font_error.get_height() + int(18 * (height / 1080))
+        btn_y  = last_field_rect.bottom + err_block_h + int(20 * (height / 1080))
         btn_h  = int(50 * (height / 1080))
         btn_w  = int(fw * 0.50)
 
@@ -788,10 +795,7 @@ class RegisterScene:
 
         if self.error_msg:
             es = self.font_error.render(self.error_msg, True, (210, 50, 50))
-            surface.blit(es, es.get_rect(
-                midleft=(self.register_btn_rect.x,
-                         self.register_btn_rect.y - int(20 * H / 1080))
-            ))
+            surface.blit(es, (self.register_btn_rect.x, self._err_msg_y))
 
         bc = (25, 130, 185) if self.register_hovered else (40, 160, 220)
         pygame.draw.rect(surface, bc, self.register_btn_rect, border_radius=12)
@@ -822,7 +826,15 @@ class RegisterScene:
         row_h = lbl_h + self._sc(4) + fh + self._sc(16)
 
         top = self.content_top
-        bottom = self.register_btn_rect.top - self._sc(10)
+        # The validation-message band must be excluded from the scrollable
+        # viewport's own clip boundary, not just placed next to the button --
+        # otherwise a field that scrolls to the very bottom of the view can
+        # still render underneath the (unclipped) message text drawn above
+        # the button. Reserving it here means nothing scrollable can ever
+        # occupy that band in the first place.
+        msg_zone_h = self.font_error.get_height() + self._sc(10)
+        bottom = self.register_btn_rect.top - self._sc(8) - msg_zone_h
+        self._form_msg_y = bottom + self._sc(8)
         view_h = bottom - top
         total = len(self.fields) * row_h + self._sc(8)
         self._form_scroll_max = max(0, total - view_h)
@@ -919,7 +931,7 @@ class RegisterScene:
                 while txt and self.font_error.size(txt + "…")[0] > avail:
                     txt = txt[:-1]
                 es = self.font_error.render(txt + "…", True, (210, 50, 50))
-            surface.blit(es, (x0, self.register_btn_rect.y - es.get_height() - self._sc(4)))
+            surface.blit(es, (x0, self._form_msg_y))
 
         bc = (25, 130, 185) if self.register_hovered else (40, 160, 220)
         pygame.draw.rect(surface, bc, self.register_btn_rect, border_radius=12)

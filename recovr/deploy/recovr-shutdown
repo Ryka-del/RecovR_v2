@@ -1,0 +1,10 @@
+#!/bin/sh
+# The ONE thing the recovr-shutdown sudoers rule grants NOPASSWD access to.
+# Does nothing else -- not a general-purpose script, not configurable, not
+# parameterized -- specifically so the narrow sudoers grant below can never
+# be used for anything beyond "turn the Pi off".
+#
+# Called only by recovr/launch_production.py's _maybe_shutdown_pi(), which
+# only runs after main.py's confirmed "Yes, Close" dialog wrote the
+# recovr/.clean_exit sentinel. See recovr/deploy/README.md for install steps.
+exec systemctl poweroff

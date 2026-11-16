@@ -125,8 +125,6 @@ SIDEBAR_NAV = []
 ROLES = [
     "Physical Therapist",
     "Occupational Therapist",
-    "Rehabilitation Specialist",
-    "Neurological Rehab Therapist",
     "Other",
 ]
 
@@ -1250,7 +1248,6 @@ class TherapistDashboardScene:
         self._pv_tab                  = "info"     # info | analytics | calibration | history
         self._pv_tab_rects            = {}
         self._pv_select_rect          = pygame.Rect(0, 0, 1, 1)
-        self._pv_edit_rect            = pygame.Rect(0, 0, 1, 1)   # legacy, now unused
         self._pv_sec_edit_rects       = {}     # {section_key: Rect} per-group Edit buttons
         self._pv_info_scroll          = 0
         self._pv_info_scroll_max      = 0
@@ -1789,13 +1786,24 @@ class TherapistDashboardScene:
         self.edit_error         = ""
         self.edit_role_open     = False
 
-        role_rect = self.edit_fields[2]["rect"]
-        opt_h     = self._tt(42)
-        self.edit_role_options = [
-            {"label": r,
-             "rect": pygame.Rect(role_rect.x, role_rect.bottom+i*opt_h, fw, opt_h)}
-            for i, r in enumerate(ROLES)
-        ]
+        # Wrap each role label to the field's own width instead of letting it
+        # overflow the dropdown ("Physical Therapist" -> "Physical" /
+        # "Therapist") -- each option's rect height grows to fit however
+        # many lines its own label needs.
+        role_rect  = self.edit_fields[2]["rect"]
+        base_opt_h = self._tt(42)
+        line_h     = self.fnt["input"].get_height()
+        max_text_w = fw - self._sc(24)
+        self.edit_role_options = []
+        y_cursor = role_rect.bottom
+        for r in ROLES:
+            lines = self._wrap(r, self.fnt["input"], max_text_w)
+            opt_h = max(base_opt_h, len(lines) * line_h + self._sc(10))
+            self.edit_role_options.append({
+                "label": r, "lines": lines,
+                "rect": pygame.Rect(role_rect.x, y_cursor, fw, opt_h),
+            })
+            y_cursor += opt_h
 
         btn_y = modal_y + modal_h - btn_h - pad
         bw2   = self._sc(120)
@@ -5717,19 +5725,21 @@ class TherapistDashboardScene:
         sep_txt = " › " if self._touch_ui else "  ›  "
         cx   = crumb_x
         last = len(crumbs) - 1
+        # "Selected" (the page you're actually on) = whichever non-clickable
+        # crumb sits furthest right -- blue, no underline. Everything else
+        # (clickable links to other pages, and any earlier non-clickable
+        # crumb) = gray. Replaces the old clickable=blue+underline /
+        # current=dark scheme per the requested redesign.
+        last_noclick_idx = max((j for j, (_, t) in enumerate(crumbs) if t is None), default=-1)
         for j, (label, target) in enumerate(crumbs):
             clickable = target is not None          # any crumb with a target navigates
-            if clickable:
-                col = (55, 110, 185)
-            else:
-                col = (26, 40, 60) if j == last else (135, 150, 175)
+            selected  = (not clickable) and (j == last_noclick_idx)
+            col = (40, 160, 220) if selected else (140, 152, 172)
             cs = cf.render(label, True, col)
             tx = cx
             ty = hdr.centery - cs.get_height() // 2
             surface.blit(cs, (tx, ty))
             if clickable:
-                pygame.draw.line(surface, col, (tx, ty + cs.get_height() + 1),
-                                 (tx + cs.get_width(), ty + cs.get_height() + 1), 2)
                 hit = pygame.Rect(tx - int(8*W/1920), hdr.y,
                                   cs.get_width() + int(16*W/1920), hdr.height)
                 self._crumb_rects.append((hit, target))
@@ -6652,14 +6662,14 @@ class TherapistDashboardScene:
         # details (type, onset date, months since) -> optional clinical
         # notes. Matches the touch layout below so both forms ask for the
         # same information in the same order.
-        _register_field("full_name",     "Full Name",                   col1_x, 0, "Enter Full Name")
-        _register_field("age",           "Age",                         col1_x, 1, "Enter Age")
-        _register_field("sex",           "Sex",                         col1_x, 2, is_drop=True, opts=SEX_OPTS)
-        _register_field("dominant_hand", "Dominant Hand",               col1_x, 3, is_drop=True, opts=HAND_OPTS)
-        _register_field("affected_hand", "Affected Hand (Stroke Side)", col1_x, 4, is_drop=True, opts=HAND_OPTS)
-        _register_field("stroke_type",   "Stroke Type",                 col2_x, 0, is_drop=True, opts=STROKE_TYPES)
-        _register_field("date_of_stroke","Stroke Onset Date",           col2_x, 1, "MM-DD-YY")
-        _register_field("months_stroke", "Months Since Stroke",         col2_x, 2, "e.g. 6")
+        _register_field("full_name",     "Full Name *",                   col1_x, 0, "Enter Full Name")
+        _register_field("age",           "Age *",                         col1_x, 1, "Enter Age")
+        _register_field("sex",           "Sex *",                         col1_x, 2, is_drop=True, opts=SEX_OPTS)
+        _register_field("dominant_hand", "Dominant Hand *",               col1_x, 3, is_drop=True, opts=HAND_OPTS)
+        _register_field("affected_hand", "Affected Hand (Stroke Side) *", col1_x, 4, is_drop=True, opts=HAND_OPTS)
+        _register_field("stroke_type",   "Stroke Type *",                 col2_x, 0, is_drop=True, opts=STROKE_TYPES)
+        _register_field("date_of_stroke","Stroke Onset Date *",           col2_x, 1, "MM-DD-YY")
+        _register_field("months_stroke", "Months Since Stroke *",         col2_x, 2, "e.g. 6")
 
         notes_y = top_y + 4*row_gap + int(8*H/1080)
         note_fields_def = [
@@ -6680,8 +6690,8 @@ class TherapistDashboardScene:
         for (key, lbl, fr, placeholder, is_drop, opts) in field_defs:
             active = (rp["active_key"] == key)
             invalid = (not active) and (key in rp.get("invalid_keys", ()))
-            surface.blit(self.fnt["label"].render(lbl, True, (80,95,115)),
-                         (fr.x, fr.y - lbl_off))
+            self._blit_req_label(surface, self.fnt["label"], lbl,
+                                  (fr.x, fr.y - lbl_off), (80,95,115))
             pygame.draw.rect(surface, (255,255,255), fr, border_radius=8)
             border_col = (40,160,220) if active else ((210,70,70) if invalid else (190,205,225))
             pygame.draw.rect(surface, border_col, fr,
@@ -6764,7 +6774,7 @@ class TherapistDashboardScene:
             ("sex",            "Sex *",                         "drop", SEX_OPTS),
             ("dominant_hand",  "Dominant Hand *",               "drop", HAND_OPTS),
             ("affected_hand",  "Affected Hand (Stroke Side) *", "drop", HAND_OPTS),
-            ("stroke_type",    "Stroke Type",                   "drop", STROKE_TYPES),
+            ("stroke_type",    "Stroke Type *",                 "drop", STROKE_TYPES),
             ("date_of_stroke", "Stroke Onset Date *",           "text", None),
             ("months_stroke",  "Months Since Stroke *",         "text", None),
             ("notes_stiffness","Muscle Stiffness Notes",        "text", None),
@@ -6828,7 +6838,8 @@ class TherapistDashboardScene:
             if visible:
                 active = (rp["active_key"] == key)
                 invalid = (not active) and (key in rp.get("invalid_keys", ()))
-                surface.blit(self.fnt["small"].render(label, True, (78, 95, 118)), (x0, y))
+                self._blit_req_label(surface, self.fnt["small"], label,
+                                      (x0, y), (78, 95, 118))
                 pygame.draw.rect(surface, (255, 255, 255), fr, border_radius=9)
                 border_col = ((40, 160, 220) if active else
                              ((210, 70, 70) if invalid else (188, 205, 226)))
@@ -6933,7 +6944,6 @@ class TherapistDashboardScene:
         # No Edit button here any more -- editing moved to a per-section Edit
         # button on each Info group (Patient Information / Stroke & Therapy /
         # Clinical Notes). Record stays read-only.
-        self._pv_edit_rect = pygame.Rect(0, 0, 1, 1)
 
         strip_h = max(int(46 * H / 1080), self._tt(46))
         # Width budget for the Select/Deselect button -- no longer drawn
@@ -7063,6 +7073,17 @@ class TherapistDashboardScene:
         if cur:
             lines.append(cur)
         return lines or [""]
+
+    def _blit_req_label(self, surface, font, label, pos, color):
+        """Render a field label; a trailing ' *' (required-field marker)
+        renders in red instead of the label's own color."""
+        if label.endswith(" *"):
+            base_s = font.render(label[:-2], True, color)
+            star_s = font.render(" *", True, (205, 45, 45))
+            surface.blit(base_s, pos)
+            surface.blit(star_s, (pos[0] + base_s.get_width(), pos[1]))
+        else:
+            surface.blit(font.render(label, True, color), pos)
 
     def _pv_draw_info(self, surface, pa, pt):
         W, H = self.WIDTH, self.HEIGHT
@@ -8223,20 +8244,42 @@ class TherapistDashboardScene:
         # game" caption pill is unchanged, just anchored to the card's
         # bottom instead of sitting under the removed image.
         tg = int(14*W/1920)
-        if touch:
-            tw = (pa.width - 2*pad - 2*tg) // 3
-            th = self._tt(150)
-        else:
-            tw = int(460*W/1920); th = int(170*H/1080)
-
-        ty = tab_y + tab_h + int((20 if touch else 24)*H/1080)
         active_games = SINGLE_SKILL_GAMES if self._gc_active_tab == "single" else INTEGRATED_GAMES
         idx_offset = 0 if self._gc_active_tab == "single" else len(SINGLE_SKILL_GAMES)
+        n_tiles = len(active_games)
+        # Tile width is sized to however many tiles this tab actually shows
+        # (3 for Single Skill, 2 for Integrated) instead of a fixed width/
+        # divisor tuned only for 3 -- Integrated Games' combined sensor
+        # labels ("Force + Flex + Tilt Sensors") are longer than Single
+        # Skill's single-sensor ones and were overflowing the narrower tile
+        # they'd otherwise be stuck with. n_tiles==3 reduces to the exact
+        # original sizing, so Single Skill Games is visually unchanged.
+        if touch:
+            tw = (pa.width - 2*pad - (n_tiles-1)*tg) // n_tiles
+            th_base = self._tt(150)
+        else:
+            tw = int(460*W/1920) if n_tiles >= 3 else (pa.width - 2*pad - (n_tiles-1)*tg)//n_tiles
+            th_base = int(170*H/1080)
 
-        total_w = len(active_games) * tw + (len(active_games) - 1) * tg
-        start_x = pa.x + (pa.width - total_w) // 2
+        ty = tab_y + tab_h + int((20 if touch else 24)*H/1080)
         f_title = self.fnt["body_b"]
         f_sub   = self.fnt["small"]
+
+        # Wrap each tile's subtitle to the tile's own width as a safety net
+        # (on top of the widened tiles above), and grow every tile in the
+        # row to the tallest one needs so a 2-line subtitle never crowds the
+        # checkmark/caption pill at the bottom.
+        sub_wraps = []
+        max_sub_lines = 1
+        for (_, gtype) in active_games:
+            sub_lbl = CATEGORY_SENSOR_LABEL.get(gtype, "")
+            lines = self._wrap(sub_lbl, f_sub, tw - self._sc(20)) if sub_lbl else []
+            sub_wraps.append(lines)
+            max_sub_lines = max(max_sub_lines, len(lines))
+        th = th_base + self._sc(18) * (max_sub_lines - 1)
+
+        total_w = n_tiles * tw + (n_tiles - 1) * tg
+        start_x = pa.x + (pa.width - total_w) // 2
         for i, (gname, gtype) in enumerate(active_games):
             tx  = start_x + i * (tw + tg)
             tr  = pygame.Rect(tx, ty, tw, th)
@@ -8250,17 +8293,21 @@ class TherapistDashboardScene:
             # Title + sensor-type subtitle, vertically centered as one block
             # (same measure-then-position approach as the Step 2 cards).
             t_s = f_title.render(gtype, True, (30, 45, 70))
-            sub_lbl = CATEGORY_SENSOR_LABEL.get(gtype, "")
-            s_s = f_sub.render(sub_lbl, True, bc if sel else (90, 105, 128)) if sub_lbl else None
-            block_h = t_s.get_height() + ((self._sc(4) + s_s.get_height()) if s_s else 0)
+            sub_lines = sub_wraps[i]
+            sub_imgs = [f_sub.render(ln, True, bc if sel else (90, 105, 128)) for ln in sub_lines]
+            sub_h = (sum(im.get_height() for im in sub_imgs)
+                     + max(0, len(sub_imgs) - 1) * self._sc(2))
+            block_h = t_s.get_height() + ((self._sc(4) + sub_h) if sub_imgs else 0)
             # Shift the block up a touch when the caption pill will occupy
             # the card's bottom, so neither crowds the other.
             by = tr.centery - block_h // 2 - (self._sc(10) if (sel and gc["selected_game"]) else 0)
             t_r = t_s.get_rect(centerx=tr.centerx, top=by)
             surface.blit(t_s, t_r)
-            if s_s is not None:
-                s_r = s_s.get_rect(centerx=tr.centerx, top=t_r.bottom + self._sc(4))
-                surface.blit(s_s, s_r)
+            sy = t_r.bottom + self._sc(4)
+            for im in sub_imgs:
+                im_r = im.get_rect(centerx=tr.centerx, top=sy)
+                surface.blit(im, im_r)
+                sy = im_r.bottom + self._sc(2)
 
             if sel:
                 ck_r = pygame.Rect(0, 0, self._sc(22), self._sc(22))
@@ -8690,16 +8737,6 @@ class TherapistDashboardScene:
                                      (cx2,rect.centery-int(9*H/1080)),
                                      (cx2,rect.centery+int(9*H/1080)),2)
 
-        if self.edit_role_open:
-            rf=self.edit_fields[2]["rect"]
-            oh=self.edit_role_options[0]["rect"].height
-            pr=pygame.Rect(rf.x,rf.bottom-1,rf.width,len(ROLES)*oh+4)
-            pygame.draw.rect(surface,(248,251,255),pr,border_radius=9)
-            pygame.draw.rect(surface,(40,160,220),pr,2,border_radius=9)
-            for opt in self.edit_role_options:
-                ts=self.fnt["input"].render(opt["label"],True,(40,50,65))
-                surface.blit(ts,ts.get_rect(midleft=(opt["rect"].x+self._sc(12),opt["rect"].centery)))
-
         if self.edit_error:
             es=self.fnt["modal_err"].render(self.edit_error,True,(210,50,50))
             surface.blit(es,(mr.x+self._sc(18),
@@ -8713,6 +8750,25 @@ class TherapistDashboardScene:
             pygame.draw.rect(surface,ch if hov else cn,rect,border_radius=10)
             s=fnt.render(lbl,True,(255,255,255))
             surface.blit(s,s.get_rect(center=rect.center))
+
+        # Drawn LAST (after the Save/Cancel/Delete buttons above) so the open
+        # dropdown always renders on top of them instead of being covered by
+        # whichever button it happens to overlap.
+        if self.edit_role_open:
+            rf = self.edit_fields[2]["rect"]
+            total_h = self.edit_role_options[-1]["rect"].bottom - rf.bottom + 1 + 4
+            pr = pygame.Rect(rf.x, rf.bottom-1, rf.width, total_h)
+            pygame.draw.rect(surface,(248,251,255),pr,border_radius=9)
+            pygame.draw.rect(surface,(40,160,220),pr,2,border_radius=9)
+            line_h = self.fnt["input"].get_height()
+            for opt in self.edit_role_options:
+                lines = opt["lines"]
+                block_h = len(lines) * line_h
+                ly = opt["rect"].centery - block_h // 2
+                for line in lines:
+                    ts = self.fnt["input"].render(line, True, (40,50,65))
+                    surface.blit(ts, (opt["rect"].x+self._sc(12), ly))
+                    ly += line_h
 
     def _draw_icon_picker_popup(self, surface):
         """Dedicated icon-selection popup: bigger than the old inline rail,

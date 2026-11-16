@@ -1,6 +1,6 @@
 """Display diagnostics for the RecovR dual-monitor setup.
 
-    python -m recovr.diagnose_displays
+    python tools/diagnose_displays.py
 
 Prints what the OS, SDL and RecovR each think the monitors are, then says which
 placement strategy will be used and flags the two things that actually break

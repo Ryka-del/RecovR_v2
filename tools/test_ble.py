@@ -5,7 +5,7 @@ Run this script on the Raspberry Pi to check whether it can see and
 connect to the RecovR-Controller (ESP32 C3).
 
 Usage:
-    python3 sensors/test_ble.py
+    python3 tools/test_ble.py
 
 What it does:
     1. Lists every BLE device your Raspberry Pi can currently see

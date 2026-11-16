@@ -1,0 +1,4 @@
+# Pi deployment files must keep LF line endings regardless of a Windows
+# dev machine's autocrlf setting -- a CRLF shebang (#!/bin/sh\r) fails to
+# execute on Linux, and systemd/sudoers config files are line-oriented too.
+recovr/deploy/* text eol=lf

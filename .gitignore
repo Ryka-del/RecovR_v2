@@ -18,3 +18,8 @@ recovr.db-shm
 # OS / editor cruft
 .DS_Store
 Thumbs.db
+
+# Runtime flag -- written by main.py's confirmed "Yes, Close" exit, consumed
+# (and deleted) by recovr/launch_production.py's _maybe_shutdown_pi(). Never
+# meant to be tracked or carried between machines.
+recovr/.clean_exit

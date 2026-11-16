@@ -13,7 +13,7 @@ _SFX_CONFIRM    = os.path.join(_DIR, "assets", "audio",
 _SFX_START_SES  = os.path.join(_DIR, "assets", "audio",
                                 "mixkit-sci-fi-interface-robot-click-901.wav")
 _SFX_WELCOME = os.path.join(_DIR, "assets", "audio",
-                             "mixkit-game-user-interface-tone-2570.wav")
+                             "mixkit-interface-click-hover-1127.wav")
 _SFX_CLICK      = os.path.join(_DIR, "assets", "audio",
                                 "mixkit-modern-technology-select-3124.wav")
 _AUDIO_DIR = os.path.join(_DIR, "assets", "audio")

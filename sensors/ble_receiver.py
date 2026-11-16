@@ -198,7 +198,12 @@ class BLEReceiver:
             self._scan_count += 1
             self._stage = "scanning"
             self._detail = f"scan #{self._scan_count}"
-            print(f"[BLE] Scan #{self._scan_count} — looking for '{DEVICE_NAME}'...")
+            # Printed on the first attempt and then only every 5th after that
+            # (~35s instead of ~7s) -- still a visible heartbeat while no
+            # controller is in range, without flooding the terminal for
+            # every single retry of an indefinite "while True" loop.
+            if self._scan_count == 1 or self._scan_count % 5 == 0:
+                print(f"[BLE] Scan #{self._scan_count} — looking for '{DEVICE_NAME}'...")
             device = None
             seen = {}
 

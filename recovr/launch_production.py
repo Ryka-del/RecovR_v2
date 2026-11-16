@@ -17,6 +17,13 @@ Stop: Ctrl+C / SIGTERM / SIGBREAK -- all three children are terminated, nothing 
 Env:
     RECOVR_SINGLE_MONITOR=1   dev: run all three, no forced monitor placement
     RECOVR_PATIENT_DISPLAY / RECOVR_THERAPIST_DISPLAY   pin the SDL display indices
+
+Pi autostart/autoshutdown: see recovr/deploy/ for the systemd unit + the
+narrowly-scoped shutdown wrapper/sudoers rule. This script requests an OS
+shutdown ONLY when main.py's confirmed "Yes, Close" dialog wrote the
+recovr/.clean_exit sentinel (see _maybe_shutdown_pi() below) -- a crash,
+Alt+F4, kill, or any other exit never does, so the Pi is never auto-shut-down
+except through that one explicit, user-confirmed action.
 """
 
 import os
@@ -76,6 +83,30 @@ def _shutdown(*_a):
     print("[launch] all children stopped.")
 
 
+# The one and only place that may ever power off the Pi. This sentinel is
+# written by main.py's _confirmed_exit() -- ONLY on the confirmed "Yes,
+# Close" dialog action -- and nowhere else: not a crash, not a kill, not
+# Alt+F4, not a failed save/cleanup, not a startup failure. Checked here,
+# AFTER _shutdown() has already cleanly torn down all 3 children, so a
+# shutdown request (if any) is the very last thing this process does.
+_CLEAN_EXIT_SENTINEL = os.path.join(_ROOT, "recovr", ".clean_exit")
+_SHUTDOWN_CMD = "/usr/local/bin/recovr-shutdown"   # see recovr/deploy/
+
+
+def _maybe_shutdown_pi():
+    if not os.path.exists(_CLEAN_EXIT_SENTINEL):
+        return
+    try:
+        os.remove(_CLEAN_EXIT_SENTINEL)   # consume once -- never re-trigger on the next boot
+    except OSError:
+        pass
+    print("[launch] confirmed clean exit -- requesting Pi shutdown.")
+    try:
+        subprocess.run(["sudo", _SHUTDOWN_CMD], check=False, timeout=10)
+    except Exception as exc:
+        print(f"[launch] shutdown request failed ({exc}); Pi stays running.")
+
+
 def main():
     base_env = os.environ.copy()
     base_env["RECOVR_DUAL_MONITOR"] = "1"
@@ -122,7 +153,7 @@ def main():
         why = "RECOVR_SINGLE_MONITOR=1" if single else f"{len(mons)} monitor(s) detected"
         print(f"[launch] single-monitor mode ({why}) -- no forced window placement")
         if not single:
-            print("[launch] run 'python -m recovr.diagnose_displays' to see why")
+            print("[launch] run 'python tools/diagnose_displays.py' to see why")
 
     # 2. Therapist app (real main.py) on Monitor 2
     ther_env = base_env.copy()
@@ -165,6 +196,7 @@ def main():
         pass
     finally:
         _shutdown()
+        _maybe_shutdown_pi()
     print("[launch] done.")
 
 

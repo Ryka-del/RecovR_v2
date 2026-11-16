@@ -41,7 +41,7 @@ from recovr.patient_app.scenes.session_end import SessionEndScreen
 from recovr.patient_app.scenes.calibrating import CalibratingScreen
 from recovr.patient_app.scenes.stopped import StoppedScreen
 from recovr.patient_app.scenes.patient_dashboard import PatientDashboardScreen
-from recovr.patient_app.scenes.waiting_screen import WaitingScreen as WaitingScreenV2
+from recovr.patient_app.scenes.waiting_screen import ProductionWaitingScreen
 
 # Production dual-monitor mode: the therapist half is the real main.py app on the
 # other monitor, so this window skips the prototype's own instruction/countdown
@@ -151,7 +151,7 @@ class PatientApp:
         self.s_calibrating = CalibratingScreen()
         self.s_stopped = StoppedScreen()
         self.s_patient_dash = PatientDashboardScreen()   # temp; after therapist login
-        self.s_waiting_v2 = WaitingScreenV2()            # temp; after START SESSION
+        self.s_waiting_v2 = ProductionWaitingScreen()    # shown once a therapist is logged in (pre-patient-select)
 
         # local state
         self.mode = WELCOME

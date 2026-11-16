@@ -1,0 +1,29 @@
+[Unit]
+# Wait for the actual graphical session, not just multi-user boot -- this is
+# what makes monitor/display detection (recovr/monitors.py) work instead of
+# silently falling back to single-monitor mode because X/Wayland isn't up yet.
+Description=RecovR Hand Rehabilitation System
+After=graphical.target
+Wants=graphical.target
+# Bounded crash-restart lives here (systemd >= 230): recover from a one-off
+# glitch, but a real/persistent crash gives up instead of looping forever.
+# This is resilience, not a way to paper over genuine failures -- it never
+# decides whether to shut down the Pi (see main.py's _confirmed_exit() /
+# launch_production.py's _maybe_shutdown_pi() for that, a completely
+# separate, narrower mechanism).
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+# --- EDIT THESE TWO LINES for your actual Pi user / install path ---
+User=pi
+WorkingDirectory=/home/pi/RecovRWE
+# ----------------------------------------------------------------
+Environment=DISPLAY=:0
+ExecStart=/usr/bin/python3 -m recovr.launch_production
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical.target

@@ -146,12 +146,17 @@ _close_rect       = _DEFAULT_CLOSE_RECT
 _close_hover      = False
 
 
-def _draw_close_icon(rect):
-    """The close_button.png asset, scaled to fit `rect` without distortion
-    (it's a circular icon), falling back to the original vector box+X if
-    the asset is missing."""
+# Welcome scenes (therapist_welcome/patient_welcome) use the square
+# close_welcome.png asset instead of the fixed-corner vector box+X fallback
+# every other asset-less scene gets -- it's the asset made for this exact
+# look, so draw it instead of hand-drawing an imitation of it.
+_WELCOME_SCENE_NAMES = {"therapist_welcome", "patient_welcome"}
+
+def _draw_close_icon(rect, asset_name="close_button.png"):
+    """The given close-icon asset, scaled to fit `rect` without distortion,
+    falling back to the original vector box+X if the asset is missing."""
     size = min(rect.width, rect.height)
-    img = _dash_img("close_button.png", size)
+    img = _dash_img(asset_name, size)
     if img is not None:
         screen.blit(img, img.get_rect(center=rect.center))
         if _close_hover:
@@ -185,6 +190,40 @@ _dlg_fonts = {
     "body":        _dlg_font("Poppins-Regular.ttf",  int(19 * _DLG_FS)),
     "btn":         _dlg_font("Poppins-SemiBold.ttf", int(20 * _DLG_FS)),
 }
+
+# The ONLY signal that is ever allowed to tell the Pi launcher a clean,
+# user-authorized exit happened (see recovr/launch_production.py's
+# _shutdown()) -- written right before the confirmed "Yes, Close" exit below,
+# and nowhere else. A crash, Alt+F4, kill, or any other exit path never
+# writes this, so the Pi is never auto-shut-down except through this one
+# confirmed dialog action. Only meaningful under the dual-monitor Pi launcher
+# (RECOVR_DUAL_MONITOR=1); writing it standalone is harmless (nothing reads
+# it) but skipped anyway to avoid leaving stray files on a dev machine.
+_CLEAN_EXIT_SENTINEL = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "recovr", ".clean_exit")
+
+
+def _confirmed_exit():
+    """The one and only confirmed-close exit path (Close button -> 'Yes,
+    Close', mouse or touch). Closes whichever scene's DB connection is open
+    (tidy housekeeping -- every write already commits immediately, so this
+    isn't required for data safety) and marks the exit as clean before
+    tearing down pygame."""
+    db = getattr(current_scene, "db", None)
+    if db is not None:
+        try:
+            db.close()
+        except Exception:
+            pass
+    if os.environ.get("RECOVR_DUAL_MONITOR") == "1":
+        try:
+            with open(_CLEAN_EXIT_SENTINEL, "w") as f:
+                f.write("1")
+        except Exception:
+            pass
+    pygame.quit()
+    sys.exit()
+
 
 _yes_rect = pygame.Rect(0, 0, 1, 1)
 _no_rect  = pygame.Rect(0, 0, 1, 1)
@@ -288,7 +327,13 @@ while True:
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
-            pygame.quit(); sys.exit()
+            # Alt+F4 / OS window-close now goes through the SAME confirm
+            # dialog as the Close button instead of exiting immediately --
+            # matches the Close button's behavior and keeps the only
+            # "intentional exit" signal (see _confirmed_exit()) consistent
+            # regardless of how the user asked to close the window.
+            _confirm_open = True
+            continue
 
         # --- Handle confirm dialog (blocks all input below when open) ---
         if _confirm_open:
@@ -298,14 +343,14 @@ while True:
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 pos = normalise_pos(event.pos)
                 if _yes_rect.collidepoint(pos):
-                    pygame.quit(); sys.exit()
+                    _confirmed_exit()
                 if _no_rect.collidepoint(pos):
                     _confirm_open = False
 
             if event.type == pygame.FINGERDOWN:
                 fp = (int(event.x * WIDTH), int(event.y * HEIGHT))
                 if _yes_rect.collidepoint(fp):
-                    pygame.quit(); sys.exit()
+                    _confirmed_exit()
                 if _no_rect.collidepoint(fp):
                     _confirm_open = False
 
@@ -378,9 +423,15 @@ while True:
     if _scene_close_rect is not None and _scene_close_rect.width > 1:
         _close_rect      = _scene_close_rect
         _use_close_asset = True
+        _close_asset     = "close_button.png"
+    elif _current_scene_name in _WELCOME_SCENE_NAMES:
+        _close_rect      = _DEFAULT_CLOSE_RECT
+        _use_close_asset = True
+        _close_asset     = "close_welcome.png"
     else:
         _close_rect      = _DEFAULT_CLOSE_RECT
         _use_close_asset = False
+        _close_asset     = "close_button.png"
 
     # Draw close button — hidden during games, calibration, and a Patient
     # Sharing/Transferring popup (see _share_blocking above; recomputed here
@@ -395,7 +446,7 @@ while True:
     if not _in_game and not _in_calibration and not _in_share_modal:
         _close_hover = _close_rect.collidepoint(mouse_pos)
         if _use_close_asset:
-            _draw_close_icon(_close_rect)
+            _draw_close_icon(_close_rect, _close_asset)
         else:
             _bg = (190, 35, 35) if _close_hover else (110, 25, 25)
             pygame.draw.rect(screen, _bg, _close_rect)

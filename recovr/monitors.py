@@ -145,7 +145,7 @@ def _detect_native() -> list[Monitor]:
         if sys.platform.startswith("linux"):
             return _detect_xrandr()
     except Exception as exc:
-        print(f"[recovr.monitors] native detection failed ({exc}); trying pygame")
+        print(f"[recovr] native monitor detection failed ({exc}); trying pygame")
     return []
 
 

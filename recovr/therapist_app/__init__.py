@@ -18,8 +18,6 @@ def create_app() -> Flask:
     app.config["STORE"] = SessionStore()
 
     from recovr.therapist_app.api import bp as api_bp
-    from recovr.therapist_app.views import bp as views_bp
 
     app.register_blueprint(api_bp)
-    app.register_blueprint(views_bp)
     return app

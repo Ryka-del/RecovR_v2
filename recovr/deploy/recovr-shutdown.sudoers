@@ -1,0 +1,10 @@
+# Install with:  sudo install -m 0440 recovr-shutdown.sudoers /etc/sudoers.d/recovr-shutdown
+# Always edit/validate via visudo -c, never hand-edit a live sudoers.d file.
+#
+# Grants the service user NOPASSWD access to EXACTLY ONE command -- the
+# narrow wrapper script below (itself just `exec systemctl poweroff`, see
+# recovr-shutdown in this same folder). No broader sudo access of any kind
+# is granted; the app itself never runs as root.
+#
+# --- EDIT the username below to match recovr.service's User= ---
+pi ALL=(root) NOPASSWD: /usr/local/bin/recovr-shutdown

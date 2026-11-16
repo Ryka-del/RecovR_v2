@@ -284,7 +284,6 @@ class TherapistWelcomeScene:
         def handle_click(self, event):
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if self.hit_rect.collidepoint(event.pos):
-                    print("Start button clicked!")
                     return True
             if event.type == pygame.FINGERDOWN:
                 # FINGERDOWN carries normalised 0-1 coords -- convert and hit-test.
@@ -292,6 +291,5 @@ class TherapistWelcomeScene:
                 #  so the capacitive screen started a session on any stray touch.)
                 pos = (int(event.x * self.SCREEN_W), int(event.y * self.SCREEN_H))
                 if self.hit_rect.collidepoint(pos):
-                    print("Start button touched!")
                     return True
             return False
