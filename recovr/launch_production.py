@@ -107,6 +107,32 @@ def _maybe_shutdown_pi():
         print(f"[launch] shutdown request failed ({exc}); Pi stays running.")
 
 
+# Right at boot, X11 can report graphical.target reached before both physical
+# monitors have actually finished EDID/hotplug negotiation -- a single,
+# immediate detect_monitors() call can then see only 1 screen and silently
+# fall back to single-monitor placement for the whole session. Retrying for a
+# few seconds (instead of a fixed startup sleep before this script even
+# starts) means a boot where both monitors are already ready proceeds
+# immediately, and only a genuinely slow boot waits the longer tail --
+# either way it's the actual minimum needed, not a padded guess.
+_MONITOR_RETRY_ATTEMPTS = 8
+_MONITOR_RETRY_DELAY_SEC = 1.0
+
+
+def _detect_monitors_with_retry():
+    for attempt in range(1, _MONITOR_RETRY_ATTEMPTS + 1):
+        mons = monitors.detect_monitors()
+        if len(mons) >= 2:
+            if attempt > 1:
+                print(f"[launch] both monitors detected on attempt {attempt}.")
+            return mons
+        if attempt < _MONITOR_RETRY_ATTEMPTS:
+            time.sleep(_MONITOR_RETRY_DELAY_SEC)
+    print(f"[launch] only {len(mons)} monitor(s) detected after "
+          f"{_MONITOR_RETRY_ATTEMPTS} attempts -- proceeding anyway.")
+    return mons
+
+
 def main():
     base_env = os.environ.copy()
     base_env["RECOVR_DUAL_MONITOR"] = "1"
@@ -137,7 +163,7 @@ def main():
 
     # monitor assignment
     single = os.environ.get("RECOVR_SINGLE_MONITOR") == "1"
-    mons = monitors.detect_monitors()
+    mons = _detect_monitors_with_retry() if not single else monitors.detect_monitors()
     # Explicit geometry always wins: if the user has pinned both rects by hand,
     # honour them even when auto-detection could only find one screen.
     forced = bool(os.environ.get("RECOVR_PATIENT_MONITOR")
