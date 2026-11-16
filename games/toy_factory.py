@@ -95,6 +95,13 @@ DEFAULT_WRIST_AVG      = {"Easy": 0.35, "Medium": 0.45, "Hard": 0.55}
 WRIST_DEADZONE = 0.08
 
 MOVE_SPEED  = 1500   # px/s hand speed at full (1.0) normalized wrist tilt
+# Keyboard Test Mode only gives full on/off tilt (no analog in-between), so at
+# MOVE_SPEED the hand crosses its entire range in well under a second -- far
+# too fast to land a key-release inside the grab radius on purpose. These
+# only apply when no real controller is connected (see _update_hand/
+# _try_grab); real hardware's continuous analog tilt is completely unaffected.
+KEYBOARD_MOVE_SPEED            = 500    # px/s -- gives a realistic reaction window
+KEYBOARD_PICKUP_TOLERANCE_SCALE = 1.5   # extra forgiveness on top of the slower speed
 FALL_SPEED  = 700     # px/s -- a released toy's constant straight-down fall
 RETURN_DURATION = 0.5  # seconds -- a wrong-box/outside-box toy's smooth tween
                         # back to its own conveyor slot (see Toy.home_x/home_y
@@ -511,9 +518,15 @@ class ToyFactoryGame(SessionModeMixin, FatigueMixin, BaseScreen):
         if self.game_over:
             return
 
-        live = input_handler.get_state()
+        # self._state must hold this frame's LIVE input before _vertical_raw()
+        # runs -- its Test-Mode fallback reads self._state["tilt_y"] itself
+        # (there's no separate live keyboard value to pass in), so calling it
+        # before this assignment made it only ever see its own previous
+        # return value, never the keyboard's actual current tilt_y (same
+        # ordering games/steady_aim.py's _vertical_raw() call already gets
+        # right -- this file had it backwards).
+        self._state = dict(input_handler.get_state())
         ty_raw = self._vertical_raw()
-        self._state = dict(live)
         self._state["tilt_y"] = ty_raw   # real accel_y, visible to therapist telemetry too
 
         self._update_fatigue(dt, self._state)
@@ -595,10 +608,11 @@ class ToyFactoryGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self._tilt_x_smooth += (tx - self._tilt_x_smooth) * smooth_k
         self._tilt_y_smooth += (ty - self._tilt_y_smooth) * smooth_k
         tx, ty = self._tilt_x_smooth, self._tilt_y_smooth
+        move_speed = MOVE_SPEED if input_handler.connected else KEYBOARD_MOVE_SPEED
         if tx:
-            self.hand_x += MOVE_SPEED * dt * tx
+            self.hand_x += move_speed * dt * tx
         if ty:
-            self.hand_y += MOVE_SPEED * dt * ty
+            self.hand_y += move_speed * dt * ty
         self.hand_x = max(HAND_X_MIN, min(HAND_X_MAX, self.hand_x))
         self.hand_y = max(HAND_Y_MIN, min(HAND_Y_MAX, self.hand_y))
 
@@ -624,7 +638,9 @@ class ToyFactoryGame(SessionModeMixin, FatigueMixin, BaseScreen):
         if self._held_toy is not None:
             return
         hx, hy = self.hand_x, self.hand_y
-        best, best_d = None, self.pickup_tolerance
+        tolerance = (self.pickup_tolerance if input_handler.connected
+                     else self.pickup_tolerance * KEYBOARD_PICKUP_TOLERANCE_SCALE)
+        best, best_d = None, tolerance
         for toy in self.toys:
             if toy.phase != "belt":
                 continue
@@ -760,26 +776,20 @@ class ToyFactoryGame(SessionModeMixin, FatigueMixin, BaseScreen):
             surface.blit(bgs, bgr.topleft)
             surface.blit(lbl, lr)
 
-        for toy in self.toys:
-            if toy.phase == "gone":
-                continue
-            if toy.phase == "held":
-                # Bigger (TOY_HELD_SCALE), and centred in the pincer gap
-                # between the hand's index fingertip and thumb tip
-                # (_toy_hold_offset) rather than pinned to the fingertip
-                # alone -- it reads as cradled BETWEEN the fingers (per the
-                # reference photo) instead of floating off to one side of
-                # the hand. The hand is drawn next, on top, so its fingers
-                # naturally overlap the near edge of the toy, reading as an
-                # actual grip.
-                img = self._toy_imgs_held.get(toy.key)
-                if img is not None:
-                    hold_pos = (toy.x + self._toy_hold_offset[0], toy.y + self._toy_hold_offset[1])
-                    surface.blit(img, img.get_rect(center=hold_pos))
-                continue
+        # Drawn in explicit layers, NOT self.toys' plain list order (list
+        # order is just spawn order, which has nothing to do with which toy
+        # should visually read as "in front" -- an earlier-spawned belt toy
+        # used to draw on top of a later-spawned toy the patient was actively
+        # carrying or returning, which looked like the hand/returning toy had
+        # passed BEHIND it). Stationary belt/entering toys first, then
+        # whichever toy is actively in motion off the belt (falling or
+        # tweening back to its conveyor slot), then the held toy last, right
+        # before the hand -- so the one thing the patient is actually
+        # interacting with is always the topmost toy on screen.
+        def _draw_toy_sprite(toy):
             img = self._toy_imgs.get(toy.key)
             if img is None:
-                continue
+                return
             if toy.phase == "entering":
                 # Clipped against the box's own front-wall line as it sinks
                 # in (same clip-reveal technique as games/whack_mole.py's
@@ -792,8 +802,29 @@ class ToyFactoryGame(SessionModeMixin, FatigueMixin, BaseScreen):
                 if visible_h > 0:
                     sub = img.subsurface((0, 0, rect.width, visible_h))
                     surface.blit(sub, (rect.left, rect.top))
-                continue
+                return
             surface.blit(img, img.get_rect(center=(int(toy.x), int(toy.y))))
+
+        for toy in self.toys:
+            if toy.phase in ("belt", "entering"):
+                _draw_toy_sprite(toy)
+        for toy in self.toys:
+            if toy.phase in ("falling", "returning"):
+                _draw_toy_sprite(toy)
+
+        if self._held_toy is not None:
+            # Bigger (TOY_HELD_SCALE), and centred in the pincer gap between
+            # the hand's index fingertip and thumb tip (_toy_hold_offset)
+            # rather than pinned to the fingertip alone -- it reads as
+            # cradled BETWEEN the fingers (per the reference photo) instead
+            # of floating off to one side of the hand. The hand is drawn
+            # next, on top, so its fingers naturally overlap the near edge
+            # of the toy, reading as an actual grip.
+            toy = self._held_toy
+            img = self._toy_imgs_held.get(toy.key)
+            if img is not None:
+                hold_pos = (toy.x + self._toy_hold_offset[0], toy.y + self._toy_hold_offset[1])
+                surface.blit(img, img.get_rect(center=hold_pos))
 
         self._draw_hand(surface)
 

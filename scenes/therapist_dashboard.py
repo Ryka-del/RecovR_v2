@@ -1318,10 +1318,15 @@ class TherapistDashboardScene:
         self._test_mode_hov      = False
         self._sm_test_mode       = False        # True while a bypassed session is live (panel 7 badge)
 
-        # ── Tutorial launch (skips the readiness gate entirely, like Bypass,
-        # but also flows into the game itself -- see _launch_game(tutorial=True)) ──
+        # ── Tutorial toggle (ON/OFF, confirmed via a popup like the Language
+        # chip -- clicking it never launches or navigates by itself; it only
+        # arms/disarms tutorial=True for whichever CTA (Calibrate/Start
+        # Session) the therapist clicks afterward -- see _launch_game's
+        # tutorial= kwarg at its one real call site below) ──
         self._tutorial_btn_rect = pygame.Rect(0, 0, 1, 1)
         self._tutorial_hov      = False
+        self._tutorial_enabled  = False
+        self._pending_tutorial  = False
 
         # ── Patient-facing instruction language ("en"/"fil") -- a therapist-
         # dashboard-session setting, like test mode, NOT a per-patient DB
@@ -2324,6 +2329,17 @@ class TherapistDashboardScene:
                 self.modal = None
             return None
 
+        if self.modal == "tutorial_confirm":
+            yr, nr = self._confirm_rects()
+            if yr.collidepoint(pos):                    # CONFIRM -- apply the toggle only
+                play_click()
+                self._tutorial_enabled = self._pending_tutorial
+                self.modal = None
+            elif nr.collidepoint(pos):                   # CANCEL -- keep current, no change
+                play_click()
+                self.modal = None
+            return None
+
         if self.modal == "delete_blocked":
             # Single dismiss button: back to Edit Profile so the therapist can
             # go transfer their patients (Phase 4: Share icon -> TRANSFER).
@@ -2672,7 +2688,9 @@ class TherapistDashboardScene:
 
             if self._tutorial_btn_rect.collidepoint(pos) and self.gc.get("selected_game"):
                 play_click()
-                return self._launch_game(tutorial=True)
+                self._pending_tutorial = not self._tutorial_enabled
+                self.modal = "tutorial_confirm"
+                return None
 
             if _TEST_MODE_AVAILABLE and self._test_mode_btn_rect.collidepoint(pos):
                 play_click()
@@ -2696,7 +2714,7 @@ class TherapistDashboardScene:
                     return None
                 play_start_session()
                 self._sm_test_mode = test_mode_on
-                return self._launch_game(test_mode=test_mode_on)
+                return self._launch_game(test_mode=test_mode_on, tutorial=self._tutorial_enabled)
 
         return None
 
@@ -3333,6 +3351,9 @@ class TherapistDashboardScene:
         # session ends, so the next one always starts from normal validation.
         self._test_mode_bypass = False
         self._sm_test_mode     = False
+        # Tutorial auto-disables the same way, so the next session for this
+        # (or another) patient never silently inherits it by accident.
+        self._tutorial_enabled = False
         self._open_panel(4)                 # -> Game Configuration (NOT Patient List)
 
     def _sm_back(self):
@@ -5005,7 +5026,7 @@ class TherapistDashboardScene:
         if self.modal in ("logout_confirm","delete_confirm","delete_patient_confirm",
                           "select_patient_confirm","deselect_patient_confirm",
                           "save_account_confirm","save_patient_confirm",
-                          "revoke_share_confirm","language_confirm"):
+                          "revoke_share_confirm","language_confirm","tutorial_confirm"):
             yr, nr = self._confirm_rects()
             self.confirm_yes_hov = yr.collidepoint(mouse_pos)
             self.confirm_no_hov  = nr.collidepoint(mouse_pos)
@@ -5100,7 +5121,7 @@ class TherapistDashboardScene:
             if self.edit_icon_picker_open:
                 self._draw_overlay(surface); self._draw_icon_picker_popup(surface)
         elif self.modal in ("logout_confirm","delete_confirm","save_account_confirm",
-                            "language_confirm"):
+                            "language_confirm","tutorial_confirm"):
             self._draw_confirm_modal(surface)
         elif self.modal == "select_patient_confirm":
             self._draw_select_confirm_modal(surface)
@@ -8465,7 +8486,8 @@ class TherapistDashboardScene:
         # zone reserves enough room for all three regardless of the title's
         # own (usually smaller) height.
         chip_gap = self._sc(6)
-        tutorial_s = self.fnt["tag"].render("Tutorial", True, (255, 255, 255))
+        tutorial_lbl = "TUTORIAL ON" if self._tutorial_enabled else "Tutorial"
+        tutorial_s = self.fnt["tag"].render(tutorial_lbl, True, (255, 255, 255))
         chip_h = max(self._sc(22), tutorial_s.get_height() + self._sc(8))
         # The chip STACK lives entirely on the right (anchored off
         # checklist_r.y below); the rows live entirely on the left (dot +
@@ -8505,6 +8527,8 @@ class TherapistDashboardScene:
             tut_r = pygame.Rect(checklist_r.right - hpad - tut_w, lang_r.bottom + chip_gap, tut_w, chip_h)
             if not game_selected:
                 tut_col = (150, 158, 172)
+            elif self._tutorial_enabled:
+                tut_col = (190, 140, 20) if self._tutorial_hov else (215, 160, 30)
             else:
                 tut_col = (28, 150, 176) if self._tutorial_hov else (34, 170, 198)
             pygame.draw.rect(surface, tut_col, tut_r, border_radius=self._sc(6))
@@ -8933,6 +8957,7 @@ class TherapistDashboardScene:
         is_save_acc = (self.modal == "save_account_confirm")
         is_revoke   = (self.modal == "revoke_share_confirm")
         is_lang     = (self.modal == "language_confirm")
+        is_tutorial = (self.modal == "tutorial_confirm")
         pt_name = ((self._ep_patient or {}).get("full_name", "this patient")
                    if (is_del_pt or is_save_pt) else "")
 
@@ -8943,6 +8968,18 @@ class TherapistDashboardScene:
             body  = (f"Patient-facing instructions and calibration audio will switch to "
                      f"{lang_name}. The therapist dashboard stays in English.")
             yes_l = "Switch Language"
+        elif is_tutorial:
+            icon, accent = "check", (60, 140, 220)
+            if self._pending_tutorial:
+                title = "Enable Tutorial Mode?"
+                body  = ("The next session you start or calibrate for this patient will include "
+                         "on-screen coaching hints during gameplay. A Tutorial session is never "
+                         "saved to session history.")
+                yes_l = "Enable Tutorial"
+            else:
+                title = "Disable Tutorial Mode?"
+                body  = "The next session you start will run normally, without coaching hints."
+                yes_l = "Disable Tutorial"
         elif is_revoke:
             who = self._share_revoke_pending or {}
             name = who.get("full_name") or who.get("username") or "this therapist"
