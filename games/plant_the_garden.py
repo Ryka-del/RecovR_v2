@@ -401,13 +401,43 @@ class PlantTheGardenGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # "sensors" now, so .get() below falls through to the default
         # exactly as if that finger had never been calibrated at all; it is
         # never misread as a complete 5-finger record).
-        sensors_cal = self.cal.get("sensors", {})
-        self.press_threshold = []
+        # Direction-independent: a flex sensor's raw reading may DECREASE,
+        # not increase, when the finger bends (never verified in hardware).
+        # A CALIBRATED finger's "how flexed is it right now" is therefore
+        # computed as a 0-100% distance from its OWN resting baseline
+        # toward its OWN calibrated peak average, using abs() on both sides
+        # (see _finger_pct()) instead of comparing raw ADC values directly
+        # against a single precomputed raw threshold. An UNCALIBRATED
+        # finger has no baseline/peak to compute a percentage from, so it
+        # keeps the exact raw-value comparison this always used.
+        sensors_cal   = self.cal.get("sensors", {})
+        threshold_pct = self.cal.get("params", {}).get(
+            "threshold_pct", FLEX_THRESHOLD[self.difficulty] * 100)
+        self._finger_calibrated    = []
+        self._finger_baseline      = []
+        self._finger_peak          = []
+        self.press_threshold_pct   = []
+        self.release_threshold_pct = []
+        self.press_threshold       = []   # raw-value fallback, uncalibrated fingers only
+        self.release_threshold     = []   # raw-value fallback, uncalibrated fingers only
         for name in FINGER_NAMES:
             entry = sensors_cal.get(f"{name} Flexion")
-            thr = entry.get("threshold") if entry else None
-            self.press_threshold.append(thr if thr and thr > 0 else self.flex_threshold)
-        self.release_threshold = [t * FLEX_RELEASE_MARGIN for t in self.press_threshold]
+            if entry and entry.get("average") is not None:
+                self._finger_calibrated.append(True)
+                self._finger_baseline.append(entry.get("baseline", 0.0))
+                self._finger_peak.append(entry["average"])
+                self.press_threshold_pct.append(threshold_pct)
+                self.release_threshold_pct.append(threshold_pct * FLEX_RELEASE_MARGIN)
+                self.press_threshold.append(0.0)
+                self.release_threshold.append(0.0)
+            else:
+                self._finger_calibrated.append(False)
+                self._finger_baseline.append(0.0)
+                self._finger_peak.append(0.0)
+                self.press_threshold_pct.append(0.0)
+                self.release_threshold_pct.append(0.0)
+                self.press_threshold.append(self.flex_threshold)
+                self.release_threshold.append(self.flex_threshold * FLEX_RELEASE_MARGIN)
 
         self._session_init(data, GOAL, DURATION, self.difficulty, cal_goal_key="ptg_goal")
 
@@ -581,7 +611,7 @@ class PlantTheGardenGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # before it can register a press, exactly like mid-session.
         state0 = input_handler.get_state()
         flex0  = state0.get("finger_flex") or [0.0] * 5
-        self._flex_armed = [flex0[i] < self.release_threshold[i] for i in range(5)]
+        self._flex_armed = [self._finger_is_released(i, flex0[i]) for i in range(5)]
         self._grip_need_release = False
         self._wrist_need_release = False
         self._water2_need_release = False
@@ -606,13 +636,38 @@ class PlantTheGardenGame(SessionModeMixin, FatigueMixin, BaseScreen):
             return raw
         return max(0.0, min(1.0, (raw - rest) / (mx - rest)))
 
+    def _finger_pct(self, index, raw):
+        """Direction-independent 0-100 flexion percentage for a CALIBRATED
+        finger -- distance from its own resting baseline toward its own
+        calibrated peak average, using abs() on both sides since this
+        sensor's raw reading may rise OR fall when the finger bends (never
+        verified in hardware). Capped to [0, 100]. Only meaningful when
+        self._finger_calibrated[index] is True. Mirrors
+        games/whack_mole.py's own method of the same name/signature."""
+        baseline = self._finger_baseline[index]
+        peak     = self._finger_peak[index]
+        span = abs(peak - baseline)
+        if span <= 1e-6:
+            return 0.0
+        return max(0.0, min(100.0, abs(raw - baseline) / span * 100.0))
+
+    def _finger_is_pressed(self, index, raw):
+        if self._finger_calibrated[index]:
+            return self._finger_pct(index, raw) >= self.press_threshold_pct[index]
+        return raw >= self.press_threshold[index]
+
+    def _finger_is_released(self, index, raw):
+        if self._finger_calibrated[index]:
+            return self._finger_pct(index, raw) <= self.release_threshold_pct[index]
+        return raw <= self.release_threshold[index]
+
     def _normalize_finger(self, index, raw):
         """Used by recovr/patient_app/games/generic_adapter.py's therapist
         telemetry -- "calibrated" reading is whether THIS finger is
         currently above ITS OWN calibrated threshold, the same value the
         press/release state machine itself acts on. Mirrors
         games/whack_mole.py's own method of the same name/signature."""
-        return 1.0 if raw >= self.press_threshold[index] else 0.0
+        return 1.0 if self._finger_is_pressed(index, raw) else 0.0
 
     def _normalize_tilt(self, raw, axis=None):
         wmin = self.cal.get("wrist_min", -1.0)
@@ -901,11 +956,11 @@ class PlantTheGardenGame(SessionModeMixin, FatigueMixin, BaseScreen):
         for i in range(5):
             f = finger_flex[i]
             if self._flex_armed[i]:
-                if f >= self.press_threshold[i]:
+                if self._finger_is_pressed(i, f):
                     self._flex_armed[i] = False
                     flex_press = True
             else:
-                if f <= self.release_threshold[i]:
+                if self._finger_is_released(i, f):
                     self._flex_armed[i] = True
 
         if self.carrying is None:

@@ -172,6 +172,8 @@ THERAPIST_CUES = {
     "ready":    "Guide the patient through the upcoming movement.",
     "between":  "Allow the patient to rest before proceeding.",
     "complete": "Calibration is complete. Review the recommended setting based on the results before you start the game.",
+    "direction_retry": "One or more fingers moved inconsistently relative to their resting position. Repeating the 3 trials for this hand.",
+    "direction_warning": "The inconsistent reading persisted on a second attempt. You may retry again, or continue -- the affected finger(s) will be flagged on the Results screen.",
 }
 
 # Recording-phase therapist instruction depends on which movement is being
@@ -254,6 +256,10 @@ TRIAL_DONE_PAUSE  = 1.5
 # therapist advances it manually.
 PREP_DURATION     = 9.3
 COMPLETE_DURATION = 8.0
+# How long the auto-retry explanation ("direction_retry") stays on screen
+# before the 3 trials restart on their own -- no button, same idea as prep/
+# complete above, just long enough to read a 1-2 sentence explanation.
+DIRECTION_RETRY_DURATION = 4.0
 
 # ── per-game Advanced Settings parameters ──────────────────────────────────────
 # Each entry is a real, independently-overridable constant read by that game's
@@ -541,6 +547,14 @@ class CalibrationWindow:
         # group mode.
         self._finger_group_active = False
         self.peak_values           = [0.0] * len(_FINGER_FLEX_KEYS)
+        # Direction-consistency validation for the finger group (see
+        # _check_finger_group_directions/"direction_retry"/
+        # "direction_warning" phases below) -- 0 until the group's 3 trials
+        # have failed the check once; a 2nd consecutive failure escalates
+        # from an auto-retry to a therapist-facing warning screen instead of
+        # silently repeating forever.
+        self._direction_retry_count  = 0
+        self._direction_issue_names  = []
 
         # ── resting-baseline capture (see THERAPIST_CUES above) ────────
         # One measured resting value per sensor type, keyed exactly like
@@ -559,7 +573,10 @@ class CalibrationWindow:
         # no timer -- it waits for self._start_trial_rect instead.
         self._prep_t     = 0.0
         self._complete_t = 0.0
+        self._direction_retry_t = 0.0
         self._start_trial_rect = pygame.Rect(0, 0, 1, 1)
+        self._direction_retry_rect    = pygame.Rect(0, 0, 1, 1)
+        self._direction_continue_rect = pygame.Rect(0, 0, 1, 1)
 
         # ── results-phase: preset & advanced settings ─────────────────
         self.selected_preset     = "Medium"   # Easy / Medium / Hard
@@ -852,6 +869,16 @@ class CalibrationWindow:
             if self._start_trial_rect.collidepoint(pos):
                 self._start_countdown()
 
+        elif self.phase == "direction_warning":
+            if self._direction_retry_rect.collidepoint(pos):
+                self.trial_results = []
+                self.current_trial  = 0
+                self.peak_values     = [0.0] * len(_FINGER_FLEX_KEYS)
+                self.peak_value       = 0.0
+                self._start_ready()
+            elif self._direction_continue_rect.collidepoint(pos):
+                self._finish_finger_group(direction_warning=True)
+
         elif self.phase == "results":
             # Only the fixed footer buttons reach here -- taps inside the
             # scrollable viewport (e.g. the preset cards) are handled by
@@ -1050,7 +1077,22 @@ class CalibrationWindow:
                 self.current_trial += 1
                 if self.current_trial >= 3:
                     if self._finger_group_active:
-                        self._finish_finger_group()
+                        # Verify the 3 trials actually moved consistently
+                        # away from each finger's own baseline before
+                        # trusting them -- see _check_finger_group_directions
+                        # and the "direction_retry"/"direction_warning"
+                        # phases below.
+                        issues = self._check_finger_group_directions()
+                        if issues:
+                            self._direction_issue_names = issues
+                            if self._direction_retry_count == 0:
+                                self._direction_retry_count = 1
+                                self._start_direction_retry()
+                            else:
+                                self._start_direction_warning()
+                        else:
+                            self._direction_retry_count = 0
+                            self._finish_finger_group()
                     elif len(self.game_types) > 1:
                         self._finish_sensor()
                     else:
@@ -1061,6 +1103,15 @@ class CalibrationWindow:
                     # auto-continuing, so the therapist confirms the patient
                     # is ready before every trial, not just the first.
                     self._start_ready()
+
+        elif self.phase == "direction_retry":
+            self._direction_retry_t += dt
+            if self._direction_retry_t >= DIRECTION_RETRY_DURATION:
+                self._start_ready()
+
+        elif self.phase == "direction_warning":
+            pass   # waits for the therapist to tap Retry Again / Continue
+                   # Anyway -- see handle_event
 
         elif self.phase == "complete":
             self._complete_t += dt
@@ -1098,7 +1149,51 @@ class CalibrationWindow:
             return False
         return not any(k in self.sensor_results for k in _FINGER_FLEX_KEYS)
 
-    def _finish_finger_group(self):
+    def _check_finger_group_directions(self):
+        """For the finger group's 3 just-completed trials (self.trial_results,
+        each a 5-long raw list -- see update()'s "recording" branch), returns
+        the list of finger names (e.g. ["Thumb", "Ring"]) whose 3 trials are
+        NOT consistently on one side of that finger's own resting baseline.
+        A trial that barely moved at all (within EPS of baseline) counts as
+        neither side, so 3 trials that are "2 up, 1 flat" or "all flat" both
+        flag too -- a real trial should move meaningfully one way or the
+        other. Does NOT assume which direction is correct: all-above and
+        all-below both pass, per the request's "do not force a particular
+        sensor polarity" instruction."""
+        EPS = 0.01
+        issues = []
+        for i, name in enumerate(_FINGER_FLEX_KEYS):
+            baseline = self.sensor_baseline.get(name, 0.0)
+            signs = set()
+            for t in self.trial_results:
+                delta = t[i] - baseline
+                signs.add(0 if abs(delta) < EPS else (1 if delta > 0 else -1))
+            if len(signs) > 1 or signs == {0}:
+                issues.append(name.split()[0])
+        return issues
+
+    def _start_direction_retry(self):
+        """1st direction-consistency failure for this finger group (see
+        _check_finger_group_directions) -- reset the 3-trial cycle
+        (baseline is NOT recaptured) and show a brief explanation before
+        trials restart on their own. A 2nd consecutive failure escalates to
+        _start_direction_warning() instead of retrying forever silently."""
+        self.trial_results = []
+        self.current_trial  = 0
+        self.peak_values     = [0.0] * len(_FINGER_FLEX_KEYS)
+        self.peak_value       = 0.0
+        self.phase              = "direction_retry"
+        self._direction_retry_t = 0.0
+
+    def _start_direction_warning(self):
+        """2nd consecutive direction-consistency failure -- stop auto-
+        retrying and let the therapist choose, via handle_event: "Retry
+        Again" (same reset as _start_direction_retry) or "Continue Anyway"
+        (accepts the data as-is and calls _finish_finger_group(True) so the
+        affected finger(s) are flagged, not silently treated as clean)."""
+        self.phase = "direction_warning"
+
+    def _finish_finger_group(self, direction_warning=False):
         """Counterpart to _finish_sensor() for the 5-finger group -- splits
         the 3 shared trials (each trial_results entry is a 5-long list, one
         peak per finger -- see update()'s "recording" branch) back into 5
@@ -1107,17 +1202,26 @@ class CalibrationWindow:
         (_advance_sensor_idx's terminal branch, _enter_results,
         _recommend_difficulty, _accept_multi_sensor, the Results screen)
         already expects that shape and needs no group-specific handling at
-        all once this has run."""
+        all once this has run. `direction_warning=True` (only reachable via
+        the therapist's own "Continue Anyway" tap) additionally marks each
+        finger still listed in self._direction_issue_names so the saved
+        record and Results screen can show it was accepted with a warning,
+        not calibrated cleanly."""
         for i, name in enumerate(_FINGER_FLEX_KEYS):
             trials_i = [round(t[i], 4) for t in self.trial_results]
             avg_i = sum(trials_i) / len(trials_i) if trials_i else 0.0
-            self.sensor_results[name] = {
+            entry = {
                 "sensor_name": SENSOR_CFG[name]["sensor_name"],
                 "trials":      trials_i,
                 "average":     round(avg_i, 4),
                 "baseline":    self.sensor_baseline.get(name, 0.0),
             }
-        self._finger_group_active = False
+            if direction_warning and name.split()[0] in self._direction_issue_names:
+                entry["direction_warning"] = True
+            self.sensor_results[name] = entry
+        self._finger_group_active   = False
+        self._direction_retry_count = 0
+        self._direction_issue_names = []
         self._advance_sensor_idx(self.sensor_idx + len(_FINGER_FLEX_KEYS))
 
     def _advance_sensor_idx(self, start_idx):
@@ -1189,24 +1293,50 @@ class CalibrationWindow:
         """Rescales a raw 0-1 sensor reading so the patient's own relaxed
         resting position reads as 0 and their calibrated max still reads as
         1, instead of a resting bend/preload eating into the usable range.
-        A no-op (returns raw unchanged, clamped) when baseline is 0."""
-        denom = 1.0 - baseline
+        A no-op (returns raw unchanged, clamped) when baseline is 0.
+
+        Direction-independent: some flex sensors read LOWER, not higher,
+        when the finger bends (never verified in hardware, so both must be
+        supported -- see the per-finger press_threshold_pct fix in
+        games/whack_mole.py etc.). When raw lands below baseline, this
+        rescales against the 0.0 floor instead of the 1.0 ceiling, mirroring
+        the increasing-direction case exactly."""
+        if raw >= baseline:
+            denom = 1.0 - baseline
+            if denom <= 1e-6:
+                return max(0.0, min(1.0, raw - baseline))
+            return max(0.0, min(1.0, (raw - baseline) / denom))
+        denom = baseline
         if denom <= 1e-6:
-            return max(0.0, min(1.0, raw - baseline))
-        return max(0.0, min(1.0, (raw - baseline) / denom))
+            return max(0.0, min(1.0, baseline - raw))
+        return max(0.0, min(1.0, (baseline - raw) / denom))
 
     @staticmethod
     def _baseline_threshold(avg, baseline, pct):
-        """threshold_pct applied to the RANGE ABOVE the resting baseline,
-        not to the raw average -- so a sensor with a nonzero resting value
-        (e.g. a flex sensor that still reads something with the hand at
-        rest) doesn't give the patient "free" progress toward the
+        """threshold_pct applied to the RANGE between the resting baseline
+        and the calibrated average -- so a sensor with a nonzero resting
+        value (e.g. a flex sensor that still reads something with the hand
+        at rest) doesn't give the patient "free" progress toward the
         threshold just for resting. Reduces exactly to the original
-        `avg * pct / 100` when baseline is 0."""
+        `avg * pct / 100` when baseline is 0.
+
+        Direction-independent: if avg reads BELOW baseline (this sensor's
+        raw value decreases when flexed), the threshold is placed the same
+        fraction of the way BELOW baseline instead of collapsing to exactly
+        baseline -- the old `span <= 0 -> return baseline` branch made a
+        decreasing-direction sensor's calibrated threshold equal to its own
+        resting value, which raw could never cross while flexed (permanent
+        "Idle"). This value is still saved/shown for display (Results
+        screen "Active threshold", saved DB row) -- see games/whack_mole.py
+        etc. for the runtime path, which now computes its own
+        direction-independent percentage directly from baseline/average
+        instead of comparing raw against this single scalar."""
         span = avg - baseline
+        sign = 1.0 if span >= 0 else -1.0
+        span = abs(span)
         if span <= 1e-6:
             return round(baseline, 4)
-        return round(baseline + span * pct / 100.0, 4)
+        return round(baseline + sign * span * pct / 100.0, 4)
 
     def _enter_results(self):
         self.phase = "results"
@@ -1581,6 +1711,8 @@ class CalibrationWindow:
             "countdown":    self._draw_countdown,
             "recording":    self._draw_recording,
             "trial_done":   self._draw_trial_done,
+            "direction_retry":   self._draw_direction_retry,
+            "direction_warning": self._draw_direction_warning,
             "complete":     self._draw_complete,
             "results":      self._draw_results,
             "advanced":     self._draw_advanced_settings,
@@ -1776,6 +1908,66 @@ class CalibrationWindow:
         b_s = self.fnt["bold"].render(f"Start Trial {self.current_trial + 1}", True, C["white"])
         surface.blit(b_s, b_s.get_rect(center=start_r.center))
         self._start_trial_rect = start_r
+
+    def _draw_direction_retry(self, surface, area, C):
+        """1st direction-consistency failure (see
+        _check_finger_group_directions/_start_direction_retry) -- a brief,
+        auto-advancing explanation before the 3 trials restart on their
+        own, same layout family as _draw_prep/_draw_complete."""
+        W, H = self.W, self.H
+        lx = self._scw(40)
+        rw = W - lx * 2
+        cy = area.y + self._sc(6)
+
+        tl_s = self.fnt["head2"].render("Inconsistent Reading Detected", True, C["text"])
+        surface.blit(tl_s, (lx, cy))
+        st_s = self.fnt["head2"].render("Retrying", True, C["accent"])
+        surface.blit(st_s, st_s.get_rect(topright=(lx + rw, cy)))
+        cy += tl_s.get_height() + self._sc(14)
+
+        names = ", ".join(self._direction_issue_names) or "One or more fingers"
+        cue = f"{names}: {THERAPIST_CUES['direction_retry']}"
+        cy = self._draw_cue_box(surface, lx, cy, rw, C, cue)
+        cy += self._sc(10)
+        self._draw_timer_bar(surface, lx, cy, rw, C,
+                             max(0.0, DIRECTION_RETRY_DURATION - self._direction_retry_t),
+                             DIRECTION_RETRY_DURATION)
+
+    def _draw_direction_warning(self, surface, area, C):
+        """2nd consecutive direction-consistency failure -- stops auto-
+        retrying and lets the therapist choose, via the two buttons below
+        (see handle_event's "direction_warning" branch)."""
+        W, H = self.W, self.H
+        cx = area.centerx
+        lx = self._scw(40)
+        rw = W - lx * 2
+        cy = area.y + self._sc(6)
+
+        tl_s = self.fnt["head2"].render("Inconsistent Reading Persists", True, C["text"])
+        surface.blit(tl_s, (lx, cy))
+        st_s = self.fnt["head2"].render("Action Needed", True, C["yellow"])
+        surface.blit(st_s, st_s.get_rect(topright=(lx + rw, cy)))
+        cy += tl_s.get_height() + self._sc(14)
+
+        names = ", ".join(self._direction_issue_names) or "One or more fingers"
+        cue = f"{names}: {THERAPIST_CUES['direction_warning']}"
+        cy = self._draw_cue_box(surface, lx, cy, rw, C, cue)
+        cy += self._sc(20)
+
+        btn_h = self._tt(44)
+        gap   = self._scw(16)
+        btn_w = (rw - gap) // 2
+        retry_r = pygame.Rect(lx, cy, btn_w, btn_h)
+        cont_r  = pygame.Rect(lx + btn_w + gap, cy, btn_w, btn_h)
+        pygame.draw.rect(surface, C["panel2"], retry_r, border_radius=14)
+        pygame.draw.rect(surface, C["accent"], retry_r, 2, border_radius=14)
+        pygame.draw.rect(surface, C["accent"], cont_r, border_radius=14)
+        r_s = self.fnt["bold"].render("Retry Again", True, C["accent"])
+        c_s = self.fnt["bold"].render("Continue Anyway", True, C["white"])
+        surface.blit(r_s, r_s.get_rect(center=retry_r.center))
+        surface.blit(c_s, c_s.get_rect(center=cont_r.center))
+        self._direction_retry_rect    = retry_r
+        self._direction_continue_rect = cont_r
 
     def _draw_countdown(self, surface, area, C):
         self._draw_live_monitor(surface, area, C, "Waiting")
@@ -2267,6 +2459,13 @@ class CalibrationWindow:
                     f"Threshold {self._fmt_value_for(key, thr)}")
             if baseline > 0:
                 line += f"  ·  Baseline {self._fmt_value_for(key, baseline)}"
+            # Flagged via the therapist's own "Continue Anyway" tap on the
+            # direction-consistency warning screen (see
+            # _check_finger_group_directions/_finish_finger_group) -- the 3
+            # trials weren't consistently on one side of this finger's
+            # baseline, so this reading may be less reliable than usual.
+            if data and data.get("direction_warning"):
+                line += "  ·  ⚠ Inconsistent during calibration"
             rows.append(self._wrap_text(line, f_small, row_max_w))
 
         note_lines = self._wrap_text(

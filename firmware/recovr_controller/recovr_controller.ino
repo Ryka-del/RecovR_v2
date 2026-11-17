@@ -20,12 +20,12 @@
 //   No push button is wired -- the "buttons" byte in the BLE packet below
 //   is always sent as 0 (kept so the packet layout/size never changes).
 //
-//   5-finger flex glove -- WIRING:
-//     flex1 Thumb  = C5
-//     flex2 Index  = C6
-//     flex3 Middle = C7
-//     flex4 Ring   = C8
-//     flex5 Pinky  = C9
+//   5-finger flex glove -- WIRING (which channel reads which finger depends
+//   on which physical glove is plugged in -- see GLOVE_RIGHT_HAND below):
+//     Left-hand glove  (GLOVE_RIGHT_HAND 0, default): flex1 Thumb = C5 ...
+//       flex5 Pinky = C9 (channel number == flex index + 4).
+//     Right-hand glove (GLOVE_RIGHT_HAND 1): mirrored -- flex1 Thumb = C9 ...
+//       flex5 Pinky = C5 (channel number == 9 - (flex index - 1)).
 //   Used independently by Tile Rush and Whack-a-Mole (state["finger_flex"],
 //   5 separate channels). Plant the Garden instead uses only the Thumb
 //   channel (C5) as its single legacy "Finger Flexion" reading
@@ -37,7 +37,10 @@
 //   wiring one -- flag it separately.
 //
 // BLE Packet (19 bytes, little-endian, 50 Hz) -- must match
-// sensors/ble_receiver.py PACKET_FORMAT "<HHHHHHHBhh":
+// sensors/ble_receiver.py PACKET_FORMAT "<HHHHHHHBhh". Field NAMES/ORDER
+// never change with GLOVE_RIGHT_HAND -- only which physical channel each
+// one is actually read from does (channel shown below is the left-hand/
+// default wiring; see GLOVE_RIGHT_HAND above for the right-hand mapping):
 //   [0-1]   uint16  grip_raw        FSR ADC value  (C4)    0-4095
 //   [2-3]   uint16  flex_raw        Flex ADC (legacy, C5)  0-4095
 //   [4-5]   uint16  flex_thumb_raw  Thumb Flex ADC  (C5)   0-4095
@@ -79,17 +82,37 @@
 #define MUX_S3   21   // D6
 
 // -- MUX channels -------------------------------------------------------------
-#define CH_FSR          4   // C4  FSR402
+#define CH_FSR          4   // C4  FSR402 (same channel for either glove)
 
-// 5-finger glove (flex1-flex5 = C5-C9, Thumb through Pinky)
+// Which physical glove THIS firmware image is being flashed for -- a
+// right-hand glove's flex1..flex5 wires land on the MUX channels in the
+// OPPOSITE order from a left-hand glove's (mirrored construction), so the
+// finger-to-channel mapping has to flip with it. Set to 1 when flashing a
+// controller paired with a right-hand glove; leave at 0 (left-hand, the
+// original/default wiring) otherwise. Everything downstream -- the BLE
+// packet layout, field names/order, Python, games -- is unaffected either
+// way: flex_thumb_raw etc. always means "the Thumb sensor's reading",
+// whichever physical channel it happened to come from.
+#define GLOVE_RIGHT_HAND 0
+
+#if GLOVE_RIGHT_HAND
+// Right-hand glove (flex1-flex5 = C9-C5, Thumb through Pinky)
+#define CH_FLEX_THUMB   9   // C9  flex1
+#define CH_FLEX_INDEX   8   // C8  flex2
+#define CH_FLEX_MIDDLE  7   // C7  flex3
+#define CH_FLEX_RING    6   // C6  flex4
+#define CH_FLEX_PINKY   5   // C5  flex5
+#else
+// Left-hand glove (flex1-flex5 = C5-C9, Thumb through Pinky)
 #define CH_FLEX_THUMB   5   // C5  flex1
 #define CH_FLEX_INDEX   6   // C6  flex2
 #define CH_FLEX_MIDDLE  7   // C7  flex3
 #define CH_FLEX_RING    8   // C8  flex4
 #define CH_FLEX_PINKY   9   // C9  flex5
+#endif
 
 // Legacy single-flex reading (Plant the Garden) = same physical Thumb sensor
-#define CH_FLEX         CH_FLEX_THUMB   // C5
+#define CH_FLEX         CH_FLEX_THUMB   // C5 (left-hand) / C9 (right-hand)
 
 // -- BLE identity (must match sensors/ble_receiver.py) ------------------------
 #define DEVICE_NAME  "RecovR-Controller"

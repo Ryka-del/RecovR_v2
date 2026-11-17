@@ -357,21 +357,52 @@ class WhackMoleGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self.mole_hit_window = cal_params.get("wm_mole_duration", MOLE_DURATION[self.difficulty])
         self.simultaneous    = int(cal_params.get("wm_simultaneous", SIMULTANEOUS[self.difficulty]))
 
-        # Per-finger calibrated press threshold (0-1), from the 5 independent
+        # Per-finger calibrated press threshold, from the 5 independent
         # "<Finger> Flexion" calibration passes (see MULTI_SENSOR_CALIBRATION
         # in scenes/therapist_dashboard.py / SENSOR_CFG in
         # scenes/calibration_window.py) -- falls back to the Advanced
         # Settings "Required Finger Flexion" override (wm_flex_threshold),
         # then to a hardcoded difficulty default, for any finger never
         # actually calibrated (e.g. calibration skipped).
-        sensors_cal = self.cal.get("sensors", {})
-        default_thr = cal_params.get("wm_flex_threshold", DEFAULT_THRESHOLD[self.difficulty])
-        self.press_threshold = []
+        #
+        # Direction-independent: a flex sensor's raw reading may DECREASE,
+        # not increase, when the finger bends (never verified in hardware).
+        # A CALIBRATED finger's "how flexed is it right now" is therefore
+        # computed as a 0-100% distance from its OWN resting baseline
+        # toward its OWN calibrated peak average, using abs() on both sides
+        # (see _finger_pct()) instead of comparing raw ADC values directly
+        # against a single precomputed raw threshold. An UNCALIBRATED
+        # finger has no baseline/peak to compute a percentage from, so it
+        # keeps the exact raw-value comparison this always used.
+        sensors_cal   = self.cal.get("sensors", {})
+        default_thr   = cal_params.get("wm_flex_threshold", DEFAULT_THRESHOLD[self.difficulty])
+        threshold_pct = self.cal.get("params", {}).get(
+            "threshold_pct", DEFAULT_THRESHOLD[self.difficulty] * 100)
+        self._finger_calibrated    = []
+        self._finger_baseline      = []
+        self._finger_peak          = []
+        self.press_threshold_pct   = []
+        self.release_threshold_pct = []
+        self.press_threshold       = []   # raw-value fallback, uncalibrated fingers only
+        self.release_threshold     = []   # raw-value fallback, uncalibrated fingers only
         for name in FINGER_NAMES:
             entry = sensors_cal.get(f"{name} Flexion")
-            thr = entry.get("threshold") if entry else None
-            self.press_threshold.append(thr if thr and thr > 0 else default_thr)
-        self.release_threshold = [t * RELEASE_MARGIN for t in self.press_threshold]
+            if entry and entry.get("average") is not None:
+                self._finger_calibrated.append(True)
+                self._finger_baseline.append(entry.get("baseline", 0.0))
+                self._finger_peak.append(entry["average"])
+                self.press_threshold_pct.append(threshold_pct)
+                self.release_threshold_pct.append(threshold_pct * RELEASE_MARGIN)
+                self.press_threshold.append(0.0)
+                self.release_threshold.append(0.0)
+            else:
+                self._finger_calibrated.append(False)
+                self._finger_baseline.append(0.0)
+                self._finger_peak.append(0.0)
+                self.press_threshold_pct.append(0.0)
+                self.release_threshold_pct.append(0.0)
+                self.press_threshold.append(default_thr)
+                self.release_threshold.append(default_thr * RELEASE_MARGIN)
 
         W, H = GAME_W, GAME_H
         front_y = int(H * FRONT_Y_FRAC)
@@ -553,15 +584,39 @@ class WhackMoleGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # can register a press, exactly like mid-session.
         state = input_handler.get_state()
         flex = state.get("finger_flex", [0.0] * 5)
-        self._armed = [flex[i] < self.release_threshold[i] for i in range(5)]
+        self._armed = [self._finger_is_released(i, flex[i]) for i in range(5)]
         self._state = {"finger_flex": list(flex), "fingers": [False] * 5}
+
+    def _finger_pct(self, index, raw):
+        """Direction-independent 0-100 flexion percentage for a CALIBRATED
+        finger -- distance from its own resting baseline toward its own
+        calibrated peak average, using abs() on both sides since this
+        sensor's raw reading may rise OR fall when the finger bends (never
+        verified in hardware). Capped to [0, 100]. Only meaningful when
+        self._finger_calibrated[index] is True."""
+        baseline = self._finger_baseline[index]
+        peak     = self._finger_peak[index]
+        span = abs(peak - baseline)
+        if span <= 1e-6:
+            return 0.0
+        return max(0.0, min(100.0, abs(raw - baseline) / span * 100.0))
+
+    def _finger_is_pressed(self, index, raw):
+        if self._finger_calibrated[index]:
+            return self._finger_pct(index, raw) >= self.press_threshold_pct[index]
+        return raw >= self.press_threshold[index]
+
+    def _finger_is_released(self, index, raw):
+        if self._finger_calibrated[index]:
+            return self._finger_pct(index, raw) <= self.release_threshold_pct[index]
+        return raw <= self.release_threshold[index]
 
     def _normalize_finger(self, index, raw):
         """Used by recovr/patient_app/games/generic_adapter.py's therapist
         telemetry -- "calibrated" reading is whether THIS finger is
         currently above ITS OWN calibrated threshold, the same value the
         press/release state machine itself acts on."""
-        return 1.0 if raw >= self.press_threshold[index] else 0.0
+        return 1.0 if self._finger_is_pressed(index, raw) else 0.0
 
     # ── input: 5 independent finger channels, always live ──────────────────
 
@@ -570,11 +625,11 @@ class WhackMoleGame(SessionModeMixin, FatigueMixin, BaseScreen):
         for i in range(5):
             f = flex[i]
             if self._armed[i]:
-                if f >= self.press_threshold[i]:
+                if self._finger_is_pressed(i, f):
                     self._armed[i] = False
                     self._on_finger_press(i)
             else:
-                if f <= self.release_threshold[i]:
+                if self._finger_is_released(i, f):
                     self._armed[i] = True
 
     def _on_finger_press(self, finger_index):

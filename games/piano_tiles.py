@@ -258,14 +258,44 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # if neither is available. Deliberately NOT a single schema override
         # that unconditionally replaces per-finger calibration -- only steps
         # in when a finger genuinely has none.
-        default_thr = cal_params.get("pt_flex_threshold", FLEX_THRESHOLD.get(cal_diff, 0.5))
+        # Direction-independent: a flex sensor's raw reading may DECREASE,
+        # not increase, when the finger bends (never verified in hardware).
+        # A CALIBRATED finger's "how flexed is it right now" is therefore
+        # computed as a 0-100% distance from its OWN resting baseline
+        # toward its OWN calibrated peak average, using abs() on both sides
+        # (see _finger_pct()) instead of comparing raw ADC values directly
+        # against a single precomputed raw threshold. An UNCALIBRATED
+        # finger has no baseline/peak to compute a percentage from, so it
+        # keeps the exact raw-value comparison this always used.
+        default_thr   = cal_params.get("pt_flex_threshold", FLEX_THRESHOLD.get(cal_diff, 0.5))
+        threshold_pct = self.cal.get("params", {}).get(
+            "threshold_pct", FLEX_THRESHOLD.get(cal_diff, 0.5) * 100)
         sensors_cal = (data.get("calibration") or {}).get("sensors", {})
-        self.press_threshold = []
+        self._finger_calibrated    = []
+        self._finger_baseline      = []
+        self._finger_peak          = []
+        self.press_threshold_pct   = []
+        self.release_threshold_pct = []
+        self.press_threshold       = []   # raw-value fallback, uncalibrated fingers only
+        self.release_threshold     = []   # raw-value fallback, uncalibrated fingers only
         for name in FINGER_NAMES:
             entry = sensors_cal.get(f"{name} Flexion")
-            thr = entry.get("threshold") if entry else None
-            self.press_threshold.append(thr if thr and thr > 0 else default_thr)
-        self.release_threshold = [t * PT_RELEASE_MARGIN for t in self.press_threshold]
+            if entry and entry.get("average") is not None:
+                self._finger_calibrated.append(True)
+                self._finger_baseline.append(entry.get("baseline", 0.0))
+                self._finger_peak.append(entry["average"])
+                self.press_threshold_pct.append(threshold_pct)
+                self.release_threshold_pct.append(threshold_pct * PT_RELEASE_MARGIN)
+                self.press_threshold.append(0.0)
+                self.release_threshold.append(0.0)
+            else:
+                self._finger_calibrated.append(False)
+                self._finger_baseline.append(0.0)
+                self._finger_peak.append(0.0)
+                self.press_threshold_pct.append(0.0)
+                self.release_threshold_pct.append(0.0)
+                self.press_threshold.append(default_thr)
+                self.release_threshold.append(default_thr * PT_RELEASE_MARGIN)
         self.spawn_gap      = cal_params.get("pt_spawn_rate",     SPAWN_GAP.get(cal_diff, 0.7))
         self.hit_window     = HIT_WINDOW[self.difficulty]
 
@@ -442,13 +472,38 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
         keys = pygame.key.get_pressed()
         return True, [1.0 if keys[k] else 0.0 for k in _FLEX_TEST_KEYS]
 
+    def _finger_pct(self, index, raw):
+        """Direction-independent 0-100 flexion percentage for a CALIBRATED
+        finger -- distance from its own resting baseline toward its own
+        calibrated peak average, using abs() on both sides since this
+        sensor's raw reading may rise OR fall when the finger bends (never
+        verified in hardware). Capped to [0, 100]. Only meaningful when
+        self._finger_calibrated[index] is True. Same concept as
+        games/whack_mole.py's own _finger_pct()."""
+        baseline = self._finger_baseline[index]
+        peak     = self._finger_peak[index]
+        span = abs(peak - baseline)
+        if span <= 1e-6:
+            return 0.0
+        return max(0.0, min(100.0, abs(raw - baseline) / span * 100.0))
+
+    def _finger_is_pressed(self, index, raw):
+        if self._finger_calibrated[index]:
+            return self._finger_pct(index, raw) >= self.press_threshold_pct[index]
+        return raw >= self.press_threshold[index]
+
+    def _finger_is_released(self, index, raw):
+        if self._finger_calibrated[index]:
+            return self._finger_pct(index, raw) <= self.release_threshold_pct[index]
+        return raw <= self.release_threshold[index]
+
     def _normalize_finger(self, index, raw):
         """Used by recovr/patient_app/games/generic_adapter.py's therapist
         telemetry -- "calibrated" is whether THIS finger is currently above
         ITS OWN calibrated threshold, the same value the press/release state
         machine itself acts on. Same concept as games/whack_mole.py's own
         _normalize_finger()."""
-        return 1.0 if raw >= self.press_threshold[index] else 0.0
+        return 1.0 if self._finger_is_pressed(index, raw) else 0.0
 
     def _try_flex_tap(self, finger_idx):
         """Called on a FALSE -> TRUE edge for `finger_idx`. Scores the
@@ -506,13 +561,13 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
         for i in range(LANE_COUNT):
             f = flex_vals[i]
             if not self._finger_need_release[i]:
-                if f >= self.press_threshold[i]:
+                if self._finger_is_pressed(i, f):
                     self._finger_need_release[i] = True
                     self._try_flex_tap(i)
             else:
-                if f <= self.release_threshold[i]:
+                if self._finger_is_released(i, f):
                     self._finger_need_release[i] = False
-            if f >= self.press_threshold[i]:
+            if self._finger_is_pressed(i, f):
                 self.fatigue_timer = 0.0   # counts as activity so Take a Break doesn't trigger mid-game
 
         if self._session_tick(dt):
