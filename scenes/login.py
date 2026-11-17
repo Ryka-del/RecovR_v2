@@ -94,6 +94,13 @@ class LoginScene:
         self._profile_drag_start_pos  = None
         self._profile_drag_start_scroll = 0
         self._profile_pending_tap_pos = None
+        # Tap-to-scroll arrows (see _draw_circles/_hit_test) -- a drag
+        # gesture isn't reliably delivered as continuous motion events on
+        # every touchscreen driver, so these are the primary, hardware-
+        # independent way to reach the rest of the profiles on a touch
+        # panel; wheel/drag above still work wherever they're available.
+        self._profile_up_rect   = pygame.Rect(0, 0, 1, 1)
+        self._profile_down_rect = pygame.Rect(0, 0, 1, 1)
         self._compute_layout()
 
         n = len(self.accounts) + 1
@@ -240,6 +247,8 @@ class LoginScene:
             self._profile_scroll     = 0
             self._profile_scroll_max = 0
             self._profile_viewport   = pygame.Rect(0, 0, self.WIDTH, self.HEIGHT)
+            self._profile_up_rect    = pygame.Rect(0, 0, 1, 1)
+            self._profile_down_rect  = pygame.Rect(0, 0, 1, 1)
             row_w    = n_total * diam + (n_total - 1) * h_spacing
             row_left = (self.WIDTH - row_w) // 2
             cy       = int(self.HEIGHT * 0.52)
@@ -259,8 +268,19 @@ class LoginScene:
             # to at most 8 VISIBLE items (accounts + Add Account) at once --
             # the rest scroll into view (see handle_event's wheel/drag
             # routing and _draw_circles' clip), no scrollbar shown. ──
-            rows_n        = (n_total + grid_cols - 1) // grid_cols
-            rows_per_page = max(1, 8 // grid_cols)
+            rows_n = (n_total + grid_cols - 1) // grid_cols
+            # "At most 8 per page" is capped by whichever is more
+            # restrictive: the 8-item budget, or how many rows of height
+            # v_step actually fit in the space available between the
+            # heading and the Back button -- on a short panel (e.g. the
+            # touch LCD) a floor-division-only 8/grid_cols could claim more
+            # rows than physically fit, silently clipping the rest with
+            # self._profile_scroll_max staying 0 (nothing to scroll to).
+            top_reserve    = int(self.HEIGHT * 0.20)
+            bottom_reserve = self._tt(48) + self._sc(32)
+            avail_h        = max(diam, self.HEIGHT - top_reserve - bottom_reserve)
+            rows_by_height = max(1, 1 + (avail_h - diam) // v_step)
+            rows_per_page  = min(max(1, 8 // grid_cols), rows_by_height)
             vis_rows      = min(rows_n, rows_per_page)
             grid_h        = rows_n * diam + (rows_n - 1) * (v_step - diam)
             visible_h     = vis_rows * diam + (vis_rows - 1) * (v_step - diam)
@@ -335,6 +355,21 @@ class LoginScene:
             if math.hypot(pos[0] - cx, pos[1] - cy) > self.circle_r * 3.5:
                 self._cancel_selection()
             return None
+
+        # Profile grid tap-to-scroll arrows (see _draw_profile_scroll_arrows)
+        # -- the primary way to reach the rest of the profiles on a
+        # touchscreen, since drag gestures aren't reliably delivered as
+        # continuous motion events on every touch driver.
+        if self._profile_scroll_max > 0:
+            step = int(self._profile_viewport.height * 0.6)
+            if self._profile_up_rect.collidepoint(pos):
+                play_click()
+                self._profile_scroll = max(0, self._profile_scroll - step)
+                return None
+            if self._profile_down_rect.collidepoint(pos):
+                play_click()
+                self._profile_scroll = min(self._profile_scroll_max, self._profile_scroll + step)
+                return None
 
         # Account circles -- also bounded by the scroll viewport when
         # scrollable, so a circle scrolled out of view (its rect still
@@ -921,6 +956,38 @@ class LoginScene:
 
         if scrollable:
             surface.set_clip(prev_clip)
+            self._draw_profile_scroll_arrows(surface)
+        else:
+            self._profile_up_rect = self._profile_down_rect = pygame.Rect(0, 0, 1, 1)
+
+    def _draw_profile_scroll_arrows(self, surface):
+        """Discrete tap-to-scroll buttons for the profile grid -- NOT a
+        scrollbar (no track/thumb/position indicator, just two buttons),
+        same idea as scenes/register.py's own _sq_up_rect/_sq_down_rect.
+        This is the PRIMARY way to reach the rest of the profiles on a
+        touchscreen: a drag gesture isn't reliably delivered as continuous
+        FINGERMOTION events on every touch driver, so relying on drag alone
+        left the grid unreachable past the first page on real hardware even
+        though the wheel/drag handling in handle_event is correct. Mouse
+        wheel and drag (where available) still work independently of this.
+
+        Fixed in the top-right corner (not beside the grid) so it can never
+        overlap a circle regardless of how many columns fit -- the grid is
+        horizontally centered and can use nearly the full width."""
+        margin = self._sc(24)
+        aw = self._tt(44)
+        ah = self._tt(40)
+        ax = self.WIDTH - margin - aw
+        ay = int(self.HEIGHT * 0.17)
+        self._profile_up_rect   = pygame.Rect(ax, ay, aw, ah)
+        self._profile_down_rect = pygame.Rect(ax, ay + ah + self._sc(8), aw, ah)
+        for r, tri, on in ((self._profile_up_rect,   "▲", self._profile_scroll > 0),
+                           (self._profile_down_rect, "▼", self._profile_scroll < self._profile_scroll_max)):
+            pygame.draw.rect(surface, (226, 238, 250) if on else (238, 240, 244),
+                             r, border_radius=10)
+            pygame.draw.rect(surface, (150, 175, 210), r, 1, border_radius=10)
+            g = self.font_username.render(tri, True, (45, 90, 150) if on else (188, 196, 206))
+            surface.blit(g, g.get_rect(center=r.center))
 
     def _draw_pin_panel(self, surface):
         if self._touch_ui:

@@ -5701,10 +5701,15 @@ class TherapistDashboardScene:
         stage, _label, _detail, _dot_col, _txt_col = self._controller_status()
 
         # "actively searching for or attempting to connect" covers both the
-        # scan loop and an in-progress pairing attempt.
+        # scan loop and an in-progress pairing attempt. "handed_off" means
+        # the controller IS connected, just owned by the patient-side
+        # process right now (see update()'s BLE-ownership handoff for panel
+        # 7) -- it reuses the Connected asset rather than falling through to
+        # Not Connected, which would wrongly look like a fault during every
+        # normal session (there is no dedicated "handed off" asset today).
         if stage in ("scanning", "connecting"):
             asset = "controller_search.png"
-        elif stage == "connected":
+        elif stage in ("connected", "handed_off"):
             asset = "controller_connected.png"
         else:
             asset = "controller_not_connected.png"
