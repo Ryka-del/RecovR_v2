@@ -255,24 +255,24 @@ class LoginScene:
             self.add_rect   = pygame.Rect(cx_add - r, cy - r, diam, diam)
 
         else:
-            # ── grid, sized to however many columns fit this screen, capped
-            # to at most 8 VISIBLE items (accounts + Add Account) at once --
-            # the rest scroll into view (see handle_event's wheel/drag
-            # routing and _draw_circles' clip), no scrollbar shown. ──
+            # ── grid, sized to however many columns fit this screen. Every
+            # ROW that actually fits the real space between the heading and
+            # the Back button is shown -- there is no arbitrary "N items per
+            # page" ceiling, so all existing accounts are visible as long as
+            # they physically fit; only the overflow (typically just the
+            # trailing Add Account icon) scrolls into view (see
+            # handle_event's wheel/drag routing and _draw_circles' clip), no
+            # scrollbar shown. A previous version capped this at a flat
+            # 8-item budget regardless of row count, which could hide real
+            # accounts (e.g. 2 columns -> only 4 of 8 accounts shown) --
+            # fixed to size purely from the real available pixel height. ──
             rows_n = (n_total + grid_cols - 1) // grid_cols
-            # "At most 8 per page" is capped by whichever is more
-            # restrictive: the 8-item budget, or how many rows of height
-            # v_step actually fit in the space available between the
-            # heading and the Back button -- on a short panel (e.g. the
-            # touch LCD) a floor-division-only 8/grid_cols could claim more
-            # rows than physically fit, silently clipping the rest with
-            # self._profile_scroll_max staying 0 (nothing to scroll to).
-            top_reserve    = int(self.HEIGHT * 0.20)
-            bottom_reserve = self._tt(48) + self._sc(32)
-            avail_h        = max(diam, self.HEIGHT - top_reserve - bottom_reserve)
+            heading_bottom = (int(self.HEIGHT * 0.13) + self.font_heading.get_linesize() // 2
+                              + int(12 * self.HEIGHT / 1080))
+            back_top = self._back_rect().top
+            avail_h  = max(diam, back_top - heading_bottom)
             rows_by_height = max(1, 1 + (avail_h - diam) // v_step)
-            rows_per_page  = min(max(1, 8 // grid_cols), rows_by_height)
-            vis_rows      = min(rows_n, rows_per_page)
+            vis_rows = min(rows_n, rows_by_height)
             grid_h        = rows_n * diam + (rows_n - 1) * (v_step - diam)
             visible_h     = vis_rows * diam + (vis_rows - 1) * (v_step - diam)
             total_grid_w  = grid_cols * diam + (grid_cols - 1) * h_spacing

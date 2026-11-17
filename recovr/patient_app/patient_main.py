@@ -489,6 +489,17 @@ class PatientApp:
             tele = self.runner.due_telemetry()
             if tele is not None:
                 tele["session_id"] = self.session_id
+                # This process's OWN real BLE connection state -- relayed so
+                # the therapist's sidebar can show the actual controller
+                # status during the session instead of just assuming
+                # "handed off = fine" (see
+                # scenes/therapist_dashboard.py's _controller_status()).
+                try:
+                    from sensors.ble_receiver import ble_receiver
+                    tele["controller_connected"] = bool(ble_receiver.connected)
+                    tele["controller_stage"] = ble_receiver.status().get("stage", "error")
+                except Exception:
+                    pass
                 self.comms.post_telemetry(tele)
 
             if self.runner.finished and not self._result_posted:

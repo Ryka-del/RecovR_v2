@@ -5638,8 +5638,10 @@ class TherapistDashboardScene:
         "connecting":    ("Connecting…",     (230, 165, 30), (166, 112, 12)),
         "scanning":      ("Searching…",      (230, 165, 30), (166, 112, 12)),
         "handed_off":    ("On patient screen",    (60, 140, 225), (40, 100, 175)),
+        "handed_off_lost": ("Lost on patient screen", (215, 60, 55),  (170, 40, 36)),
         "idle":          ("Controller idle",      (172, 184, 198), (118, 132, 150)),
         "disabled":      ("Controller off",       (172, 184, 198), (118, 132, 150)),
+        "not_found":     ("Not found",            (215, 60, 55),  (170, 40, 36)),
         "old_firmware":  ("Old firmware",         (215, 60, 55),  (170, 40, 36)),
         "bluetooth_off": ("Bluetooth is off",     (215, 60, 55),  (170, 40, 36)),
         "no_bleak":      ("bleak not installed",  (215, 60, 55),  (170, 40, 36)),
@@ -5662,7 +5664,25 @@ class TherapistDashboardScene:
 
         # Keep every detail line short -- the sidebar rail is ~200 px wide.
         if _DUAL_MONITOR and self.active_panel == 7:
-            stage, detail = "handed_off", "used by the game"
+            # "handed off" on its own only means THIS process released its
+            # connection -- it does NOT mean the patient process actually
+            # has one. The patient process relays its own real
+            # ble_receiver.connected/status() in its telemetry (see
+            # recovr/patient_app/patient_main.py's post_telemetry call);
+            # read that back here instead of blindly assuming it's fine, so
+            # a genuine patient-side connection failure still shows up as a
+            # fault instead of a false "Connected".
+            tel = (getattr(self, "_sm_state", None) or {}).get("telemetry") or {}
+            if "controller_connected" in tel:
+                if tel.get("controller_connected"):
+                    stage, detail = "handed_off", "used by the game"
+                else:
+                    stage  = "handed_off_lost"
+                    detail = tel.get("controller_stage") or "not connected on patient screen"
+            else:
+                # No telemetry relayed yet (e.g. still on How-to-Play, before
+                # the first telemetry post) -- can't know either way yet.
+                stage, detail = "handed_off", "used by the game"
         elif _DUAL_MONITOR and not self.selected_patient:
             stage, detail = "idle", "select a patient"
         else:

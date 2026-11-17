@@ -74,7 +74,8 @@ class BLEReceiver:
 
         # ── Observable status, for the UI connection monitor ──────────────────
         # _stage is one of: disabled / scanning / connecting / connected /
-        #                   no_bleak / bluetooth_off / old_firmware / error
+        #                   not_found / no_bleak / bluetooth_off /
+        #                   old_firmware / error
         self._stage        = "disabled" if not self._enabled else "scanning"
         self._detail       = ""      # short human-readable reason / device name
         self._dev_name     = ""      # last device we matched
@@ -114,7 +115,7 @@ class BLEReceiver:
         """Snapshot of the connection state for the UI.
 
         stage       -- disabled | scanning | connecting | connected |
-                       no_bleak | bluetooth_off | old_firmware | error
+                       not_found | no_bleak | bluetooth_off | old_firmware | error
         detail      -- short reason / device name (may be "")
         connected   -- True only when sensor data is live
         scans       -- how many scan rounds since the receiver was enabled
@@ -190,13 +191,44 @@ class BLEReceiver:
             self._stage, self._detail = "no_bleak", "pip install bleak"
             return
 
+        # Search ONCE per "enabled session" (a patient being selected, or an
+        # explicit manual rescan -- both go through set_enabled/rescan()),
+        # not an indefinite scan-forever retry loop. `gave_up` is set when a
+        # scan completes without finding the controller, and only cleared
+        # again on the NEXT disabled->enabled transition -- so this never
+        # re-scans on its own after a miss; the therapist taps the monitor
+        # (rescan()) to try again. A connection that succeeds and later
+        # drops for real is unaffected -- that still reconnects normally
+        # (see `gave_up` is only ever set in the "not found" branch below,
+        # never after a successful connect), so "keep it connected" through
+        # a real mid-session drop still works -- only the "never found it in
+        # the first place" case stops auto-retrying.
+        was_enabled = False
+        gave_up = False
+
         while True:
             # ── Park while disabled: no scanning, no connection held ──────────
             if not self._enabled:
+                was_enabled = False
+                gave_up = False
                 self._connected = False
                 if self._stage != "disabled":
                     self._stage, self._detail = "disabled", ""
                     self._scan_count = 0
+                await asyncio.sleep(0.3)
+                continue
+
+            if not was_enabled:
+                gave_up = False   # fresh enable -- allow one new scan attempt
+            was_enabled = True
+
+            # ── Already searched once this session and found nothing: park
+            # without re-scanning until re-enabled (new patient selected) or
+            # the therapist taps the monitor for a manual rescan. ──────────
+            if gave_up:
+                if self._stage != "not_found":
+                    self._stage  = "not_found"
+                    self._detail = "tap to search again"
                 await asyncio.sleep(0.3)
                 continue
 
@@ -244,6 +276,7 @@ class BLEReceiver:
                 self._seen_names = list(seen.values())
 
             if device is None:
+                gave_up = True   # single-shot: don't auto-rescan after a miss
                 self._detail = f"not advertising (scan #{self._scan_count})"
                 # Nothing matched -- print what IS visible, so the user can tell
                 # "Bluetooth sees nothing" from "the ESP32 is advertising nameless".
