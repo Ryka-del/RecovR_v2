@@ -1865,14 +1865,15 @@ class CalibrationWindow:
         surface.blit(count_s, count_s.get_rect(midtop=(lx + rw // 2, cy)))
         cy += count_s.get_height()
 
-        card_h = self._sc(76)
+        # No countdown/progress-bar readout below the card any more (removed
+        # per spec) -- the card is taller instead, reclaiming that freed
+        # space so "Resting Reading" has real room rather than leaving it
+        # empty. The 5-4-3-2-1 digit above (self.baseline_t-driven, same as
+        # before) is the only countdown shown on this screen now.
+        card_h = self._sc(110)
         live_r = pygame.Rect(lx, cy, rw, card_h)
         self._draw_reading_card(surface, live_r, C, "Resting Reading",
                                 f"{self.live_value:.3f}", C["accent"], font=self.fnt["big2"])
-        cy += card_h + self._sc(10)
-
-        self._draw_timer_bar(surface, lx, cy, rw, C,
-                             max(0.0, BASELINE_DURATION - self.baseline_t), BASELINE_DURATION)
 
     def _draw_ready(self, surface, area, C):
         """Waits for the therapist to confirm the patient is ready before

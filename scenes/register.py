@@ -291,6 +291,7 @@ class RegisterScene:
             self.sq_fields.append({
                 "q_value": "", "q_open": False, "q_rect": q_rect,
                 "a_value": "", "a_rect": a_rect, "q_opts": q_opts,
+                "q_scroll": 0, "q_popup_rect": None,
             })
 
         last_a = self.sq_fields[2]["a_rect"]
@@ -389,7 +390,8 @@ class RegisterScene:
             self._sc(260), sq_btn_h)
         self.sq_fields = [
             {"q_value": "", "q_open": False, "q_rect": pygame.Rect(0, 0, 1, 1),
-             "a_value": "", "a_rect": pygame.Rect(0, 0, 1, 1), "q_opts": []}
+             "a_value": "", "a_rect": pygame.Rect(0, 0, 1, 1), "q_opts": [],
+             "q_scroll": 0, "q_popup_rect": None}
             for _ in range(3)
         ]
 
@@ -953,8 +955,27 @@ class RegisterScene:
     # STEP 2 — SECURITY QUESTIONS
     # ------------------------------------------------------------------
 
+    def _sq_open_dropdown(self):
+        """The currently open dropdown's field dict, or None -- used to give
+        scrolling INSIDE an open dropdown's option list priority over the
+        Step 2 column scroll (touch) whenever one is open."""
+        return next((sf for sf in self.sq_fields if sf["q_open"]), None)
+
     def _sq_handle_event(self, event):
         """Route events when reg_step == 2."""
+        if event.type == pygame.MOUSEWHEEL:
+            sf = self._sq_open_dropdown()
+            if sf is not None:
+                popup = sf.get("q_popup_rect")
+                mp = pygame.mouse.get_pos()
+                if popup is not None and popup.collidepoint(mp):
+                    opt_h = self._tt(40) if self._touch_ui else sf["q_rect"].height
+                    natural_h = len(SECURITY_QUESTIONS) * opt_h + 6
+                    scroll_max = max(0, natural_h - popup.height)
+                    sf["q_scroll"] = max(0, min(
+                        sf.get("q_scroll", 0) - event.y * int(40 * self._fs), scroll_max))
+                    return None
+
         if self._touch_ui:
             if event.type == pygame.MOUSEWHEEL:
                 self._sq_scroll = max(0, min(
@@ -994,8 +1015,12 @@ class RegisterScene:
         # Close any open dropdown if click is outside it
         for i, sf in enumerate(self.sq_fields):
             if sf["q_open"]:
+                popup = sf.get("q_popup_rect")
                 for j, opt_r in enumerate(sf["q_opts"]):
-                    if opt_r.collidepoint(pos):
+                    # Also bounded by the popup's own (possibly height-
+                    # capped/scrolled) rect -- a row scrolled out of view
+                    # can't be hit even though its stored rect still exists.
+                    if opt_r.collidepoint(pos) and (popup is None or popup.collidepoint(pos)):
                         play_click()
                         sf["q_value"] = SECURITY_QUESTIONS[j]
                         sf["q_open"]  = False
@@ -1009,7 +1034,8 @@ class RegisterScene:
                 play_click()
                 for other in self.sq_fields:
                     other["q_open"] = False
-                sf["q_open"] = True
+                sf["q_open"]   = True
+                sf["q_scroll"] = 0
                 self.sq_active_slot = None
                 return None
             if sf["a_rect"].collidepoint(pos):
@@ -1209,10 +1235,6 @@ class RegisterScene:
         else:
             self._sq_up_rect = self._sq_down_rect = pygame.Rect(0, 0, 1, 1)
 
-        if open_overlay is not None:
-            sf, q_rect = open_overlay
-            self._sq_draw_options(surface, sf, W, base_rect=q_rect)
-
         if self.sq_error_msg:
             es = self.font_error.render(self.sq_error_msg, True, (210, 50, 50))
             surface.blit(es, (x0, self.sq_complete_rect.y - es.get_height() - self._sc(4)))
@@ -1221,6 +1243,13 @@ class RegisterScene:
         pygame.draw.rect(surface, bc, self.sq_complete_rect, border_radius=12)
         cs = self.font_btn.render("Complete Setup", True, (255, 255, 255))
         surface.blit(cs, cs.get_rect(center=self.sq_complete_rect.center))
+
+        # Drawn LAST so the open dropdown is always on top of everything
+        # above, including the error message and Complete Setup button --
+        # never clipped or covered by them (see _sq_draw_options).
+        if open_overlay is not None:
+            sf, q_rect = open_overlay
+            self._sq_draw_options(surface, sf, W, base_rect=q_rect)
 
     def _sq_draw_dropdown(self, surface, sf, q_rect, W):
         pygame.draw.rect(surface, (255, 255, 255), q_rect, border_radius=10)
@@ -1237,19 +1266,37 @@ class RegisterScene:
         surface.blit(chev, chev.get_rect(midright=(q_rect.right - (int(14*W/1920) if not self._touch_ui else self._sc(14)), q_rect.centery)))
 
     def _sq_draw_options(self, surface, sf, W, base_rect=None):
+        """Always opens DOWNWARD from q_rect, never upward -- if the full
+        option list doesn't fit before self.content_bottom, the popup is
+        height-capped and becomes internally scrollable (sf["q_scroll"],
+        mouse wheel / touch drag -- see _sq_handle_click/_sq_handle_event)
+        instead of flipping above the field. No visible scrollbar; the
+        popup itself is the scroll viewport. Drawn last by both callers
+        (_draw_step2/_draw_step2_touch) so it's always on top of every
+        other control, never clipped or covered."""
         q_rect = base_rect if base_rect is not None else sf["q_rect"]
         opt_h  = self._tt(40) if self._touch_ui else q_rect.height
-        ph     = len(SECURITY_QUESTIONS) * opt_h + 6
-        if self._touch_ui and q_rect.bottom + ph > self.content_bottom:
-            pr = pygame.Rect(q_rect.x, q_rect.top - ph, q_rect.width, ph)
-        else:
-            pr = pygame.Rect(q_rect.x, q_rect.bottom - 1, q_rect.width, ph)
+        natural_h = len(SECURITY_QUESTIONS) * opt_h + 6
+        # self.content_bottom only exists in touch layout (_init_touch_layout);
+        # desktop has no equivalent reserved-bottom-band concept, so it just
+        # caps against the window's own bottom edge with a small margin.
+        bottom_bound = getattr(self, "content_bottom", self.HEIGHT - int(16 * W / 1920))
+        avail_h   = max(opt_h + 6, bottom_bound - (q_rect.bottom - 1))
+        ph = min(natural_h, avail_h)
+        pr = pygame.Rect(q_rect.x, q_rect.bottom - 1, q_rect.width, ph)
+        sf["q_popup_rect"] = pr
+        scroll_max = max(0, natural_h - ph)
+        sf["q_scroll"] = max(0, min(sf.get("q_scroll", 0), scroll_max))
+        scroll = sf["q_scroll"]
+
         pygame.draw.rect(surface, (248, 251, 255), pr, border_radius=10)
         pygame.draw.rect(surface, (40, 160, 220), pr, 2, border_radius=10)
+        prev_clip = surface.get_clip()
+        surface.set_clip(pr)
         sf["q_opts"] = []
         pad = int(14 * W / 1920) if not self._touch_ui else self._sc(14)
         for j in range(len(SECURITY_QUESTIONS)):
-            opt_r = pygame.Rect(pr.x, pr.y + 3 + j * opt_h, pr.width, opt_h)
+            opt_r = pygame.Rect(pr.x, pr.y + 3 + j * opt_h - scroll, pr.width, opt_h)
             if j % 2 == 0:
                 shade = pygame.Surface((pr.width - 4, opt_h), pygame.SRCALPHA)
                 shade.fill((40, 160, 220, 18))
@@ -1260,6 +1307,7 @@ class RegisterScene:
                 ts = ts.subsurface(pygame.Rect(0, 0, max(1, clip_w), ts.get_height()))
             surface.blit(ts, ts.get_rect(midleft=(opt_r.x + pad, opt_r.centery)))
             sf["q_opts"].append(opt_r)
+        surface.set_clip(prev_clip)
 
     # ------------------------------------------------------------------
     # BACK BUTTON

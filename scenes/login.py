@@ -83,6 +83,17 @@ class LoginScene:
         self.add_radius = self.circle_r
         self._keypad_rects = {}          # {"0".."9","del": Rect} -- built in draw
         self._forgot_touch_rect = pygame.Rect(0, 0, 1, 1)
+        # Profile grid scroll (see _compute_layout/_draw_circles) -- at most
+        # 8 items (accounts + Add Account) are ever visible at once; the
+        # rest scroll into view (mouse wheel / touch drag), no scrollbar.
+        self._profile_scroll     = 0
+        self._profile_scroll_max = 0
+        self._profile_viewport   = pygame.Rect(0, 0, 0, 0)
+        self._profile_drag_active     = False
+        self._profile_drag_is_scroll  = False
+        self._profile_drag_start_pos  = None
+        self._profile_drag_start_scroll = 0
+        self._profile_pending_tap_pos = None
         self._compute_layout()
 
         n = len(self.accounts) + 1
@@ -166,6 +177,8 @@ class LoginScene:
                 "a_value": "",
                 "a_rect":  a_rect,
                 "q_opts":  q_opts,
+                "q_scroll": 0,
+                "q_popup_rect": None,
             })
 
         last_a = self.sq_fields[2]["a_rect"]
@@ -222,7 +235,11 @@ class LoginScene:
         self.account_rects   = []
 
         if n_total <= grid_cols:
-            # ── Single centered row ──────────────────────────────────
+            # ── Single centered row -- always <= 8 items (grid_cols is
+            # capped at GRID_COLS=8), so nothing to scroll here. ──
+            self._profile_scroll     = 0
+            self._profile_scroll_max = 0
+            self._profile_viewport   = pygame.Rect(0, 0, self.WIDTH, self.HEIGHT)
             row_w    = n_total * diam + (n_total - 1) * h_spacing
             row_left = (self.WIDTH - row_w) // 2
             cy       = int(self.HEIGHT * 0.52)
@@ -238,20 +255,34 @@ class LoginScene:
             self.add_rect   = pygame.Rect(cx_add - r, cy - r, diam, diam)
 
         else:
-            # ── grid, sized to however many columns fit this screen ──
-            rows_n       = (n_total + grid_cols - 1) // grid_cols
-            total_grid_w = grid_cols * diam + (grid_cols - 1) * h_spacing
-            row_left     = (self.WIDTH - total_grid_w) // 2
-            grid_h       = rows_n * diam + (rows_n - 1) * (v_step - diam)
-            cy_row0      = max(int(self.HEIGHT * 0.39),
-                               (self.HEIGHT - grid_h) // 2 + r) \
-                if not self._touch_ui else (self.HEIGHT - grid_h) // 2 + r
+            # ── grid, sized to however many columns fit this screen, capped
+            # to at most 8 VISIBLE items (accounts + Add Account) at once --
+            # the rest scroll into view (see handle_event's wheel/drag
+            # routing and _draw_circles' clip), no scrollbar shown. ──
+            rows_n        = (n_total + grid_cols - 1) // grid_cols
+            rows_per_page = max(1, 8 // grid_cols)
+            vis_rows      = min(rows_n, rows_per_page)
+            grid_h        = rows_n * diam + (rows_n - 1) * (v_step - diam)
+            visible_h     = vis_rows * diam + (vis_rows - 1) * (v_step - diam)
+            total_grid_w  = grid_cols * diam + (grid_cols - 1) * h_spacing
+            row_left      = (self.WIDTH - total_grid_w) // 2
+            cy_row0       = max(int(self.HEIGHT * 0.39),
+                                (self.HEIGHT - visible_h) // 2 + r) \
+                if not self._touch_ui else (self.HEIGHT - visible_h) // 2 + r
+
+            self._profile_scroll_max = max(0, grid_h - visible_h)
+            self._profile_scroll     = max(0, min(self._profile_scroll, self._profile_scroll_max))
+            lbl_gap = int(18 * self.HEIGHT / 1080)
+            lbl_h   = self.font_username.get_linesize()
+            self._profile_viewport = pygame.Rect(
+                0, cy_row0 - r, self.WIDTH, visible_h + lbl_gap + lbl_h)
+            scroll = self._profile_scroll
 
             for i in range(len(self.accounts)):
                 col = i % grid_cols
                 row = i // grid_cols
                 cx  = row_left + col * (diam + h_spacing) + r
-                cy  = cy_row0  + row * v_step
+                cy  = cy_row0  + row * v_step - scroll
                 self.account_circles.append((cx, cy))
                 self.account_rects.append(pygame.Rect(cx - r, cy - r, diam, diam))
 
@@ -259,7 +290,7 @@ class LoginScene:
             add_col = add_idx % grid_cols
             add_row = add_idx // grid_cols
             cx_add  = row_left + add_col * (diam + h_spacing) + r
-            cy_add  = cy_row0  + add_row * v_step
+            cy_add  = cy_row0  + add_row * v_step - scroll
             self.add_center = (cx_add, cy_add)
             self.add_rect   = pygame.Rect(cx_add - r, cy_add - r, diam, diam)
 
@@ -305,9 +336,13 @@ class LoginScene:
                 self._cancel_selection()
             return None
 
-        # Account circles
+        # Account circles -- also bounded by the scroll viewport when
+        # scrollable, so a circle scrolled out of view (its rect still
+        # exists, just off-screen/clipped -- see _draw_circles) can't be
+        # hit by a click that happens to land on its stale position.
+        scrollable = self._profile_scroll_max > 0
         for i, rect in enumerate(self.account_rects):
-            if rect.collidepoint(pos):
+            if rect.collidepoint(pos) and (not scrollable or self._profile_viewport.collidepoint(pos)):
                 play_click()
                 self._select_account(i)
                 return None
@@ -320,7 +355,7 @@ class LoginScene:
             return None
 
         # Add button
-        if self.add_rect.collidepoint(pos):
+        if self.add_rect.collidepoint(pos) and (not scrollable or self._profile_viewport.collidepoint(pos)):
             play_click()
             if len(self.accounts) >= MAX_ACCOUNTS:
                 self._limit_modal = True
@@ -351,6 +386,16 @@ class LoginScene:
         if event.type == pygame.KEYDOWN:
             return self._handle_key(event)
 
+        # Profile grid scroll -- only relevant on the plain account-select
+        # screen (no PIN panel/forgot workflow/limit modal open) and only
+        # when there are more than 8 items (see _compute_layout). Consumes
+        # the event (returns True) when it's a wheel scroll or a drag that
+        # turned into a scroll, same pending-tap-vs-drag pattern as
+        # scenes/calibration_window.py's results-viewport scroll.
+        if (self.selected is None and not self.show_forgot and not self._limit_modal
+                and self._profile_scroll_max > 0 and self._profile_scroll_handle_event(event)):
+            return None
+
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             pos = builtins.normalise_pos(event.pos)
             return self._hit_test(pos)
@@ -360,6 +405,68 @@ class LoginScene:
             return self._hit_test(pos)
 
         return None
+
+    def _profile_scroll_handle_event(self, event):
+        """Drag-to-scroll + mouse-wheel for the profile grid, with NO
+        visible scrollbar. A pointer-down inside the viewport starts as a
+        pending tap; if it moves past a small threshold before release, it
+        becomes a scroll drag and the tap is cancelled -- released without
+        crossing that threshold, it's forwarded to _hit_test as a normal
+        tap. Returns True if this event was consumed."""
+        if event.type == pygame.MOUSEWHEEL:
+            mp = builtins.normalise_pos(pygame.mouse.get_pos())
+            if self._profile_viewport.collidepoint(mp):
+                self._profile_scroll = max(0, min(
+                    self._profile_scroll_max, self._profile_scroll - event.y * int(50 * self._fs)))
+                return True
+            return False
+
+        pos, down = None, False
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            pos, down = builtins.normalise_pos(event.pos), True
+        elif event.type == pygame.FINGERDOWN:
+            pos, down = (int(event.x * self.WIDTH), int(event.y * self.HEIGHT)), True
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            pos = builtins.normalise_pos(event.pos)
+        elif event.type == pygame.FINGERUP:
+            pos = (int(event.x * self.WIDTH), int(event.y * self.HEIGHT))
+        elif event.type == pygame.MOUSEMOTION:
+            pos = builtins.normalise_pos(event.pos)
+        elif event.type == pygame.FINGERMOTION:
+            pos = (int(event.x * self.WIDTH), int(event.y * self.HEIGHT))
+        else:
+            return False
+
+        if down:
+            if not self._profile_viewport.collidepoint(pos):
+                return False
+            self._profile_drag_active       = True
+            self._profile_drag_is_scroll    = False
+            self._profile_drag_start_pos    = pos
+            self._profile_drag_start_scroll = self._profile_scroll
+            self._profile_pending_tap_pos   = pos
+            return True
+
+        if not self._profile_drag_active:
+            return False
+
+        if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION):
+            dy = pos[1] - self._profile_drag_start_pos[1]
+            if not self._profile_drag_is_scroll and abs(dy) > 10:
+                self._profile_drag_is_scroll  = True
+                self._profile_pending_tap_pos = None
+            if self._profile_drag_is_scroll:
+                self._profile_scroll = max(0, min(
+                    self._profile_scroll_max, self._profile_drag_start_scroll - dy))
+            return True
+
+        # MOUSEBUTTONUP / FINGERUP -- resolve
+        self._profile_drag_active = False
+        if not self._profile_drag_is_scroll and self._profile_pending_tap_pos is not None:
+            self._hit_test(self._profile_pending_tap_pos)
+        self._profile_drag_is_scroll  = False
+        self._profile_pending_tap_pos = None
+        return True
 
     def _handle_key(self, event):
         if event.key == pygame.K_ESCAPE:
@@ -665,17 +772,21 @@ class LoginScene:
 
         max_lift   = int(10 * self.HEIGHT / 1080)
         lift_speed = max(1, int(max_lift * 0.4))
+        # Bounded by the scroll viewport too (see _compute_layout/
+        # _draw_circles) -- a circle scrolled out of view can't hover-lift
+        # from a stale rect position the mouse physically isn't over.
+        scrollable = self._profile_scroll_max > 0
 
         for i, rect in enumerate(self.account_rects):
             lifted = rect.move(0, -int(self.circle_lift[i]))
-            over   = lifted.collidepoint(mouse_pos)
+            over   = lifted.collidepoint(mouse_pos) and (not scrollable or self._profile_viewport.collidepoint(mouse_pos))
             self.circle_hover[i] = over
             self.circle_lift[i]  = (min(max_lift, self.circle_lift[i] + lift_speed) if over
                                     else max(0, self.circle_lift[i] - lift_speed))
 
         idx_add    = len(self.accounts)
         lifted_add = self.add_rect.move(0, -int(self.circle_lift[idx_add]))
-        over_add   = lifted_add.collidepoint(mouse_pos)
+        over_add   = lifted_add.collidepoint(mouse_pos) and (not scrollable or self._profile_viewport.collidepoint(mouse_pos))
         self.circle_hover[idx_add] = over_add
         self.circle_lift[idx_add]  = (min(max_lift, self.circle_lift[idx_add] + lift_speed) if over_add
                                       else max(0, self.circle_lift[idx_add] - lift_speed))
@@ -757,6 +868,11 @@ class LoginScene:
         lbl_gap = int(18 * self.HEIGHT / 1080)
         lbl_col = (60, 75, 95)
 
+        scrollable = self._profile_scroll_max > 0
+        prev_clip = surface.get_clip()
+        if scrollable:
+            surface.set_clip(self._profile_viewport)
+
         for i, account in enumerate(self.accounts):
             cx, cy_base = self.account_circles[i]
             lift        = int(self.circle_lift[i])
@@ -802,6 +918,9 @@ class LoginScene:
         surface.blit(lbl, lbl.get_rect(
             center=(cx, cy_base + self.add_radius + lbl_gap)
         ))
+
+        if scrollable:
+            surface.set_clip(prev_clip)
 
     def _draw_pin_panel(self, surface):
         if self._touch_ui:
@@ -1173,6 +1292,18 @@ class LoginScene:
     # ------------------------------------------------------------------
 
     def _sq_handle_event(self, event):
+        if event.type == pygame.MOUSEWHEEL:
+            sf = next((sf for sf in self.sq_fields if sf["q_open"]), None)
+            if sf is not None:
+                popup = sf.get("q_popup_rect")
+                mp = builtins.normalise_pos(pygame.mouse.get_pos())
+                if popup is not None and popup.collidepoint(mp):
+                    opt_h = sf["q_opts"][0].height if sf["q_opts"] else 1
+                    natural_h = len(SECURITY_QUESTIONS) * opt_h + 6
+                    scroll_max = max(0, natural_h - popup.height)
+                    sf["q_scroll"] = max(0, min(
+                        sf.get("q_scroll", 0) - event.y * int(40 * self._fs), scroll_max))
+                    return None
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             pos = builtins.normalise_pos(event.pos)
             return self._sq_handle_click(pos)
@@ -1187,8 +1318,12 @@ class LoginScene:
         # Close any open dropdown if click lands outside it
         for i, sf in enumerate(self.sq_fields):
             if sf["q_open"]:
+                popup = sf.get("q_popup_rect")
                 for j, opt_r in enumerate(sf["q_opts"]):
-                    if opt_r.collidepoint(pos):
+                    # Also bounded by the popup's own (possibly height-
+                    # capped/scrolled) rect -- a row scrolled out of view
+                    # can't be hit even though its stored rect still exists.
+                    if opt_r.collidepoint(pos) and (popup is None or popup.collidepoint(pos)):
                         play_click()
                         sf["q_value"] = SECURITY_QUESTIONS[j]
                         sf["q_open"]  = False
@@ -1202,7 +1337,8 @@ class LoginScene:
                 play_click()
                 for other in self.sq_fields:
                     other["q_open"] = False
-                sf["q_open"] = True
+                sf["q_open"]   = True
+                sf["q_scroll"] = 0
                 self.sq_active_slot = None
                 return None
             if sf["a_rect"].collidepoint(pos):
@@ -1346,13 +1482,31 @@ class LoginScene:
         surface.blit(chev, chev.get_rect(midright=(q_rect.right - int(12 * W / 1920), q_rect.centery)))
 
     def _sq_draw_q_opts(self, surface, sf, W):
+        """Always opens DOWNWARD from q_rect -- if the full option list
+        doesn't fit before the bottom of the screen, the popup is height-
+        capped and becomes internally scrollable (sf["q_scroll"], mouse
+        wheel -- see _sq_handle_event) instead of running off-screen. No
+        visible scrollbar; the popup itself is the scroll viewport. Drawn
+        last by _draw_sq_overlay so it's always on top of every other
+        control, never clipped or covered."""
         q_rect = sf["q_rect"]
         opt_h  = sf["q_opts"][0].height
-        ph     = len(SECURITY_QUESTIONS) * opt_h + 6
-        pr     = pygame.Rect(q_rect.x, q_rect.bottom - 1, q_rect.width, ph)
+        natural_h = len(SECURITY_QUESTIONS) * opt_h + 6
+        avail_h   = max(opt_h + 6, (self.HEIGHT - self._sc(16)) - (q_rect.bottom - 1))
+        ph = min(natural_h, avail_h)
+        pr = pygame.Rect(q_rect.x, q_rect.bottom - 1, q_rect.width, ph)
+        sf["q_popup_rect"] = pr
+        scroll_max = max(0, natural_h - ph)
+        sf["q_scroll"] = max(0, min(sf.get("q_scroll", 0), scroll_max))
+        scroll = sf["q_scroll"]
+
         pygame.draw.rect(surface, (240, 246, 255), pr, border_radius=8)
         pygame.draw.rect(surface, (80, 160, 230), pr, 2, border_radius=8)
+        prev_clip = surface.get_clip()
+        surface.set_clip(pr)
         for j, opt_r in enumerate(sf["q_opts"]):
+            opt_r = pygame.Rect(opt_r.x, pr.y + 3 + j * opt_h - scroll, opt_r.width, opt_h)
+            sf["q_opts"][j] = opt_r
             if j % 2 == 0:
                 sh = pygame.Surface((pr.width - 4, opt_h), pygame.SRCALPHA)
                 sh.fill((80, 160, 230, 20))
@@ -1362,6 +1516,7 @@ class LoginScene:
             if ts.get_width() > clip_w:
                 ts = ts.subsurface(pygame.Rect(0, 0, clip_w, ts.get_height()))
             surface.blit(ts, ts.get_rect(midleft=(opt_r.x + int(12 * W / 1920), opt_r.centery)))
+        surface.set_clip(prev_clip)
 
     def _draw_limit_modal(self, surface):
         W, H = self.WIDTH, self.HEIGHT

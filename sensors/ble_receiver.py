@@ -38,6 +38,16 @@ _LEGACY_PACKET_SIZE   = struct.calcsize(_LEGACY_PACKET_FORMAT)   # 9 bytes
 _SCAN_TIMEOUT    = 5.0
 _RECONNECT_DELAY = 2.0
 _ERROR_DELAY     = 3.0
+# How long client.is_connected must read False CONTINUOUSLY before it's
+# treated as a real disconnect -- see the hold loop in _ble_loop(). Real BLE
+# stacks (especially BlueZ on the Pi) occasionally report a transient False
+# for a single poll (a connection-parameter update, a missed keep-alive,
+# brief interference) even though the physical link never actually drops;
+# without this grace window that single blip tore the connection down and
+# re-scanned from scratch, which is what made the UI flicker between
+# Connected/Disconnected on an otherwise stable link. A genuine disconnect
+# stays False well past this window, so it's still caught promptly.
+_DISCONNECT_GRACE = 1.0
 
 
 class BLEReceiver:
@@ -284,7 +294,21 @@ class BLEReceiver:
                         # Hold the connection until it drops OR this receiver is
                         # disabled (session handed the controller to the other
                         # process). Leaving the `async with` disconnects cleanly.
-                        while client.is_connected and self._enabled:
+                        # client.is_connected going False is given a short grace
+                        # window (_DISCONNECT_GRACE) to recover on its own before
+                        # this is treated as a real disconnect -- see that
+                        # constant's comment. self._connected/_stage are left
+                        # untouched during the grace window, so the UI never
+                        # flickers for a blip that resolves on its own.
+                        disconnect_since = None
+                        while self._enabled:
+                            if client.is_connected:
+                                disconnect_since = None
+                            else:
+                                if disconnect_since is None:
+                                    disconnect_since = time.monotonic()
+                                elif time.monotonic() - disconnect_since >= _DISCONNECT_GRACE:
+                                    break
                             await asyncio.sleep(0.1)
 
                 self._connected = False
