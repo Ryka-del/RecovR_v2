@@ -190,7 +190,7 @@ The RecovR controller uses a **Seeed Studio XIAO-ESP32 C3** as the BLE transmitt
    - `NimBLE-Arduino` by h2zero
    - `Adafruit MPU6050` by Adafruit
    - `Adafruit Unified Sensor` by Adafruit
-4. Open `firmware/controller_esp32c3.ino`, select board **"XIAO_ESP32C3"**, flash.
+4. Open `firmware/recovr_controller/recovr_controller.ino`, select board **"XIAO_ESP32C3"**, flash.
 5. Open Serial Monitor (115200 baud) — you should see sensor readings every 20 ms and
    `[BLE] Advertising as 'RecovR-Controller'`.
 

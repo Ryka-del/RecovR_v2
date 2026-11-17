@@ -5,7 +5,7 @@
 //
 // Purpose: TEST/DIAGNOSTIC ONLY -- verifies a controller wired with 5 flex
 // sensors AND 5 FSR sensors (10 total MUX channels). Prints raw readings to
-// Serial Monitor only. Does NOT touch the real controller_esp32c3.ino or
+// Serial Monitor only. Does NOT touch the real recovr_controller.ino or
 // the BLE packet format -- the Python app (sensors/ble_receiver.py) is
 // completely unaffected by this sketch.
 //

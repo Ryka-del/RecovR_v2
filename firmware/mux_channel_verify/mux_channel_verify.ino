@@ -3,7 +3,7 @@
 // =============================================================================
 //
 // READ-ONLY diagnostic tool. Does NOT connect to BLE, does NOT run any game
-// logic, and does NOT modify the production firmware (controller_esp32c3.ino)
+// logic, and does NOT modify the production firmware (recovr_controller.ino)
 // in any way -- it's a separate, temporary sketch you flash, use, then
 // re-flash the real firmware over.
 //

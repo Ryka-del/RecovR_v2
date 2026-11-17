@@ -7,10 +7,11 @@ BLE mode (when RecovR-Controller is connected via Bluetooth):
   Flex Sensor → state["fingers"]     edge-detected, all 5 lanes fire together
   5x Flex     → state["finger_flex"] 0.0–1.0 x5 (Thumb/Index/Middle/Ring/Pinky
                 independent raw readings -- Whack-a-Mole; see FINGER_NAMES.
-                Verified wiring: MUX C0-C4, Thumb through Pinky (see
-                firmware/controller_esp32c3.ino). A controller still on the
-                old 9-byte firmware falls back to duplicating the single
-                legacy flex sensor across all five -- see below.)
+                Verified wiring: MUX C5-C9, Thumb through Pinky (see
+                firmware/recovr_controller/recovr_controller.ino). A
+                controller still on the old 9-byte firmware falls back to
+                duplicating the single legacy flex sensor across all five
+                -- see below.)
   MPU6050 X   → state["tilt_x"]     −1.0–1.0  (wrist left/right rotation)
   Push Button → synthetic pygame KEYDOWN K_RETURN (rising edge only)
 
@@ -153,8 +154,8 @@ class InputHandler:
         self._fingers = [is_bent and not was_bent] * 5
 
         # Whack-a-Mole / Tile Rush -- 5 independent raw flex readings
-        # (0.0-1.0), verified wiring MUX C0-C4 (see
-        # firmware/controller_esp32c3.ino). raw["flex_thumb_raw"] etc. only
+        # (0.0-1.0), verified wiring MUX C5-C9 (see
+        # firmware/recovr_controller/recovr_controller.ino). raw["flex_thumb_raw"] etc. only
         # fall back to duplicating flex_raw when the controller is still on
         # the old 9-byte firmware (see ble_receiver.py) -- same value on
         # every finger, harmless (no false differentiation) rather than a

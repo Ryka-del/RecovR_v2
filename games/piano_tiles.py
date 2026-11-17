@@ -13,8 +13,8 @@ Input source (see _read_fingers()):
   - Keyboard Test Mode (no BLE controller connected): keys 1-5 simulate
     Thumb..Pinky independently -- held = flexed, released = relaxed.
   - Real BLE hardware: the physical controller now has 5 independent Flex
-    Sensors (verified wiring, MUX C0-C4 -- see
-    firmware/controller_esp32c3.ino), read straight off
+    Sensors (verified wiring, MUX C5-C9 -- see
+    firmware/recovr_controller/recovr_controller.ino), read straight off
     sensors.input_handler's state["finger_flex"] -- the same source
     games/whack_mole.py already reads unconditionally.
 """

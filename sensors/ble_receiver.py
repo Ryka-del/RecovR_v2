@@ -26,7 +26,7 @@ CHAR_UUID     = "12345678-1234-1234-1234-123456789abd"
 
 # grip_raw, flex_raw (legacy single-flex), flex_thumb/index/middle/ring/pinky
 # (Whack-a-Mole 5-finger glove), buttons, accel_x, accel_y -- must match
-# firmware/controller_esp32c3.ino's packet layout exactly.
+# firmware/recovr_controller/recovr_controller.ino's packet layout exactly.
 PACKET_FORMAT = "<HHHHHHHBhh"
 PACKET_SIZE   = struct.calcsize(PACKET_FORMAT)   # 19 bytes
 
@@ -244,7 +244,7 @@ class BLEReceiver:
                         for addr, nm in seen.items():
                             print(f"[BLE]     {nm:<32s}  {addr}")
                         print("[BLE]   None matched. If your controller is listed as "
-                              "'(no name)', re-flash firmware/controller_esp32c3.ino "
+                              "'(no name)', re-flash firmware/recovr_controller/recovr_controller.ino "
                               "(it needs setScanResponse(true)).")
                     else:
                         print("[BLE]   (no BLE devices at all — is Bluetooth on?)")
@@ -270,9 +270,9 @@ class BLEReceiver:
                         for ch in svc.characteristics
                     ):
                         print(f"[BLE] WARNING: CHAR_UUID {CHAR_UUID} not found.")
-                        print("[BLE] The ESP32 is running old firmware — please flash firmware/controller_esp32c3.ino")
+                        print("[BLE] The ESP32 is running old firmware — please flash firmware/recovr_controller/recovr_controller.ino")
                         self._stage  = "old_firmware"
-                        self._detail = "flash firmware/controller_esp32c3.ino"
+                        self._detail = "flash firmware/recovr_controller/recovr_controller.ino"
                         # Keep connected flag False; retry after delay
                         await asyncio.sleep(5.0)
                     else:

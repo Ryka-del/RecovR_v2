@@ -8,7 +8,7 @@
 // with the RecovR app. Just upload this, open Serial Monitor at 115200 baud,
 // and watch the numbers move as you squeeze/bend/tilt things.
 //
-// Same pins as the main controller firmware (controller_esp32c3.ino):
+// Same pins as the main controller firmware (recovr_controller.ino):
 //   CD74HC4067 MUX
 //     SIG -> D0  (GPIO2, ADC)
 //     S0  -> D1  (GPIO3)
@@ -33,7 +33,7 @@
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
 
-// -- Pin definitions (identical to controller_esp32c3.ino) -------------------
+// -- Pin definitions (identical to recovr_controller.ino) -------------------
 #define MUX_SIG  2    // D0  ADC input from MUX SIG pin
 #define MUX_S0   3    // D1
 #define MUX_S1   4    // D2

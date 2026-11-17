@@ -73,7 +73,7 @@ async def main():
         print("Possible causes:")
         print("  - ESP32 is not powered on")
         print("  - ESP32 is out of Bluetooth range (try moving closer)")
-        print("  - Firmware not flashed — flash firmware/controller_esp32c3.ino first")
+        print("  - Firmware not flashed — flash firmware/recovr_controller/recovr_controller.ino first")
         print("  - Device name mismatch — check Serial Monitor shows '[BLE] Advertising as RecovR-Controller'")
         sys.exit(1)
 

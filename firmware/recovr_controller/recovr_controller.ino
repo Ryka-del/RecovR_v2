@@ -15,31 +15,36 @@
 //     S2  -> D3  (GPIO5)
 //     S3  -> D6  (GPIO21)
 //     EN  -> GND (always enabled)
-//   FSR402      -> MUX channel C5
+//   FSR402      -> MUX channel C4
 //   MPU6050     -> I2C  SDA=D4(GPIO6)  SCL=D5(GPIO7)
 //   No push button is wired -- the "buttons" byte in the BLE packet below
 //   is always sent as 0 (kept so the packet layout/size never changes).
 //
-//   5-finger flex glove -- VERIFIED WIRING: Thumb=C0, Index=C1, Middle=C2,
-//   Ring=C3, Pinky=C4 (sequential). Used independently by Tile Rush and
-//   Whack-a-Mole (state["finger_flex"], 5 separate channels). Plant the
-//   Garden instead uses only the Thumb channel (C0) as its single legacy
-//   "Finger Flexion" reading (state["tilt_y"]) -- same physical sensor,
-//   not a second one. Steady Aim and Purrfect Feast use NO flex sensor at
-//   all today (per scenes/therapist_dashboard.py's MULTI_SENSOR_CALIBRATION
-//   -- Steady Aim is Wrist Rotation only, Purrfect Feast is Grip + Wrist
-//   only). If Purrfect Feast is meant to need flex too, that's a game-logic
-//   change, not a wiring one -- flag it separately.
+//   5-finger flex glove -- WIRING:
+//     flex1 Thumb  = C5
+//     flex2 Index  = C6
+//     flex3 Middle = C7
+//     flex4 Ring   = C8
+//     flex5 Pinky  = C9
+//   Used independently by Tile Rush and Whack-a-Mole (state["finger_flex"],
+//   5 separate channels). Plant the Garden instead uses only the Thumb
+//   channel (C5) as its single legacy "Finger Flexion" reading
+//   (state["tilt_y"]) -- same physical sensor, not a second one. Steady Aim
+//   and Purrfect Feast use NO flex sensor at all today (per
+//   scenes/therapist_dashboard.py's MULTI_SENSOR_CALIBRATION -- Steady Aim is
+//   Wrist Rotation only, Purrfect Feast is Grip + Wrist only). If Purrfect
+//   Feast is meant to need flex too, that's a game-logic change, not a
+//   wiring one -- flag it separately.
 //
 // BLE Packet (19 bytes, little-endian, 50 Hz) -- must match
 // sensors/ble_receiver.py PACKET_FORMAT "<HHHHHHHBhh":
-//   [0-1]   uint16  grip_raw        FSR ADC value         0-4095
-//   [2-3]   uint16  flex_raw        Flex ADC (legacy)      0-4095
-//   [4-5]   uint16  flex_thumb_raw  Thumb Flex ADC         0-4095
-//   [6-7]   uint16  flex_index_raw  Index Flex ADC         0-4095
-//   [8-9]   uint16  flex_middle_raw Middle Flex ADC        0-4095
-//   [10-11] uint16  flex_ring_raw   Ring Flex ADC          0-4095
-//   [12-13] uint16  flex_pinky_raw  Pinky Flex ADC         0-4095
+//   [0-1]   uint16  grip_raw        FSR ADC value  (C4)    0-4095
+//   [2-3]   uint16  flex_raw        Flex ADC (legacy, C5)  0-4095
+//   [4-5]   uint16  flex_thumb_raw  Thumb Flex ADC  (C5)   0-4095
+//   [6-7]   uint16  flex_index_raw  Index Flex ADC  (C6)   0-4095
+//   [8-9]   uint16  flex_middle_raw Middle Flex ADC (C7)   0-4095
+//   [10-11] uint16  flex_ring_raw   Ring Flex ADC   (C8)   0-4095
+//   [12-13] uint16  flex_pinky_raw  Pinky Flex ADC  (C9)   0-4095
 //   [14]    uint8   buttons         bit0 = push button (1=pressed)
 //   [15-16] int16   accel_x         MPU6050 accel X  (16384 LSB/g at +/-2g)
 //   [17-18] int16   accel_y         MPU6050 accel Y
@@ -74,16 +79,17 @@
 #define MUX_S3   21   // D6
 
 // -- MUX channels -------------------------------------------------------------
-#define CH_FLEX    0   // C0  Flex Sensor 2.2 (legacy single-flex games)
-#define CH_FSR     5   // C5  FSR402
+#define CH_FSR          4   // C4  FSR402
 
-// Whack-a-Mole 5-finger glove -- verified wiring, see the header comment
-// above (sequential C0-C4, Thumb through Pinky).
-#define CH_FLEX_THUMB   0   // C0
-#define CH_FLEX_INDEX   1   // C1
-#define CH_FLEX_MIDDLE  2   // C2
-#define CH_FLEX_RING    3   // C3
-#define CH_FLEX_PINKY   4   // C4
+// 5-finger glove (flex1-flex5 = C5-C9, Thumb through Pinky)
+#define CH_FLEX_THUMB   5   // C5  flex1
+#define CH_FLEX_INDEX   6   // C6  flex2
+#define CH_FLEX_MIDDLE  7   // C7  flex3
+#define CH_FLEX_RING    8   // C8  flex4
+#define CH_FLEX_PINKY   9   // C9  flex5
+
+// Legacy single-flex reading (Plant the Garden) = same physical Thumb sensor
+#define CH_FLEX         CH_FLEX_THUMB   // C5
 
 // -- BLE identity (must match sensors/ble_receiver.py) ------------------------
 #define DEVICE_NAME  "RecovR-Controller"
@@ -168,6 +174,15 @@ void setup() {
 
     // BLE
     BLEDevice::init(DEVICE_NAME);
+    // Lowest TX power -- genuinely reduces the radio's current draw (unlike
+    // disabling the brownout detector, which only hides a voltage dip
+    // instead of shrinking it) at the moment advertising starts, which is
+    // the exact instant this board has been browning out. Controller sits
+    // right next to the Pi/PC in normal use, so the shorter range this
+    // trades away doesn't matter here. If this alone isn't enough, the
+    // remaining fix is local 3.3V/GND decoupling capacitance on the board
+    // itself -- see the chat history for that diagnosis.
+    BLEDevice::setPower(ESP_PWR_LVL_N12);
     pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
 
@@ -211,13 +226,13 @@ void loop() {
     lastSend = now;
 
     // Read sensors via MUX
-    uint16_t grip_raw        = readMuxChannel(CH_FSR);
-    uint16_t flex_raw        = readMuxChannel(CH_FLEX);
-    uint16_t flex_thumb_raw  = readMuxChannel(CH_FLEX_THUMB);
-    uint16_t flex_index_raw  = readMuxChannel(CH_FLEX_INDEX);
-    uint16_t flex_middle_raw = readMuxChannel(CH_FLEX_MIDDLE);
-    uint16_t flex_ring_raw   = readMuxChannel(CH_FLEX_RING);
-    uint16_t flex_pinky_raw  = readMuxChannel(CH_FLEX_PINKY);
+    uint16_t grip_raw        = readMuxChannel(CH_FSR);           // C4
+    uint16_t flex_thumb_raw  = readMuxChannel(CH_FLEX_THUMB);    // C5  flex1
+    uint16_t flex_index_raw  = readMuxChannel(CH_FLEX_INDEX);    // C6  flex2
+    uint16_t flex_middle_raw = readMuxChannel(CH_FLEX_MIDDLE);   // C7  flex3
+    uint16_t flex_ring_raw   = readMuxChannel(CH_FLEX_RING);     // C8  flex4
+    uint16_t flex_pinky_raw  = readMuxChannel(CH_FLEX_PINKY);    // C9  flex5
+    uint16_t flex_raw        = flex_thumb_raw;                   // legacy = Thumb (C5)
     uint8_t  buttons  = 0;   // no physical push button wired
 
     // Read MPU6050 -> raw int16 counts (16384 LSB/g at +/-2g)
@@ -254,12 +269,12 @@ void loop() {
     if (now - lastPrint >= printGap) {
         lastPrint = now;
         Serial.println(deviceConnected ? "[LIVE]" : "[ADV ]");
-        Serial.printf("  fsr402: %u\n",         grip_raw);
-        Serial.printf("  flex sensor c0: %u\n", flex_thumb_raw);
-        Serial.printf("  flex sensor c1: %u\n", flex_index_raw);
-        Serial.printf("  flex sensor c2: %u\n", flex_middle_raw);
-        Serial.printf("  flex sensor c3: %u\n", flex_ring_raw);
-        Serial.printf("  flex sensor c4: %u\n", flex_pinky_raw);
+        Serial.printf("  fsr402         (c4): %u\n", grip_raw);
+        Serial.printf("  flex1 thumb    (c5): %u\n", flex_thumb_raw);
+        Serial.printf("  flex2 index    (c6): %u\n", flex_index_raw);
+        Serial.printf("  flex3 middle   (c7): %u\n", flex_middle_raw);
+        Serial.printf("  flex4 ring     (c8): %u\n", flex_ring_raw);
+        Serial.printf("  flex5 pinky    (c9): %u\n", flex_pinky_raw);
         if (mpuOK) {
             Serial.printf("  mpu6050: ax=%d ay=%d\n", accel_x, accel_y);
         } else {
