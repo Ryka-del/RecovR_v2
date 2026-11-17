@@ -65,7 +65,13 @@ def start_music(path=None):
     track = path if path else _MUSIC
     try:
         if not pygame.mixer.get_init():
-            pygame.mixer.init()
+            # A larger buffer trades a little latency (imperceptible here --
+            # background music/UI sounds, not a rhythm game) for real
+            # headroom against scheduling jitter. pygame's small default
+            # buffer is prone to underruns on a Raspberry Pi running 3
+            # processes at once, which is heard as continuous static/
+            # crackling rather than quiet audio.
+            pygame.mixer.init(buffer=4096)
         pygame.mixer.music.stop()
         pygame.mixer.music.load(track)
         pygame.mixer.music.set_volume(0.4)
@@ -132,7 +138,7 @@ def _play(path):
     """Internal helper — initialise mixer if needed, then play a one-shot sfx."""
     try:
         if not pygame.mixer.get_init():
-            pygame.mixer.init()
+            pygame.mixer.init(buffer=4096)   # see start_music()'s comment
     except Exception:
         return
     snd = _get_sound(path)
