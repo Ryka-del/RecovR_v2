@@ -409,7 +409,21 @@ class WhackMoleGame(SessionModeMixin, FatigueMixin, BaseScreen):
         back_y  = int(H * BACK_Y_FRAC)
         self._hole_pos    = []
         self._hole_finger = []
-        for name, x_frac, row in HOLE_CONFIG:
+        # Which finger occupies which hole mirrors with self.hand_flipped --
+        # HOLE_CONFIG's own x_frac/row positions (screen layout) never move,
+        # only which finger name is assigned to each one. This is NOT
+        # cosmetic: the physical MUX channel behind each finger ALSO flips
+        # with affected hand (see firmware/recovr_controller/
+        # recovr_controller.ino's GLOVE_RIGHT_HAND), so without this the
+        # channel wired to the LEFTMOST hole would change depending on which
+        # hand is affected. Mirroring the finger assignment here keeps the
+        # channel<->screen-position mapping constant regardless of hand --
+        # e.g. MUX channel C5 always ends up driving the RIGHTMOST hole,
+        # never the leftmost, whichever hand the patient is using.
+        hole_names = [name for name, _x, _row in HOLE_CONFIG]
+        if self.hand_flipped:
+            hole_names = list(reversed(hole_names))
+        for (_, x_frac, row), name in zip(HOLE_CONFIG, hole_names):
             x = int(W * x_frac)
             y = front_y if row == "front" else back_y
             r = FRONT_RADIUS if row == "front" else BACK_RADIUS

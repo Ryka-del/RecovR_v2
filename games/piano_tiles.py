@@ -96,6 +96,12 @@ FLEX_THRESHOLD = {"Easy": 0.30, "Medium": 0.70, "Hard": 0.90}  # calibrated flex
 PT_RELEASE_MARGIN = 0.65  # release threshold = press threshold * this -- same hysteresis concept as
                           # games/whack_mole.py's own RELEASE_MARGIN (must release below it to re-arm)
 HIT_WINDOW     = {"Easy": 130, "Medium": 95,  "Hard": 65}     # px, +/- around the hit line
+# Affected-Hand Adaptation anchor -- the UNMIRRORED lane order (lane 0 =
+# leftmost = Thumb ... lane 4 = rightmost = Pinky) is correct for a
+# RIGHT-hand-affected patient; see on_enter's self.hand_flipped/
+# self._finger_order, same convention as games/whack_mole.py's own
+# DEFAULT_HAND = "right".
+DEFAULT_HAND   = "right"
 SPAWN_GAP      = {"Easy": 1.0,  "Medium": 0.7,  "Hard": 0.45}  # pause after a tile resolves before the next spawns
 TILE_GOAL      = {"Easy": 50,  "Medium": 75,  "Hard": 100}    # Target Mode: points to reach
 DURATION       = {"Easy": 300, "Medium": 420, "Hard": 600}    # Timed Mode: session length in seconds (5/7/10 min)
@@ -300,6 +306,22 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self.hit_window     = HIT_WINDOW[self.difficulty]
 
         self._session_init(data, TILE_GOAL, DURATION, self.difficulty, cal_goal_key="pt_goal")
+        # Affected-Hand Adaptation -- which finger is required to hit each
+        # SCREEN lane mirrors with the patient's affected hand, same concept
+        # as games/whack_mole.py's own self.hand_flipped/_hole_finger
+        # mirroring. Lane POSITIONS themselves (screen columns, left to
+        # right) never move -- only which finger each one requires does.
+        # This matters because the physical MUX channel behind each finger
+        # ALSO flips with affected hand (see firmware/recovr_controller/
+        # recovr_controller.ino's GLOVE_RIGHT_HAND) -- mirroring here keeps
+        # the channel<->screen-position mapping constant regardless of
+        # hand (e.g. MUX channel C5 always drives the rightmost lane).
+        # _finger_order is its own inverse (a straight reversal), so the
+        # same list converts lane-position->finger AND finger->lane-
+        # position (see _try_flex_tap).
+        self.hand_flipped = bool(self.affected_hand) and self.affected_hand != DEFAULT_HAND
+        self._finger_order = (list(range(LANE_COUNT)) if not self.hand_flipped
+                              else list(reversed(range(LANE_COUNT))))
         # Every session gets a minimum read time on the How-To-Play screen --
         # a curious first finger bend shouldn't be able to skip past the
         # instructions before the patient has had any chance to read them
@@ -509,10 +531,14 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
         """Called on a FALSE -> TRUE edge for `finger_idx`. Scores the
         active tile only if it exists, hasn't already resolved, sits in
         THIS finger's lane, and is inside the hit window -- flexing any
-        other finger, or flexing outside the window, does nothing."""
+        other finger, or flexing outside the window, does nothing.
+        `tile.lane` is a SCREEN position (0=leftmost..4=rightmost); which
+        finger that screen position actually requires is self._finger_order
+        (mirrors with affected hand -- see on_enter), so the comparison
+        goes through it rather than against finger_idx directly."""
         self._finger_tap_flash_t[finger_idx] = 0.3
         tile = self.tile
-        if tile is not None and not tile.resolved and tile.lane == finger_idx:
+        if tile is not None and not tile.resolved and tile.lane == self._finger_order[finger_idx]:
             if abs(tile.center_y - HIT_LINE_Y) <= self.hit_window:
                 tile.resolve(hit=True)
                 self.score += 1
