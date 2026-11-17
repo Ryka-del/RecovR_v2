@@ -31,7 +31,7 @@ import pygame
 from screens.base import BaseScreen
 from games.fatigue import FatigueMixin
 from games.session_mode import SessionModeMixin
-from sensors.input_handler import input_handler
+from sensors.input_handler import input_handler, FINGER_NAMES
 from audio import (start_music, stop_music, pause_music, resume_music,
                     game_bgm_path, play_completion, play_click, play_success)
 from constants import get_theme, is_dark_mode, GAME_W, GAME_H
@@ -69,7 +69,14 @@ DURATION        = {"Easy": 300,  "Medium": 420,  "Hard": 600}    # Timed Mode: s
 # Strength"/"Required Finger Flexion"/"Required Wrist Rotation" parameter
 # across every game (the % of the patient's own calibrated range required).
 GRIP_THRESHOLD  = {"Easy": 0.30, "Medium": 0.70, "Hard": 0.90}   # calibrated grip (0-1) to grab/hold the can
-FLEX_THRESHOLD  = {"Easy": 0.30, "Medium": 0.70, "Hard": 0.90}   # calibrated flex (0-1) to pick up/plant a seed
+FLEX_THRESHOLD  = {"Easy": 0.30, "Medium": 0.70, "Hard": 0.90}   # fallback flex threshold -- see on_enter()'s press_threshold
+# Per-finger press/release hysteresis margin -- same value and mechanism as
+# games/whack_mole.py's own RELEASE_MARGIN: a finger must drop back below
+# press_threshold[i] * this (not just below press_threshold[i] itself)
+# before it can register another press. Not used by anything before this
+# change -- the old single shared flex_raw/flex_threshold check released
+# as soon as the value dropped below the press threshold, with no margin.
+FLEX_RELEASE_MARGIN = 0.65
 MOVE_DEADZONE   = {"Easy": 0.05, "Medium": 0.08, "Hard": 0.12}   # wrist tilt magnitude before the hand moves
 # Watering is gated by WRIST ROTATION now, not grip (grip's role narrows to
 # can pickup only -- see on_enter()/update()/_update_watering()) -- a
@@ -380,6 +387,28 @@ class PlantTheGardenGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # can pickup (below); seed pickup/planting stays flex-gated, unchanged.
         self.wrist_requirement = cal_params.get(
             "ptg_wrist_requirement", WRIST_REQUIREMENT[self.difficulty])
+
+        # Per-finger calibrated press threshold (0-1), one of the 5
+        # independent "<Finger> Flexion" calibration passes (see
+        # MULTI_SENSOR_CALIBRATION in scenes/therapist_dashboard.py /
+        # SENSOR_CFG + _FINGER_FLEX_KEYS in scenes/calibration_window.py)
+        # -- same pattern as games/whack_mole.py's own press_threshold/
+        # release_threshold. Falls back to the Advanced Settings "Required
+        # Finger Flexion" override (ptg_flex_threshold) / difficulty
+        # default for any finger never actually calibrated (e.g.
+        # calibration skipped, or an older single-channel "Finger Flexion"
+        # record from before this change -- that key is simply absent from
+        # "sensors" now, so .get() below falls through to the default
+        # exactly as if that finger had never been calibrated at all; it is
+        # never misread as a complete 5-finger record).
+        sensors_cal = self.cal.get("sensors", {})
+        self.press_threshold = []
+        for name in FINGER_NAMES:
+            entry = sensors_cal.get(f"{name} Flexion")
+            thr = entry.get("threshold") if entry else None
+            self.press_threshold.append(thr if thr and thr > 0 else self.flex_threshold)
+        self.release_threshold = [t * FLEX_RELEASE_MARGIN for t in self.press_threshold]
+
         self._session_init(data, GOAL, DURATION, self.difficulty, cal_goal_key="ptg_goal")
 
         # Affected-hand adaptation -- mirror the hand sprite, its fractional
@@ -546,7 +575,13 @@ class PlantTheGardenGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self.hand_x   = GAME_W / 2
         self.hand_y   = self._hand_top_max   # resting/default vertical position
         self.carrying = None     # None | "seed" | "can"
-        self._flex_need_release = False
+        # Per-finger press/release (hysteresis) state -- same convention as
+        # games/whack_mole.py's own self._armed seeding: a finger already
+        # held above its own release threshold right now must release once
+        # before it can register a press, exactly like mid-session.
+        state0 = input_handler.get_state()
+        flex0  = state0.get("finger_flex") or [0.0] * 5
+        self._flex_armed = [flex0[i] < self.release_threshold[i] for i in range(5)]
         self._grip_need_release = False
         self._wrist_need_release = False
         self._water2_need_release = False
@@ -571,6 +606,14 @@ class PlantTheGardenGame(SessionModeMixin, FatigueMixin, BaseScreen):
             return raw
         return max(0.0, min(1.0, (raw - rest) / (mx - rest)))
 
+    def _normalize_finger(self, index, raw):
+        """Used by recovr/patient_app/games/generic_adapter.py's therapist
+        telemetry -- "calibrated" reading is whether THIS finger is
+        currently above ITS OWN calibrated threshold, the same value the
+        press/release state machine itself acts on. Mirrors
+        games/whack_mole.py's own method of the same name/signature."""
+        return 1.0 if raw >= self.press_threshold[index] else 0.0
+
     def _normalize_tilt(self, raw, axis=None):
         wmin = self.cal.get("wrist_min", -1.0)
         wmax = self.cal.get("wrist_max",  1.0)
@@ -581,7 +624,7 @@ class PlantTheGardenGame(SessionModeMixin, FatigueMixin, BaseScreen):
     def _vertical_input(self):
         """+1 = down, -1 = up (same sign convention tilt_y already has).
         Test Mode: input_handler's own UP/DOWN-driven tilt_y (DOWN no longer
-        means flex in THIS game -- see update()'s flex_raw). Real sensor
+        means flex in THIS game -- see update()'s finger_flex/F-key check). Real sensor
         mode: the MPU6050's own Y axis, read directly off the BLE packet
         (see the _ble import comment at the top of this file) and passed
         through the same calibrated wrist_min/wrist_max range tilt_x uses,
@@ -828,14 +871,42 @@ class PlantTheGardenGame(SessionModeMixin, FatigueMixin, BaseScreen):
                 self._water2_need_release = False
 
         if input_handler.connected:
-            flex_raw = max(0.0, min(1.0, self._state.get("tilt_y", 0.0)))
+            # 5 independent flex channels (Thumb/Index/Middle/Ring/Pinky --
+            # MUX channels C0-C4, see sensors/input_handler.py's
+            # self._finger_flex), each checked below against ITS OWN
+            # calibrated press_threshold (see on_enter()) -- never a shared
+            # threshold, never averaged. The patient is never required to
+            # use a specific finger, and a low reading on the other 4 can
+            # never block a different finger's own press.
+            finger_flex = self._state.get("finger_flex") or [0.0] * 5
         else:
             # Test Mode: F is the ONLY flex trigger here -- tilt_y (driven by
             # UP/DOWN in keyboard mode) now means vertical hand movement for
-            # this game, so DOWN must no longer also register as flex.
-            flex_raw = 1.0 if pygame.key.get_pressed()[pygame.K_f] else 0.0
-        flex_press = flex_raw >= self.flex_threshold and not self._flex_need_release
-        self._flex_need_release = flex_raw >= self.flex_threshold
+            # this game, so DOWN must no longer also register as flex. A
+            # single F press/hold is mapped onto all 5 synthetic channels so
+            # the same per-finger state machine below drives Test Mode
+            # identically to real hardware (which specific finger "presses"
+            # is irrelevant in Test Mode -- there is only the one key).
+            f_held = 1.0 if pygame.key.get_pressed()[pygame.K_f] else 0.0
+            finger_flex = [f_held] * 5
+
+        # Per-finger press/release (hysteresis), same mechanism as
+        # games/whack_mole.py's _update_fingers: a finger must cross ITS
+        # OWN press_threshold to fire, then drop back below ITS OWN (lower)
+        # release_threshold before it can fire again. All 5 are updated
+        # every frame regardless of which one(s) fire, so each finger's own
+        # armed state always stays accurate even if more than one crosses
+        # in the same frame.
+        flex_press = False
+        for i in range(5):
+            f = finger_flex[i]
+            if self._flex_armed[i]:
+                if f >= self.press_threshold[i]:
+                    self._flex_armed[i] = False
+                    flex_press = True
+            else:
+                if f <= self.release_threshold[i]:
+                    self._flex_armed[i] = True
 
         if self.carrying is None:
             self._water_tilt_target = 0.0

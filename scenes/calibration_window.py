@@ -94,7 +94,7 @@ SENSOR_CFG = {
         "read":        lambda s: max(0.0, s["tilt_y"]),
     },
     "Wrist Rotation": {
-        "sensor_name": "Motion Sensor",
+        "sensor_name": "Tilt Sensor",
         "key_hint":    "[ Hold LEFT / RIGHT arrow to simulate rotation ]",
         "read":        lambda s: abs(s["tilt_x"]),
     },
@@ -142,12 +142,12 @@ def _toy_factory_vertical_read(s):
 # exact same abs(tilt_x) "Wrist Rotation" already does; "Wrist Vertical"
 # needs the genuine-accel_y helper above.
 SENSOR_CFG["Wrist Horizontal"] = {
-    "sensor_name": "Motion Sensor (Horizontal)",
+    "sensor_name": "Tilt Sensor (Horizontal)",
     "key_hint":    "[ Hold LEFT / RIGHT arrow to simulate wrist movement ]",
     "read":        lambda s: abs(s["tilt_x"]),
 }
 SENSOR_CFG["Wrist Vertical"] = {
-    "sensor_name": "Motion Sensor (Vertical)",
+    "sensor_name": "Tilt Sensor (Vertical)",
     "key_hint":    "[ Hold UP / DOWN arrow to simulate wrist movement ]",
     "read":        _toy_factory_vertical_read,
 }
@@ -615,6 +615,11 @@ class CalibrationWindow:
             "smallb": pygame.font.Font(_F("Lexend-Medium.ttf"),         self._sc(21)),
             "big":    pygame.font.Font(_F("GravitasOne-Regular.ttf"),   self._sc(86)),
             "big2":   pygame.font.Font(_F("GravitasOne-Regular.ttf"),   self._sc(42)),
+            # Smaller than "big" -- used only for the baseline countdown
+            # digit, which needs to free up vertical room for the Resting
+            # Reading card below it, not the full 86px "big" size other
+            # screens' reading cards use.
+            "count_sm": pygame.font.Font(_F("GravitasOne-Regular.ttf"), self._sc(40)),
             "med":    pygame.font.Font(_F("FjallaOne-Regular.ttf"),     self._sc(42)),
             "tag":    pygame.font.Font(_F("Lexend-Medium.ttf"),         self._sc(20)),
             "head2":  pygame.font.Font(_F("Lexend-SemiBold.ttf"),       self._sc(25)),
@@ -766,6 +771,23 @@ class CalibrationWindow:
             if s.get_width() <= max_w or size <= min_size:
                 return s
             size -= 2
+
+    def _wrap_text(self, text, font, max_w):
+        """Split `text` into lines that each fit max_w at `font`'s size,
+        breaking on word boundaries. A single word wider than max_w on its
+        own is kept whole on its own line (never mid-word-broken)."""
+        words = str(text).split()
+        lines, cur = [], ""
+        for w in words:
+            trial = (cur + " " + w).strip()
+            if font.size(trial)[0] <= max_w or not cur:
+                cur = trial
+            else:
+                lines.append(cur)
+                cur = w
+        if cur:
+            lines.append(cur)
+        return lines or [""]
 
     def _fit_title(self, text, max_w, color, min_size=20):
         """Header title -- shrinks only if too wide for the room actually
@@ -1205,10 +1227,16 @@ class CalibrationWindow:
         avg = (sum(self.trial_results) / len(self.trial_results)
                if self.trial_results else 0.0)
         baseline = self.sensor_baseline.get(self.game_type, 0.0)
-        effective_avg = self._rescale(avg, baseline)
-        if effective_avg < 0.50:
+        # Rounded to 6dp -- sum()/len() on 3 trials that are each exactly at
+        # a boundary (e.g. three 0.80 trials) can land on 0.8000000000000002
+        # from ordinary float summation drift, which silently failed the
+        # "<= 0.80" check below and recommended Hard instead of Medium for
+        # a patient who measured exactly at the Medium boundary. Rounding
+        # removes that drift without changing the 50%/80% bands themselves.
+        effective_avg = round(self._rescale(avg, baseline), 6)
+        if effective_avg <= 0.50:
             return "Easy"
-        if effective_avg < 0.80:
+        if effective_avg <= 0.80:
             return "Medium"
         return "Hard"
 
@@ -1603,25 +1631,49 @@ class CalibrationWindow:
     def _draw_sensitivity(self, surface, area, C):
         self._draw_live_monitor(surface, area, C, "Waiting", show_begin=True)
 
-    def _draw_cue_box(self, surface, lx, cy, rw, C, text, label="Therapist cue:"):
+    def _draw_cue_box(self, surface, lx, cy, rw, C, text, label="Therapist cue:", gap_after=14):
         """Shared box used by the prep/baseline/ready/complete announcement
         screens -- a short, ON-SCREEN-ONLY operational instruction for the
         THERAPIST (see THERAPIST_CUES), never spoken aloud. The patient
         hears a longer, separate narration instead (see
-        recovr/patient_app/scenes/calibrating.py). Returns the y position
-        immediately below the box."""
-        cue_h = self._sc(76)
+        recovr/patient_app/scenes/calibrating.py). Wraps onto as many lines
+        as the cue text actually needs (THERAPIST_CUES entries are full
+        sentences, often too long for one line even at the font's floor
+        size) instead of a fixed height that could clip them. Returns the y
+        position immediately below the box."""
+        pad = self._scw(16)
+        size = self._sc(23)
+        min_size = self._sc(16)
+        max_text_w = rw - pad * 2
+        cue_font = None
+        lines = [text]
+        while True:
+            key = (self._bold_font_path, size)
+            cue_font = self._fit_font_cache.get(key)
+            if cue_font is None:
+                cue_font = pygame.font.Font(self._bold_font_path, size)
+                self._fit_font_cache[key] = cue_font
+            lines = self._wrap_text(text, cue_font, max_text_w)
+            widest = max(cue_font.size(ln)[0] for ln in lines)
+            if widest <= max_text_w or size <= min_size:
+                break
+            size -= 2
+
+        cue_lbl = self.fnt["smallb"].render(label, True, C["sub"])
+        line_h = cue_font.get_linesize()
+        text_block_h = len(lines) * line_h
+        cue_h = (self._sc(8) + cue_lbl.get_height() + self._sc(2)
+                 + text_block_h + self._sc(10))
         cue_r = pygame.Rect(lx, cy, rw, cue_h)
         pygame.draw.rect(surface, C["panel2"], cue_r, border_radius=12)
         pygame.draw.rect(surface, C["accent"], cue_r, 1, border_radius=12)
-        pad = self._scw(16)
-        cue_lbl = self.fnt["smallb"].render(label, True, C["sub"])
         surface.blit(cue_lbl, (cue_r.x + pad, cue_r.y + self._sc(8)))
-        cue_s = self._fit_text(self._bold_font_path, self._sc(23), text,
-                               cue_r.width - pad * 2, C["text"], self._sc(16))
-        surface.blit(cue_s, (cue_r.x + pad,
-                             cue_r.y + self._sc(8) + cue_lbl.get_height() + self._sc(2)))
-        return cy + cue_h + self._sc(14)
+        ty = cue_r.y + self._sc(8) + cue_lbl.get_height() + self._sc(2)
+        for ln in lines:
+            ln_s = cue_font.render(ln, True, C["text"])
+            surface.blit(ln_s, (cue_r.x + pad, ty))
+            ty += line_h
+        return cy + cue_h + self._sc(gap_after)
 
     def _draw_timer_bar(self, surface, lx, cy, rw, C, remaining, total):
         """Thin progress bar + "X.Xs" readout shared by every fixed-length
@@ -1669,16 +1721,19 @@ class CalibrationWindow:
         surface.blit(tl_s, (lx, cy))
         st_s = self.fnt["head2"].render("Baseline", True, C["accent"])
         surface.blit(st_s, st_s.get_rect(topright=(lx + rw, cy)))
-        cy += tl_s.get_height() + self._sc(10)
+        cy += tl_s.get_height() + self._sc(6)
 
-        cy = self._draw_cue_box(surface, lx, cy, rw, C, THERAPIST_CUES["baseline"])
+        # Tighter trailing gap than prep/ready/complete -- this screen has
+        # the most stacked above the Resting Reading card (title + cue +
+        # countdown digit) and the least room to spare on the touch panel.
+        cy = self._draw_cue_box(surface, lx, cy, rw, C, THERAPIST_CUES["baseline"], gap_after=6)
 
         count = max(1, int(BASELINE_DURATION) - int(min(self.baseline_t, BASELINE_DURATION - 1e-3)))
-        count_s = self.fnt["big"].render(str(count), True, C["accent"])
+        count_s = self.fnt["count_sm"].render(str(count), True, C["accent"])
         surface.blit(count_s, count_s.get_rect(midtop=(lx + rw // 2, cy)))
-        cy += count_s.get_height() + self._sc(4)
+        cy += count_s.get_height()
 
-        card_h = self._sc(84)
+        card_h = self._sc(76)
         live_r = pygame.Rect(lx, cy, rw, card_h)
         self._draw_reading_card(surface, live_r, C, "Resting Reading",
                                 f"{self.live_value:.3f}", C["accent"], font=self.fnt["big2"])
@@ -1935,7 +1990,7 @@ class CalibrationWindow:
             lbl_s = self.fnt["small"].render(nm, True, C["sub"])
             surface.blit(lbl_s, (r.x + pad, r.y + self._sc(8)))
             lv_txt = f"{live_vals[i]:.2f}" if live_vals is not None else "—"
-            pv_txt = f"pk {peak_vals[i]:.2f}" if peak_vals is not None else "pk —"
+            pv_txt = f"peak {peak_vals[i]:.2f}" if peak_vals is not None else "peak —"
             lv_s = self.fnt["bold"].render(lv_txt, True, C["accent"])
             surface.blit(lv_s, (r.x + pad, r.y + self._sc(8) + lbl_s.get_height() + self._sc(4)))
             pv_s = self.fnt["small"].render(pv_txt, True, C["green"])
@@ -1944,14 +1999,21 @@ class CalibrationWindow:
 
     # ── phase: results ────────────────────────────────────────────────────────
 
+    def _fmt_value_for(self, sensor_type, val):
+        """Same formatting _fmt_trial applies for self.game_type, but for
+        an arbitrary sensor_type -- needed by _draw_multi_sensor_results,
+        which displays every sensor in self.game_types at once rather than
+        just whichever one self.game_type currently points at."""
+        if sensor_type == "Wrist Rotation":
+            return f"{val * 90:.0f}°"
+        return f"{val:.3f}"
+
     def _fmt_trial(self, val):
         """Display text for one trial/average value, in the real unit for
         this sensor -- degrees (magnitude) for Wrist Rotation using the same
         tilt->angle formula as the live monitor/games/key_lock.py, the raw
         0-1 scale (3dp, matching the rest of the app) for Grip/Flex."""
-        if self.game_type == "Wrist Rotation":
-            return f"{val * 90:.0f}°"
-        return f"{val:.3f}"
+        return self._fmt_value_for(self.game_type, val)
 
     def _draw_results(self, surface, area, C):
         W, H = self.W, self.H
@@ -1993,68 +2055,104 @@ class CalibrationWindow:
                               ban_r.y + u(12) + hd_s.get_height() + u(2)))
         y += ban_h + u(16)
 
-        # ── B. Calibration Results card ────────────────────────────────
-        res_h = u(250)   # +20 over the original 230 -- headroom for the
-                         # "Resting baseline removed" line added below
-        res_r = pygame.Rect(lx, y, rw, res_h)
-        pygame.draw.rect(surface, C["panel"],  res_r, border_radius=12)
-        pygame.draw.rect(surface, C["border"], res_r, 1, border_radius=12)
+        # ── B. Calibration Results card(s) ──────────────────────────────
+        # Single-sensor games (len(self.game_types) == 1), AND Whack-a-Mole/
+        # Tile Rush's 5-same-type finger group ALONE (game_types is exactly
+        # the 5 _FINGER_FLEX_KEYS, no other category): one card, exactly as
+        # before -- deliberately UNCHANGED, see _multi_card_eligible below.
+        #
+        # Multi-CATEGORY games (Garden Wonders/Purrfect Feast -- game_types
+        # drawn from Grip Strength/Finger Flexion (now, for Garden Wonders,
+        # its own 5-finger group)/Wrist Rotation): self.game_type/self.cfg/
+        # self.trial_results only ever reflect the LAST sensor calibrated,
+        # so showing just this one card silently hid every other sensor's
+        # results -- _draw_multi_sensor_results below instead loops
+        # self.sensor_results, which has a complete, correctly shaped entry
+        # for every sensor in self.game_types. _collapse_finger_group folds
+        # a contiguous 5-finger run into one "Finger Flexion" placeholder
+        # before checking eligibility, so Garden Wonders' 7-entry list (1
+        # Grip + 5 fingers + 1 Wrist) is recognized as the same 3 categories
+        # this section already groups -- while Whack-a-Mole/Tile Rush's
+        # 5-ENTRIES-ALONE list collapses to a single placeholder (len 1,
+        # not > 1) and is correctly excluded, leaving their existing Results
+        # screen exactly as it was.
+        _collapsed = self._collapse_finger_group(self.game_types)
+        _multi_card_eligible = (len(_collapsed) > 1 and
+                                all(t in self._MULTI_RESULTS_HEADING for t in _collapsed))
+        if not _multi_card_eligible:
+            # +20 over the original 230 -- headroom for the "Resting baseline
+            # removed" line below, but that line only actually draws when
+            # baseline > 0 -- checked here too (not just where it's drawn) so
+            # the card is only grown by the extra line's real height when that
+            # line is actually going to be there, instead of a flat guess that
+            # didn't leave quite enough room and let the line run past the
+            # card's own bottom edge.
+            _baseline_for_sizing = self.sensor_baseline.get(self.game_type, 0.0)
+            res_h = u(250) + (u(30) if _baseline_for_sizing > 0 else 0)
+            res_r = pygame.Rect(lx, y, rw, res_h)
+            pygame.draw.rect(surface, C["panel"],  res_r, border_radius=12)
+            pygame.draw.rect(surface, C["border"], res_r, 1, border_radius=12)
 
-        rh_s = self.fnt["bold"].render("Calibration Results", True, C["text"])
-        surface.blit(rh_s, (res_r.x + u(14), res_r.y + u(8)))
-        sn_s = self._fit_text(self._small_font_path, self._sc(18),
-                               f"Sensor: {self.cfg['sensor_name']} ({self.game_type})",
-                               res_r.width - u(28), C["sub"], self._sc(12))
-        surface.blit(sn_s, (res_r.x + u(14), res_r.y + u(8) + rh_s.get_height() + u(2)))
+            rh_s = self.fnt["bold"].render("Calibration Results", True, C["text"])
+            surface.blit(rh_s, (res_r.x + u(14), res_r.y + u(8)))
+            sn_s = self._fit_text(self._small_font_path, self._sc(18),
+                                   f"Sensor: {self.cfg['sensor_name']} ({self.game_type})",
+                                   res_r.width - u(28), C["sub"], self._sc(12))
+            surface.blit(sn_s, (res_r.x + u(14), res_r.y + u(8) + rh_s.get_height() + u(2)))
 
-        bar_x  = res_r.x + u(100)
-        bar_w  = res_r.width - u(100) - u(100)
-        bar_h  = u(18)
-        by_cur = res_r.y + u(8) + rh_s.get_height() + u(2) + sn_s.get_height() + u(10)
-        trial_count = max(3, len(self.trial_results))
-        for i in range(trial_count):
-            val = self.trial_results[i] if i < len(self.trial_results) else 0.0
-            lbl = self.fnt["smallb"].render(f"Trial {i + 1}", True, C["text"])
-            surface.blit(lbl, lbl.get_rect(midright=(bar_x - u(8), by_cur + bar_h // 2)))
-            self._draw_bar(surface, bar_x, by_cur, bar_w, bar_h, val, C,
-                           label=self._fmt_trial(val))
-            by_cur += u(34)
+            bar_x  = res_r.x + u(100)
+            bar_w  = res_r.width - u(100) - u(100)
+            bar_h  = u(18)
+            by_cur = res_r.y + u(8) + rh_s.get_height() + u(2) + sn_s.get_height() + u(10)
+            trial_count = max(3, len(self.trial_results))
+            for i in range(trial_count):
+                val = self.trial_results[i] if i < len(self.trial_results) else 0.0
+                lbl = self.fnt["smallb"].render(f"Trial {i + 1}", True, C["text"])
+                surface.blit(lbl, lbl.get_rect(midright=(bar_x - u(8), by_cur + bar_h // 2)))
+                self._draw_bar(surface, bar_x, by_cur, bar_w, bar_h, val, C,
+                               label=self._fmt_trial(val))
+                by_cur += u(34)
 
-        # average / threshold strip, inside the same card (not a separate box)
-        strip_y = by_cur + u(10)
-        av_lbl_s = self.fnt["med"].render(self._fmt_trial(avg), True, C["text"])
-        surface.blit(av_lbl_s, (res_r.x + u(14), strip_y))
-        avl_s = self.fnt["small"].render("Average", True, C["sub"])
-        surface.blit(avl_s, (res_r.x + u(14), strip_y + av_lbl_s.get_height() + u(2)))
+            # average / threshold strip, inside the same card (not a separate box)
+            strip_y = by_cur + u(10)
+            av_lbl_s = self.fnt["med"].render(self._fmt_trial(avg), True, C["text"])
+            surface.blit(av_lbl_s, (res_r.x + u(14), strip_y))
+            avl_s = self.fnt["small"].render("Average", True, C["sub"])
+            surface.blit(avl_s, (res_r.x + u(14), strip_y + av_lbl_s.get_height() + u(2)))
 
-        divx = res_r.x + u(160)
-        pygame.draw.line(surface, C["border"], (divx, strip_y), (divx, res_r.bottom - u(10)), 1)
+            # The divider sits at u(160) by default, but moves right if the
+            # Average value itself (rendered at a large, unclamped font -- e.g.
+            # a Wrist Rotation degree reading can be wider than a 0-1 decimal)
+            # would otherwise run into it.
+            left_col_w = max(av_lbl_s.get_width(), avl_s.get_width())
+            divx = max(res_r.x + u(160), res_r.x + u(14) + left_col_w + u(16))
+            pygame.draw.line(surface, C["border"], (divx, strip_y), (divx, res_r.bottom - u(10)), 1)
 
-        baseline = self.sensor_baseline.get(self.game_type, 0.0)
-        thr_now = self._baseline_threshold(avg, baseline, self.adv_threshold_pct)
-        thr_disp = self._fmt_trial(thr_now)
-        surface.blit(self.fnt["smallb"].render(f"Sensitivity: {self.sensitivity}", True, C["sub"]),
-                     (divx + u(16), strip_y + u(4)))
-        surface.blit(self.fnt["body"].render(f"Active threshold: {thr_disp}", True, C["accent"]),
-                     (divx + u(16), strip_y + u(32)))
-        if baseline > 0:
-            base_disp = self._fmt_trial(baseline)
-            surface.blit(self.fnt["small"].render(f"Resting baseline removed: {base_disp}", True, C["sub"]),
-                         (divx + u(16), strip_y + u(58)))
-        y += res_h + u(16)
+            baseline = self.sensor_baseline.get(self.game_type, 0.0)
+            thr_now = self._baseline_threshold(avg, baseline, self.adv_threshold_pct)
+            thr_disp = self._fmt_trial(thr_now)
+            surface.blit(self.fnt["smallb"].render(f"Sensitivity: {self.sensitivity}", True, C["sub"]),
+                         (divx + u(16), strip_y + u(4)))
+            surface.blit(self.fnt["body"].render(f"Active threshold: {thr_disp}", True, C["accent"]),
+                         (divx + u(16), strip_y + u(32)))
+            if baseline > 0:
+                base_disp = self._fmt_trial(baseline)
+                surface.blit(self.fnt["small"].render(f"Resting baseline removed: {base_disp}", True, C["sub"]),
+                             (divx + u(16), strip_y + u(58)))
+            y += res_h + u(16)
+        else:
+            y = self._draw_multi_sensor_results(surface, lx, y, rw, C)
 
         # ── C. Select Difficulty (3 compact cards) ────────────────────
         dh_s = self.fnt["bold"].render("Select Difficulty", True, C["text"])
         surface.blit(dh_s, (lx, y))
         y += dh_s.get_height() + u(8)
-        cards_h = u(130)
-        self._draw_difficulty_cards(surface, lx, y, rw, cards_h, C)
+        cards_h = self._draw_difficulty_cards(surface, lx, y, rw, C)
         y += cards_h + u(16)
 
         # ── D. Selected Preset Summary ─────────────────────────────────
-        sum_h = u(110)
-        self._draw_preset_summary(surface, pygame.Rect(lx, y, rw, sum_h), C)
-        y += sum_h + u(16)
+        y = self._draw_preset_summary(surface, lx, y, rw, C)
+        y += u(16)
 
         # Real content height (independent of this frame's scroll offset,
         # so next frame's clamping/scrollbar math is correct), then restore
@@ -2101,18 +2199,268 @@ class CalibrationWindow:
         surface.blit(ac_s, ac_s.get_rect(center=acc_r.center))
         self._accept_rect = acc_r
 
-    def _draw_difficulty_cards(self, surface, lx, ry, rw, ch, C):
-        W, H  = self.W, self.H
-        n     = len(PRESET_ORDER)
-        gap   = self._scw(12)
-        cw    = (rw - gap * (n - 1)) // n
+    # Category heading shown per sensor on the multi-sensor Results screen --
+    # "Grip Strength"/"Finger Flexion" read naturally as-is, but "Wrist
+    # Rotation" is the movement, not the hardware; heading it as "Tilt
+    # Sensor" matches the terminology already used everywhere else (see
+    # SENSOR_CFG["Wrist Rotation"]["sensor_name"]) without renaming the
+    # "Wrist Rotation" game_type/SENSOR_CFG key itself.
+    _MULTI_RESULTS_HEADING = {
+        "Grip Strength":  "Grip Strength",
+        "Finger Flexion": "Finger Flexion",
+        "Wrist Rotation":  "Tilt Sensor",
+    }
 
+    # Display names for the Results screen's Finger Flexion sub-rows --
+    # matches the wording asked for (Thumb/Index Finger/Middle Finger/Ring
+    # Finger/Little Finger), distinct from _FINGER_FLEX_KEYS' own
+    # SENSOR_CFG-key spelling ("Thumb Flexion" etc.).
+    _FINGER_DISPLAY_NAMES = {
+        "Thumb Flexion":  "Thumb",
+        "Index Flexion":  "Index Finger",
+        "Middle Flexion": "Middle Finger",
+        "Ring Flexion":   "Ring Finger",
+        "Pinky Flexion":  "Little Finger",
+    }
+
+    @staticmethod
+    def _collapse_finger_group(game_types):
+        """Replaces a contiguous run exactly matching _FINGER_FLEX_KEYS with
+        one "Finger Flexion" placeholder -- lets _draw_results' eligibility
+        check treat Garden Wonders' 7-entry (Grip + 5 fingers + Wrist) list
+        as the same 3 categories Purrfect Feast/the old Garden Wonders
+        already used, without actually renaming anything in
+        self.game_types itself (the real per-finger keys are still what
+        _draw_multi_sensor_results/_advance_sensor_idx/etc. all walk)."""
+        gt = list(game_types)
+        n = len(_FINGER_FLEX_KEYS)
+        for i in range(len(gt) - n + 1):
+            if gt[i:i + n] == _FINGER_FLEX_KEYS:
+                return gt[:i] + ["Finger Flexion"] + gt[i + n:]
+        return gt
+
+    def _draw_finger_group_card(self, surface, lx, y, rw, C):
+        """One combined card for Garden Wonders' 5 independent finger-
+        flexion passes (added when its calibration moved to per-finger
+        thresholds -- see games/plant_the_garden.py's press_threshold/
+        release_threshold). Each of the 5 rows comes from that finger's own
+        self.sensor_results entry, populated by _finish_finger_group --
+        the exact same mechanism Whack-a-Mole/Tile Rush already use, never
+        a shared/averaged value. Height is measured from the real wrapped
+        lines before anything is drawn, matching every other card here."""
+        u = self._sc
+        f_small = self.fnt["small"]
+        row_max_w = rw - u(28)
+
+        hd_s = self.fnt["bold"].render("Finger Flexion", True, C["text"])
+        sn_s = self.fnt["small"].render(
+            "Sensor: Flex Sensors (5 independent channels)", True, C["sub"])
+
+        rows = []
+        for key in _FINGER_FLEX_KEYS:
+            data = self.sensor_results.get(key)
+            avg      = data["average"]  if data else 0.0
+            baseline = data["baseline"] if data else 0.0
+            name = self._FINGER_DISPLAY_NAMES.get(key, key)
+            thr = self._baseline_threshold(avg, baseline, self.adv_threshold_pct)
+            line = (f"{name}: Average {self._fmt_value_for(key, avg)}  ·  "
+                    f"Threshold {self._fmt_value_for(key, thr)}")
+            if baseline > 0:
+                line += f"  ·  Baseline {self._fmt_value_for(key, baseline)}"
+            rows.append(self._wrap_text(line, f_small, row_max_w))
+
+        note_lines = self._wrap_text(
+            "Gameplay note: any ONE of the 5 fingers reaching its OWN "
+            "threshold above triggers the action -- no single finger is "
+            "required, and the other 4 are never averaged in or allowed "
+            "to block it.",
+            f_small, row_max_w)
+
+        top_pad    = u(8)
+        header_h   = hd_s.get_height() + u(2) + sn_s.get_height() + u(10)
+        line_h     = f_small.get_height() + u(2)
+        rows_h     = sum(len(lines) * line_h for lines in rows) + u(4) * len(rows)
+        note_h     = u(10) + len(note_lines) * line_h
+        bottom_pad = u(10)
+        card_h = top_pad + header_h + rows_h + note_h + bottom_pad
+
+        r = pygame.Rect(lx, y, rw, card_h)
+        pygame.draw.rect(surface, C["panel"],  r, border_radius=12)
+        pygame.draw.rect(surface, C["border"], r, 1, border_radius=12)
+
+        ty = r.y + top_pad
+        surface.blit(hd_s, (r.x + u(14), ty))
+        ty += hd_s.get_height() + u(2)
+        surface.blit(sn_s, (r.x + u(14), ty))
+        ty += sn_s.get_height() + u(10)
+
+        for lines in rows:
+            for ln in lines:
+                ls = f_small.render(ln, True, C["text"])
+                surface.blit(ls, (r.x + u(14), ty))
+                ty += line_h
+            ty += u(4)
+
+        ty += u(6)
+        pygame.draw.line(surface, C["border"], (r.x + u(14), ty - u(5)),
+                         (r.right - u(14), ty - u(5)), 1)
+        for ln in note_lines:
+            ls = f_small.render(ln, True, C["sub"])
+            surface.blit(ls, (r.x + u(14), ty))
+            ty += line_h
+
+        return y + card_h + u(14)
+
+    def _draw_multi_sensor_results(self, surface, lx, y, rw, C):
+        """Multi-sensor Results (Garden Wonders' 3 sensors today, Purrfect
+        Feast's 2): one card per sensor in self.game_types, each built from
+        that sensor's own self.sensor_results entry -- never
+        self.trial_results/self.sensor_baseline/self.game_type, which after
+        a multi-sensor run only ever reflect whichever sensor was
+        calibrated LAST (the bug this replaces: Results silently showed
+        only that one sensor). Height is measured from each card's own real
+        content (including the wrapped Finger Flexion gameplay note)
+        before anything is drawn, so nothing here can overflow its own
+        card. Returns the y position immediately below the last card."""
+        u = self._sc
+        f_small = self.fnt["small"]
+        note_max_w = rw - u(28)
+        _FLEX_NOTE = (
+            "Gameplay note: this game accepts input from any of the 5 flex "
+            "sensors (Thumb / Index / Middle / Ring / Pinky) each cycle -- "
+            "whichever one reads highest is checked against the threshold "
+            "below. No single finger is required, and a low reading on the "
+            "other 4 never blocks it."
+        )
+        idx = 0
+        n_types = len(self.game_types)
+        n_grp   = len(_FINGER_FLEX_KEYS)
+        while idx < n_types:
+            # Garden Wonders' 5 independent finger passes -- one combined
+            # card with 5 sub-rows, not 5 separate cards (see
+            # _draw_finger_group_card). Does not fire for Whack-a-Mole/Tile
+            # Rush: their game_types is ONLY these 5 entries, which
+            # _collapse_finger_group's eligibility check in _draw_results
+            # already keeps on the old single-card path entirely.
+            if self.game_types[idx:idx + n_grp] == _FINGER_FLEX_KEYS:
+                y = self._draw_finger_group_card(surface, lx, y, rw, C)
+                idx += n_grp
+                continue
+            sensor_type = self.game_types[idx]
+            idx += 1
+            data = self.sensor_results.get(sensor_type)
+            trials      = data["trials"]      if data else []
+            avg         = data["average"]     if data else 0.0
+            baseline    = data["baseline"]    if data else 0.0
+            sensor_name = data["sensor_name"] if data else SENSOR_CFG[sensor_type]["sensor_name"]
+            heading     = self._MULTI_RESULTS_HEADING.get(sensor_type, sensor_type)
+
+            hd_s = self.fnt["bold"].render(heading, True, C["text"])
+            sub  = f"Sensor: {sensor_name}"
+            if trials:
+                sub += f"  ·  {len(trials)} trial(s) recorded"
+            sn_s = self._fit_text(self._small_font_path, self._sc(16), sub,
+                                   rw - u(28), C["sub"], self._sc(12))
+            av_s  = self.fnt["med"].render(self._fmt_value_for(sensor_type, avg), True, C["text"])
+            avl_s = self.fnt["small"].render("Average", True, C["sub"])
+            thr_now = self._baseline_threshold(avg, baseline, self.adv_threshold_pct)
+            thr_s = self.fnt["body"].render(
+                f"Active threshold: {self._fmt_value_for(sensor_type, thr_now)}", True, C["accent"])
+            base_s = None
+            if baseline > 0:
+                base_s = self.fnt["small"].render(
+                    f"Resting baseline removed: {self._fmt_value_for(sensor_type, baseline)}",
+                    True, C["sub"])
+            note_lines = (self._wrap_text(_FLEX_NOTE, f_small, note_max_w)
+                          if sensor_type == "Finger Flexion" else [])
+
+            top_pad    = u(8)
+            header_h   = hd_s.get_height() + u(2) + sn_s.get_height() + u(10)
+            row_h      = max(av_s.get_height() + u(2) + avl_s.get_height(),
+                             thr_s.get_height() + u(4) + (base_s.get_height() if base_s else 0))
+            note_h     = (u(10) + len(note_lines) * (f_small.get_height() + u(2))) if note_lines else 0
+            bottom_pad = u(10)
+            card_h = top_pad + header_h + row_h + note_h + bottom_pad
+
+            r = pygame.Rect(lx, y, rw, card_h)
+            pygame.draw.rect(surface, C["panel"],  r, border_radius=12)
+            pygame.draw.rect(surface, C["border"], r, 1, border_radius=12)
+
+            ty = r.y + top_pad
+            surface.blit(hd_s, (r.x + u(14), ty))
+            ty += hd_s.get_height() + u(2)
+            surface.blit(sn_s, (r.x + u(14), ty))
+            ty += sn_s.get_height() + u(10)
+
+            row_y = ty
+            surface.blit(av_s, (r.x + u(14), row_y))
+            surface.blit(avl_s, (r.x + u(14), row_y + av_s.get_height() + u(2)))
+
+            left_col_w = max(av_s.get_width(), avl_s.get_width())
+            divx = max(r.x + u(150), r.x + u(14) + left_col_w + u(16))
+            pygame.draw.line(surface, C["border"], (divx, row_y), (divx, row_y + row_h), 1)
+
+            surface.blit(thr_s, (divx + u(16), row_y))
+            if base_s:
+                surface.blit(base_s, (divx + u(16), row_y + thr_s.get_height() + u(4)))
+
+            if note_lines:
+                note_y = row_y + row_h + u(10)
+                pygame.draw.line(surface, C["border"], (r.x + u(14), note_y - u(5)),
+                                 (r.right - u(14), note_y - u(5)), 1)
+                for ln in note_lines:
+                    ls = f_small.render(ln, True, C["sub"])
+                    surface.blit(ls, (r.x + u(14), note_y))
+                    note_y += ls.get_height() + u(2)
+
+            y += card_h + u(14)
+        return y
+
+    def _draw_difficulty_cards(self, surface, lx, ry, rw, C):
+        """Easy/Medium/Hard cards. Height is measured from the tallest
+        card's own content (name + optional RECOMMENDED badge + the FULL
+        description, never truncated to a fixed line count -- that
+        previously silently dropped whatever didn't fit in 2 lines, e.g.
+        Hard's description cutting off mid-word) and shared by all 3, so
+        a short card isn't cramped and a long one isn't clipped. Returns
+        the row height actually used, so the caller can lay out whatever
+        comes next at the right y."""
+        n   = len(PRESET_ORDER)
+        gap = self._scw(12)
+        cw  = (rw - gap * (n - 1)) // n
+        f_small = self.fnt["small"]
+        desc_max_w = cw - self._scw(20)
+
+        # ── measure pass: every card's own content height ──
+        cards_info = []
+        max_content_h = 0
+        for name in PRESET_ORDER:
+            p = DIFFICULTY_PRESETS[name]
+            rec = (self.recommended_preset == name)
+            nm_h = self.fnt["bold"].get_height()
+            content_h = self._sc(8) + nm_h + self._sc(4)
+
+            rc_s = None
+            if rec:
+                rc_s = self._fit_text(self._bold_font_path, self._sc(20), "RECOMMENDED",
+                                       cw - self._scw(16), C["white"], self._sc(12))
+                content_h += rc_s.get_height() + self._sc(4) + self._sc(4)
+
+            thr_val = round(p["threshold_pct"], 0)
+            dt = f"Threshold {int(thr_val)}%  ·  {p['desc'].split('—')[0].strip()}"
+            lines = self._wrap_text(dt, f_small, desc_max_w)
+            content_h += self._sc(2) + len(lines) * (f_small.get_height() + self._sc(2)) + self._sc(8)
+
+            cards_info.append((name, p, rec, rc_s, lines))
+            max_content_h = max(max_content_h, content_h)
+
+        ch = max_content_h
+
+        # ── draw pass: every card at the one shared height ──
         self._preset_card_rects = {}
-        for i, name in enumerate(PRESET_ORDER):
-            p   = DIFFICULTY_PRESETS[name]
+        for i, (name, p, rec, rc_s, lines) in enumerate(cards_info):
             cr  = pygame.Rect(lx + i * (cw + gap), ry, cw, ch)
             sel = (self.selected_preset == name)
-            rec = (self.recommended_preset == name)
             base_col = p["color"]
 
             bg_surf = pygame.Surface((cw, ch), pygame.SRCALPHA)
@@ -2130,8 +2478,6 @@ class CalibrationWindow:
                 # is wide enough at this font size to cover a short name label
                 # like "HARD" entirely if placed top-right beside it, and still
                 # shrinks to fit this narrow a card as a last resort.
-                rc_s = self._fit_text(self._bold_font_path, self._sc(20), "RECOMMENDED",
-                                       cw - self._scw(16), C["white"], self._sc(12))
                 rc_r = pygame.Rect(0, 0, rc_s.get_width() + self._scw(10),
                                    rc_s.get_height() + self._sc(4))
                 rc_r.topleft = (cr.x + self._scw(10), next_y)
@@ -2139,37 +2485,100 @@ class CalibrationWindow:
                 surface.blit(rc_s, rc_s.get_rect(center=rc_r.center))
                 next_y = rc_r.bottom + self._sc(4)
 
-            thr_val = round(DIFFICULTY_PRESETS[name]["threshold_pct"], 0)
-            dt = f"Threshold {int(thr_val)}%  ·  {p['desc'].split('—')[0].strip()}"
-            words, lines, cur = dt.split(), [], ""
-            for w in words:
-                test = (cur + " " + w).strip()
-                if self.fnt["small"].size(test)[0] > cw - self._scw(20):
-                    if cur: lines.append(cur)
-                    cur = w
-                else:
-                    cur = test
-            if cur: lines.append(cur)
             ty = next_y + self._sc(2)
-            for ln in lines[:2]:
-                ls = self.fnt["small"].render(ln, True, C["sub"])
+            for ln in lines:
+                ls = f_small.render(ln, True, C["sub"])
                 surface.blit(ls, (cr.x + self._scw(10), ty))
                 ty += ls.get_height() + self._sc(2)
 
             self._preset_card_rects[name] = cr
 
-    def _draw_preset_summary(self, surface, r, C):
-        """Section C: compact chip row of the GAME's own parameters (not the
-        generic threshold/speed/duration) for the currently selected preset
-        -- customized values if the therapist edited any in Advanced
-        Settings, the preset's own defaults otherwise."""
-        W, H = self.W, self.H
+        return ch
+
+    # Groups a GAME_PARAM_SCHEMA row under the sensor its own label names --
+    # there's no structured sensor tag on these entries, only this label-text
+    # convention (every game's "Required Grip Strength"/"Required Finger
+    # Flexion"/"Required Wrist Rotation" row already follows it -- see the
+    # schema above). Anything that doesn't name a specific sensor (goal
+    # score, speeds, hold durations, tolerances...) falls back to the
+    # generic "Game Parameters" bucket.
+    @staticmethod
+    def _categorize_param(label):
+        low = label.lower()
+        if "grip strength" in low:
+            return "Grip Strength"
+        if "finger flexion" in low:
+            return "Finger Flexion"
+        if "wrist" in low:
+            return "Tilt Sensor"
+        return "Game Parameters"
+
+    def _draw_preset_summary(self, surface, lx, cy, rw, C):
+        """Section D/E: EVERY setting the therapist can actually customize
+        for this game + the selected difficulty preset -- not just the
+        game's own GAME_PARAM_SCHEMA rows (as before), but also the generic
+        Difficulty/Speed/Session Duration preset fields and the Activation
+        Threshold % (the stepper in Advanced Settings), grouped into
+        category headings so a Multi-Skill game's settings are clearly
+        attributed to the sensor they actually affect -- never merging the
+        generic Activation Threshold % with a game's own distinctly-keyed
+        "Required <Sensor>" param, even though both happen to be percentages.
+        Every row's text is wrapped up front and the box height measured
+        from those exact wrapped lines, so nothing drawn below can ever
+        disagree with what was measured. Height grows with however many
+        rows this game actually has -- Calibration Results is a scrollable
+        page, so there's no reason to force everything into a cramped box.
+        Returns the y position immediately below the box."""
         def u(n): return self._sc(n)
-        pygame.draw.rect(surface, C["panel"],  r, border_radius=12)
-        pygame.draw.rect(surface, C["border"], r, 1, border_radius=12)
+        f_small = self.fnt["small"]
+        text_max_w = rw - u(14) - u(24) - u(14)
+
+        multi = len(self.game_types) > 1
+        headings = ([self._MULTI_RESULTS_HEADING.get(t, t) for t in self.game_types] if multi
+                    else [self._MULTI_RESULTS_HEADING.get(self.game_type, self.game_type)])
+
+        raw_sections = []
+
+        diff_rows = [f"Difficulty: {self.selected_preset}"]
+        if self.game_name in GAMES_USING_SPEED:
+            diff_rows.append(f"Speed: {self.adv_speed}")
+        diff_rows.append(f"Session Duration: {self.adv_duration}")
+        raw_sections.append(("Difficulty Configuration", diff_rows))
+
+        if multi:
+            raw_sections.append(("Sensor Thresholds", [
+                f"Activation Threshold: {self.adv_threshold_pct}% of each sensor's own "
+                f"calibrated range (applies to {', '.join(headings)})"]))
+        else:
+            raw_sections.append(("Sensor Thresholds", [
+                f"Activation Threshold: {self.adv_threshold_pct}% of calibrated range"]))
+
+        by_cat = {}
+        for spec in self.param_schema:
+            cat = self._categorize_param(spec["label"])
+            by_cat.setdefault(cat, []).append(f"{spec['label']}: {self._fmt_chip(spec)}")
+        for cat in ("Grip Strength", "Finger Flexion", "Tilt Sensor", "Game Parameters"):
+            if by_cat.get(cat):
+                raw_sections.append((cat, by_cat[cat]))
+
+        sections = [(cat, [self._wrap_text(row, f_small, text_max_w) for row in rows])
+                    for cat, rows in raw_sections]
 
         hd_s = self.fnt["bold"].render(f"Selected Preset ({self.selected_preset})",
                                        True, C["text"])
+        line_h   = f_small.get_height() + u(2)
+        header_h = u(10) + hd_s.get_height() + u(10)
+        body_h = 0
+        for _cat, rows in sections:
+            body_h += self.fnt["smallb"].get_height() + u(6)
+            for lines in rows:
+                body_h += len(lines) * line_h
+            body_h += u(6)
+        box_h = header_h + body_h + u(6)
+
+        r = pygame.Rect(lx, cy, rw, box_h)
+        pygame.draw.rect(surface, C["panel"],  r, border_radius=12)
+        pygame.draw.rect(surface, C["border"], r, 1, border_radius=12)
         surface.blit(hd_s, (r.x + u(14), r.y + u(10)))
 
         badge_txt = "● CUSTOMIZED" if self.customized else "DEFAULT PRESET"
@@ -2180,22 +2589,18 @@ class CalibrationWindow:
         pygame.draw.rect(surface, badge_col, bd_r, border_radius=u(6))
         surface.blit(bd_s, bd_s.get_rect(center=bd_r.center))
 
-        chips = [(spec["label"], self._fmt_chip(spec)) for spec in self.param_schema]
-        if self.game_name in GAMES_USING_SPEED:
-            chips.append(("Speed", self.adv_speed))
-
-        cy = r.y + u(10) + hd_s.get_height() + u(8)
-        cx = r.x + u(14)
-        row_h = u(22)
-        max_x = r.right - u(14)
-        for label, val in chips:
-            txt = f"{label}: {val}"
-            ts  = self.fnt["small"].render(txt, True, C["sub"])
-            if cx + ts.get_width() > max_x:
-                cx = r.x + u(14)
-                cy += row_h
-            surface.blit(ts, (cx, cy))
-            cx += ts.get_width() + self._scw(22)
+        ty = r.y + header_h
+        for cat, rows in sections:
+            cs = self.fnt["smallb"].render(cat, True, C["accent"])
+            surface.blit(cs, (r.x + u(14), ty))
+            ty += cs.get_height() + u(6)
+            for lines in rows:
+                for ln in lines:
+                    ls = f_small.render(ln, True, C["sub"])
+                    surface.blit(ls, (r.x + u(24), ty))
+                    ty += line_h
+            ty += u(6)
+        return cy + box_h
 
     @staticmethod
     def _fmt_unit(shown, unit):

@@ -146,11 +146,11 @@ _close_rect       = _DEFAULT_CLOSE_RECT
 _close_hover      = False
 
 
-# Welcome scenes (therapist_welcome/patient_welcome) use the square
-# close_welcome.png asset instead of the fixed-corner vector box+X fallback
-# every other asset-less scene gets -- it's the asset made for this exact
-# look, so draw it instead of hand-drawing an imitation of it.
-_WELCOME_SCENE_NAMES = {"therapist_welcome", "patient_welcome"}
+# Welcome/Login scenes use the square close_welcome.png asset instead of the
+# fixed-corner vector box+X fallback every other asset-less scene gets --
+# it's the asset made for this exact look, so draw it instead of hand-drawing
+# an imitation of it.
+_WELCOME_SCENE_NAMES = {"therapist_welcome", "patient_welcome", "login"}
 
 def _draw_close_icon(rect, asset_name="close_button.png"):
     """The given close-icon asset, scaled to fit `rect` without distortion,

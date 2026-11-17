@@ -267,12 +267,23 @@ SENSOR_ORDER = ["Grip Strength", "Finger Flexion", "Wrist Rotation"]
 # its gameplay wrist threshold was previously left at CalibrationWindow's
 # unset default.
 MULTI_SENSOR_CALIBRATION = {
-    "Garden Wonders": ["Grip Strength", "Finger Flexion", "Wrist Rotation"],
+    # Garden Wonders now calibrates its 5 flex sensors independently (one
+    # combined pass, same _FINGER_FLEX_KEYS/_finish_finger_group mechanism
+    # Whack-a-Mole/Tile Rush already use below -- captures all 5 fingers'
+    # peaks simultaneously within the SAME 3 trials, not 5 separate passes,
+    # so total patient trials are unchanged: Grip + Fingers + Wrist = 3
+    # passes / 9 trials, same as before this). Steady Aim still uses the
+    # single shared "Finger Flexion" pass (SENSOR_CFG["Finger Flexion"]),
+    # unaffected by this list -- it isn't in MULTI_SENSOR_CALIBRATION at
+    # all (single-sensor game).
+    "Garden Wonders": ["Grip Strength", "Thumb Flexion", "Index Flexion",
+                       "Middle Flexion", "Ring Flexion", "Pinky Flexion",
+                       "Wrist Rotation"],
     "Purrfect Feast":      ["Grip Strength", "Wrist Rotation"],
     # Whack-a-Mole's and Tile Rush' 5 fingers each calibrate independently,
     # one pass each (see scenes/calibration_window.py's _FINGER_FLEX_KEYS) --
-    # NOT the single shared "Finger Flexion" pass Garden Wonders/Steady Aim
-    # still use, so neither of those games' calibration is affected. Piano
+    # NOT the single shared "Finger Flexion" pass Steady Aim still uses, so
+    # neither of those games' calibration is affected. Piano
     # Tiles' own gameplay mapping of which calibrated finger governs which
     # on-screen lane is still exactly lanes 0-4 = Thumb..Pinky in this same
     # order (see games/piano_tiles.py's FINGER_NAMES-driven on_enter()) --
@@ -1078,6 +1089,7 @@ class TherapistDashboardScene:
         # ── Font dictionary (all fonts scaled by _fs) ──
         _fd = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                            "assets", "font")
+        self._fd = _fd   # kept for building one-off font sizes later (e.g. _sm_wrap_fit)
         def _F(name): return os.path.join(_fd, name)
         # Professional/clinical text system is Poppins throughout (uploaded
         # specifically to replace Lexend/FjallaOne in this role): SemiBold
@@ -3539,22 +3551,67 @@ class TherapistDashboardScene:
             pygame.draw.rect(surface, col, (cx - int(s * 0.7), cy - int(s * 0.7),
                                             int(s * 1.4), int(s * 1.4)), border_radius=4)
 
-    def _sm_draw_info_header(self, surface, pa, x0, y, cfg):
-        """Session In Progress's Game Session Information header -- three
-        columns (Game | Patient | Difficulty) separated by thin vertical
-        dividers, replacing the old plain game-name title + Patient/
-        Difficulty rows with the single structured header. Returns the y
-        just below it, for whatever the caller draws next (the Score row)."""
-        F = self.fnt
-        W, H = self.WIDTH, self.HEIGHT
+    # font-dict key -> source file, for the keys _sm_draw_info_header needs
+    # to rebuild at OTHER sizes (self.fnt[...] only keeps one fixed size).
+    _SM_FONT_FILES = {
+        "panel_title": "Poppins-SemiBold.ttf",
+        "body_b":      "Poppins-SemiBold.ttf",
+        "eyebrow":     "Poppins-Medium.ttf",
+        "small":       "Poppins-Regular.ttf",
+    }
 
-        def _fit(txt, fnt, avail):
-            txt = str(txt)
-            if fnt.size(txt)[0] <= avail:
-                return txt
-            while txt and fnt.size(txt + "…")[0] > avail:
-                txt = txt[:-1]
-            return (txt + "…") if txt else "…"
+    def _sm_font(self, font_key, size):
+        """Cached Font at an arbitrary `size`, built from the same file
+        self.fnt[font_key] uses."""
+        if not hasattr(self, "_fit_font_cache"):
+            self._fit_font_cache = {}
+        path = os.path.join(self._fd, self._SM_FONT_FILES[font_key])
+        key = (path, size)
+        fnt = self._fit_font_cache.get(key)
+        if fnt is None:
+            fnt = pygame.font.Font(path, size)
+            self._fit_font_cache[key] = fnt
+        return fnt
+
+    def _sm_wrap_shrink(self, text, font_key, base_size, max_w, max_lines, min_size):
+        """Wrap `text` to fit max_w; only shrinks the font (down to
+        min_size) if it still needs more than max_lines, OR any single
+        wrapped line is still wider than max_w, at the current size.
+        That second check matters on its own: _wrap() only breaks on word
+        boundaries, so a single unbreakable "word" with no spaces (e.g. a
+        hyphenated game name like "Whack-a-Mole") can come back as one
+        line that is still too wide -- max_lines alone would never catch
+        that, since it can't ever wrap below 1 line no matter the size.
+        Never truncates/ellipsizes -- this controls how BIG the text is
+        allowed to be, not how much of it is shown. Returns (lines, font)."""
+        size = base_size
+        while True:
+            fnt = self._sm_font(font_key, size)
+            lines = self._wrap(text, fnt, max_w)
+            widest = max((fnt.size(ln)[0] for ln in lines), default=0)
+            if (len(lines) <= max_lines and widest <= max_w) or size <= min_size:
+                return lines, fnt
+            size -= 2
+
+    def _sm_fit_one_line(self, text, font_key, max_w, min_size=10):
+        """Shrink-only (never wraps) single-line fit, for short fields like
+        the Patient ID that should just get smaller, not multi-line."""
+        size = self.fnt[font_key].get_height()
+        while True:
+            fnt = self._sm_font(font_key, size)
+            if fnt.size(str(text))[0] <= max_w or size <= min_size:
+                return fnt
+            size -= 1
+
+    def _sm_draw_info_header(self, surface, pa, x0, y, right_edge, cfg):
+        """Session In Progress's Game Session Information header -- two
+        columns (Game | Patient), the Difficulty badge having moved into the
+        right-side control strip (see _sm_draw_right_strip). Game name and
+        patient name both wrap (up to 3/2 lines) and shrink-to-fit rather
+        than truncate with an ellipsis -- this is the one place in the app
+        a patient's real name or a game's real title must never be cut off.
+        Returns the y just below it, for whatever the caller draws next."""
+        F = self.fnt
 
         game_name = cfg.get("selected_game") or "Session"
         category  = GAME_CATEGORY.get(game_name, "")
@@ -3563,67 +3620,57 @@ class TherapistDashboardScene:
         sel = self.selected_patient or {}
         patient_name = cfg.get("patient_name") or sel.get("full_name") or "-"
         patient_id   = sel.get("patient_id_str") or "-"
-        difficulty   = cfg.get("difficulty") or "-"
 
-        header_h = max(int(118 * H / 1080), self._tt(108))
-        pad_r    = int(44 * (W / 1920))
-        hdr_r    = pygame.Rect(x0, y, (pa.right - pad_r) - x0, header_h)
+        hdr_w = right_edge - x0
         inner_pad = self._sc(14)
-        sec_w = hdr_r.width // 3
-        s1 = pygame.Rect(hdr_r.x, hdr_r.y, sec_w, hdr_r.height)
-        s2 = pygame.Rect(s1.right, hdr_r.y, sec_w, hdr_r.height)
-        s3 = pygame.Rect(s2.right, hdr_r.y, hdr_r.right - s2.right, hdr_r.height)
+        sec_w = hdr_w // 2
+        s1 = pygame.Rect(x0, y, sec_w, 0)
+        s2 = pygame.Rect(s1.right, y, hdr_w - sec_w, 0)
 
-        f_big   = F["panel_title"]
-        f_bold  = F["body_b"]
         f_muted = F["small"]
         c_main, c_muted = (28, 42, 64), (130, 145, 168)
 
-        # ── Section 1: Game name + exercise category (left-aligned) ──
+        # ── Section 1: Game name + exercise category underneath ──
         avail1 = s1.width - inner_pad
-        name_s = f_big.render(_fit(game_name, f_big, avail1), True, c_main)
-        cat_s  = f_muted.render(_fit(category_disp, f_muted, avail1), True, c_muted) if category_disp else None
-        gap1   = self._sc(2)
-        block1_h = name_s.get_height() + (gap1 + cat_s.get_height() if cat_s else 0)
-        gy = s1.y + (s1.height - block1_h) // 2
-        surface.blit(name_s, (s1.x, gy))
-        if cat_s:
-            surface.blit(cat_s, (s1.x, gy + name_s.get_height() + gap1))
+        name_lines, name_fnt = self._sm_wrap_shrink(game_name, "panel_title", 36, avail1, 3, 20)
+        cat_lines = self._wrap(category_disp, f_muted, avail1) if category_disp else []
+        gap1 = self._sc(2)
+        line_h1 = name_fnt.get_linesize()
+        block1_h = len(name_lines) * line_h1 + (
+            (gap1 + len(cat_lines) * f_muted.get_linesize()) if cat_lines else 0)
+        gy = s1.y
+        for ln in name_lines:
+            surface.blit(name_fnt.render(ln, True, c_main), (s1.x, gy))
+            gy += line_h1
+        if cat_lines:
+            gy += gap1
+            for ln in cat_lines:
+                surface.blit(f_muted.render(ln, True, c_muted), (s1.x, gy))
+                gy += f_muted.get_linesize()
 
-        # ── Section 2: Patient label / name / ID (centered) ──
+        # ── Section 2: Patient name (no "Patient" label) + a
+        # de-emphasized, smaller ID underneath. ──
         avail2 = s2.width - inner_pad * 2
-        lbl2_s  = f_muted.render("Patient", True, c_muted)
-        pname_s = f_bold.render(_fit(patient_name, f_bold, avail2), True, c_main)
-        pid_s   = f_muted.render(_fit(patient_id, f_muted, avail2), True, c_muted)
+        pname_lines, pname_fnt = self._sm_wrap_shrink(patient_name, "body_b", 27, avail2, 2, 18)
+        pid_fnt = self._sm_fit_one_line(patient_id, "eyebrow", avail2)
+        pid_s = pid_fnt.render(str(patient_id), True, c_muted)
         gap2 = self._sc(2)
-        block2_h = lbl2_s.get_height() + gap2 + pname_s.get_height() + gap2 + pid_s.get_height()
-        py = s2.y + (s2.height - block2_h) // 2
-        for s in (lbl2_s, pname_s, pid_s):
+        line_h2 = pname_fnt.get_linesize()
+        py = s2.y
+        for ln in pname_lines:
+            s = pname_fnt.render(ln, True, c_main)
             surface.blit(s, s.get_rect(midtop=(s2.centerx, py)))
-            py += s.get_height() + gap2
+            py += line_h2
+        py += gap2
+        surface.blit(pid_s, pid_s.get_rect(midtop=(s2.centerx, py)))
+        py += pid_s.get_height()
 
-        # ── Section 3: Difficulty label + rounded badge (centered) ──
-        lbl3_s = f_muted.render("Difficulty", True, c_muted)
-        badge_txt = f_bold.render(_fit(difficulty, f_bold, s3.width - inner_pad * 2), True, (30, 110, 190))
-        badge_pad_x, badge_pad_y = self._sc(16), self._sc(6)
-        badge_r = pygame.Rect(0, 0, badge_txt.get_width() + badge_pad_x * 2,
-                              badge_txt.get_height() + badge_pad_y * 2)
-        gap3 = self._sc(6)
-        block3_h = lbl3_s.get_height() + gap3 + badge_r.height
-        dy = s3.y + (s3.height - block3_h) // 2
-        surface.blit(lbl3_s, lbl3_s.get_rect(midtop=(s3.centerx, dy)))
-        badge_r.midtop = (s3.centerx, dy + lbl3_s.get_height() + gap3)
-        pygame.draw.rect(surface, (224, 238, 252), badge_r, border_radius=badge_r.height // 2)
-        pygame.draw.rect(surface, (180, 212, 238), badge_r, 1, border_radius=badge_r.height // 2)
-        surface.blit(badge_txt, badge_txt.get_rect(center=badge_r.center))
-
-        # ── thin vertical dividers between the three sections ──
+        content_h = max(block1_h, py - s2.y)
         div_col = (212, 222, 236)
-        div_top, div_bot = hdr_r.y + self._sc(8), hdr_r.bottom - self._sc(8)
-        for dx in (s1.right, s2.right):
-            pygame.draw.line(surface, div_col, (dx, div_top), (dx, div_bot), 1)
+        pygame.draw.line(surface, div_col, (s1.right, y + self._sc(4)),
+                         (s1.right, y + content_h - self._sc(4)), 1)
 
-        return hdr_r.bottom + self._sc(14)
+        return y + content_h + self._sc(10)
 
     @staticmethod
     def _sm_fmt_mmss(seconds):
@@ -3633,7 +3680,7 @@ class TherapistDashboardScene:
             total = 0
         return f"{total // 60:02d}:{total % 60:02d}"
 
-    def _sm_draw_session_cards(self, surface, pa, x0, y, row_h, elapsed_sec, score_val,
+    def _sm_draw_session_cards(self, surface, pa, x0, y, right_edge, row_h, elapsed_sec, score_val,
                                 reps_val=None, goal_val=None, session_mode="target",
                                 remaining_sec=None):
         """Time (blue) / Progress-or-Reps (purple) / Score (green) cards,
@@ -3644,10 +3691,11 @@ class TherapistDashboardScene:
 
         Target Mode: "Elapsed Time" (counts up) + "Progress" (reps/goal).
         Timed Mode:  "Time Remaining" (counts down) + "Reps" (plain count,
-        no goal exists in this mode). Returns the y just below the row."""
-        W, H = self.WIDTH, self.HEIGHT
-        pad_r = int(44 * (W / 1920))
-        row_w = (pa.right - pad_r) - x0
+        no goal exists in this mode). `right_edge` stops short of the
+        right-side control strip (see _sm_draw_right_strip) -- narrower
+        than the old full-width row, which is why row_h is taller now to
+        compensate. Returns the y just below the row."""
+        row_w = right_edge - x0
         gap   = self._sc(14)
         is_timed = (session_mode == "timed")
         show_progress = is_timed or goal_val not in (None, "", 0)
@@ -3740,7 +3788,7 @@ class TherapistDashboardScene:
 
         return y + row_h + self._sc(10)
 
-    def _sm_draw_sensor_monitor(self, surface, pa, x0, y, box_h, sensor_spec, sensors_tel,
+    def _sm_draw_sensor_monitor(self, surface, pa, x0, y, right_edge, box_h, sensor_spec, sensors_tel,
                                  active_label=None):
         """Adaptive Raw Sensor Input / Calibrated Game Input container --
         shows exactly the sensor(s) GAME_SENSOR_SPEC says the active game
@@ -3750,10 +3798,14 @@ class TherapistDashboardScene:
         game's OWN existing _normalize*/_normalize_tilt method) -- no second
         calibration calculation is performed here, except the Pressed/Idle
         read for finger-flexion games, which reuses the SAME FLEX_THRESH
-        constant the sensor pipeline itself fires lane presses on."""
-        W, H = self.WIDTH, self.HEIGHT
-        pad_r = int(44 * (W / 1920))
-        box_w = (pa.right - pad_r) - x0
+        constant the sensor pipeline itself fires lane presses on.
+
+        Each row is a small sensor-name label with the actual reading
+        rendered much larger right underneath it (not sharing one line),
+        so the number the therapist is actually watching is the dominant
+        thing in the box, not the label. `right_edge` stops short of the
+        right-side control strip (see _sm_draw_right_strip)."""
+        box_w = right_edge - x0
         box_r = pygame.Rect(x0, y, box_w, box_h)
         pygame.draw.rect(surface, (250, 251, 253), box_r, border_radius=14)
         pygame.draw.rect(surface, (222, 230, 242), box_r, 1, border_radius=14)
@@ -3775,8 +3827,10 @@ class TherapistDashboardScene:
         # space), so this only ever needs to SHRINK -- on the tightest
         # touch-panel case (3 sensors) -- never grow past natural size.
         f_hdr = self.fnt["small"]
-        f_row = self.fnt["label"]
-        gap_row = self._sc(4)
+        f_lbl = self.fnt["small"]
+        f_val = self.fnt["panel_title"]   # much larger -- the actual reading
+        gap_row = self._sc(10)
+        gap_lv  = self._sc(1)
         hdr_l = f_hdr.render("Raw Sensor Input", True, (46, 110, 180))
         hdr_r = f_hdr.render("Calibrated Game Input", True, (46, 110, 180))
         rows = []
@@ -3793,13 +3847,16 @@ class TherapistDashboardScene:
             is_active = active_label is not None and label == active_label
             row_col = (30, 150, 80) if is_active else (40, 55, 75)
             prefix  = "> " if is_active else ""
-            rows.append((f_row.render(f"{prefix}{label}: {raw_txt}", True, row_col),
-                        f_row.render(f"{prefix}{label}: {cal_txt}", True, row_col)))
+            lbl_s = f_lbl.render(f"{prefix}{label}", True, (90, 105, 128))
+            raw_s = f_val.render(raw_txt, True, row_col)
+            cal_s = f_val.render(cal_txt, True, row_col)
+            rows.append((lbl_s, raw_s, cal_s))
 
         pad_v = self._sc(12)
         hdr_gap = self._sc(6)
+        row_h_of = lambda row: row[0].get_height() + gap_lv + row[1].get_height()
         natural_h = (hdr_l.get_height() + hdr_gap
-                    + sum(r[0].get_height() + gap_row for r in rows))
+                    + sum(row_h_of(r) + gap_row for r in rows))
         avail_h = max(1, box_h - pad_v * 2)
         # Shrink-only: the box is already sized to fit this content, so
         # vscale is 1.0 in the normal case and only drops below 1 on the
@@ -3810,8 +3867,8 @@ class TherapistDashboardScene:
                 return pygame.transform.smoothscale(
                     s, (max(1, int(s.get_width()*vscale)), max(1, int(s.get_height()*vscale))))
             hdr_l, hdr_r = _shr(hdr_l), _shr(hdr_r)
-            rows = [(_shr(rs), _shr(cs)) for rs, cs in rows]
-            hdr_gap, gap_row = int(hdr_gap*vscale), int(gap_row*vscale)
+            rows = [(_shr(lb), _shr(rs), _shr(cs)) for lb, rs, cs in rows]
+            hdr_gap, gap_row, gap_lv = int(hdr_gap*vscale), int(gap_row*vscale), int(gap_lv*vscale)
 
         def _fit_w(s):
             if s.get_width() > max_w and max_w > 0:
@@ -3820,15 +3877,18 @@ class TherapistDashboardScene:
                     s, (max(1, int(s.get_width()*sc_)), max(1, int(s.get_height()*sc_))))
             return s
 
-        content_h = hdr_l.get_height() + hdr_gap + sum(r[0].get_height() + gap_row for r in rows)
+        content_h = hdr_l.get_height() + hdr_gap + sum(row_h_of(r) + gap_row for r in rows)
         ry = box_r.y + max(pad_v, (box_h - content_h) // 2)
         surface.blit(_fit_w(hdr_l), (left_x, ry))
         surface.blit(_fit_w(hdr_r), (right_x, ry))
         ry += hdr_l.get_height() + hdr_gap
-        for rs, cs in rows:
-            surface.blit(_fit_w(rs), (left_x, ry))
-            surface.blit(_fit_w(cs), (right_x, ry))
-            ry += rs.get_height() + gap_row
+        for lbl_s, raw_s, cal_s in rows:
+            surface.blit(_fit_w(lbl_s), (left_x, ry))
+            surface.blit(_fit_w(lbl_s), (right_x, ry))
+            vy = ry + lbl_s.get_height() + gap_lv
+            surface.blit(_fit_w(raw_s), (left_x, vy))
+            surface.blit(_fit_w(cal_s), (right_x, vy))
+            ry += row_h_of((lbl_s, raw_s, cal_s)) + gap_row
 
     @staticmethod
     def _sm_fmt_sensor(raw, cal, fmt):
@@ -3862,48 +3922,96 @@ class TherapistDashboardScene:
             return raw_txt, cal_txt
         return pct(raw), pct(cal)
 
-    def _sm_draw_alert_badge(self, surface, pa, status):
-        """Patient Condition Alert -- a prominent, color-coded flag on the
-        Session in Progress card's own top border, shown only while a game
-        is actually RUNNING (see _sm_update_alert -- the alert clock itself
-        is frozen otherwise). This is an activity/engagement cue for the
-        therapist, NOT a diagnosis -- built entirely from the same score/
-        reps/calibrated-sensor telemetry the rest of this screen already
-        shows, never a second calibration system.
+    def _sm_draw_right_strip(self, surface, pa, cfg, status):
+        """Right-side vertical strip: the Difficulty badge at the top (moved
+        out of the info header -- no "Difficulty" text label any more, just
+        the badge), then Start/Stop/Volume stacked vertically right below
+        it, in their existing order. Same click rects/keys as before
+        (self._sm_btn_rects["primary"/"stop"/"volume"]) so _sm_handle_click
+        needs no changes -- only the layout moved from a horizontal row at
+        the bottom-center to this vertical column on the right. Returns the
+        x the main content area must stop before."""
+        W, H = self.WIDTH, self.HEIGHT
+        pad_r = int(44 * (W / 1920))
 
-        Previously a small all-caps tag tucked at the card's top-LEFT
-        corner (same scale/placement as the TEST MODE flag) -- easy to miss
-        at a glance. Now centred on the card's own top edge (the first
-        thing the eye lands on, not a corner detail), using the bold body
-        font instead of the tiny eyebrow one, with generous padding and a
-        white outline so it reads clearly against any of its three fill
-        colors."""
-        if status != _rc_cmd.RUNNING:
-            return
-        col, label = {
-            "green":  ((30, 150, 80),  "Normal Input"),
-            "yellow": ((220, 145, 30), "Low Input"),
-            "red":    ((205, 55, 50),  "No Input Detected"),
-        }.get(self._alert_level, ((30, 150, 80), "Normal Input"))
-        lbl_s = self.fnt["body_b"].render(label.upper(), True, (255, 255, 255))
-        dot_r = max(7, lbl_s.get_height() // 2)
-        pad_in = self._sc(18)
-        bw = lbl_s.get_width() + dot_r * 2 + pad_in * 2 + self._sc(10)
-        bh = lbl_s.get_height() + self._sc(16)
-        tb_r = pygame.Rect(0, 0, bw, bh)
-        tb_r.midtop = (pa.centerx, pa.y)
-        border_w = max(2, self._sc(2))
-        pygame.draw.rect(surface, col, tb_r, border_radius=self._sc(8))
-        pygame.draw.rect(surface, (255, 255, 255), tb_r, border_w, border_radius=self._sc(8))
-        dot_cx = tb_r.x + pad_in + dot_r
-        pygame.draw.circle(surface, (255, 255, 255), (dot_cx, tb_r.centery), dot_r)
-        surface.blit(lbl_s, (dot_cx + dot_r + self._sc(10), tb_r.centery - lbl_s.get_height() // 2))
+        difficulty = cfg.get("difficulty") or "-"
+        f_bold = self.fnt["body_b"]
+        badge_txt = f_bold.render(str(difficulty), True, (30, 110, 190))
+        badge_pad_x, badge_pad_y = self._sc(14), self._sc(6)
+        badge_w = badge_txt.get_width() + badge_pad_x * 2
+        badge_h = badge_txt.get_height() + badge_pad_y * 2
+
+        # Buttons are slightly smaller than before (horizontal row no
+        # longer needs to share the bottom with anything else, but a
+        # vertical stack of 3 on an 800x480 panel still needs every pixel).
+        bs = max(int(92 * (H / 1080)), self._tt(78))
+        strip_w = max(badge_w, bs)
+        strip_x = pa.right - pad_r - strip_w
+
+        badge_r = pygame.Rect(0, 0, badge_w, badge_h)
+        badge_r.midtop = (strip_x + strip_w // 2, pa.y + pad_r)
+        pygame.draw.rect(surface, (224, 238, 252), badge_r, border_radius=badge_r.height // 2)
+        pygame.draw.rect(surface, (180, 212, 238), badge_r, 1, border_radius=badge_r.height // 2)
+        surface.blit(badge_txt, badge_txt.get_rect(center=badge_r.center))
+
+        btn_gap = self._sc(16)
+        by = badge_r.bottom + btn_gap * 2   # "directly below the difficulty information"
+
+        p_icon, _p_label, p_cmd = self._sm_primary(status)
+        # The initial START is held for a few seconds after "Start Session" so the
+        # BLE controller can move from this process to the patient process before
+        # the game runs. RESUME / RESTART / PAUSE are never locked.
+        lock_ms_left = self._sm_start_lock_ms - (pygame.time.get_ticks() - self._sm_started_ms)
+        primary_locked = (
+            p_cmd == _rc_cmd.START_GAME
+            and status in (_rc_cmd.READY, _rc_cmd.IDLE, "connecting")
+            and lock_ms_left > 0
+        )
+        specs = [
+            ("primary", p_icon,   not primary_locked),
+            ("stop",    "stop",   True),
+            ("volume",  "volume", True),
+        ]
+        self._sm_btn_rects = {}
+        bx = strip_x + (strip_w - bs) // 2
+        for key, icon, enabled in specs:
+            r = pygame.Rect(bx, by, bs, bs)
+            self._sm_btn_rects[key] = (r, bool(enabled))
+            hovered = self._sm_hover == key and enabled
+            asset = self._SM_BTN_ASSETS.get(icon)
+            img = _img(asset, bs) if asset else None
+            if img is not None:
+                if not enabled:
+                    img = img.copy()
+                    img.set_alpha(120)
+                surface.blit(img, r.topleft)
+            else:
+                # volume has no asset -- a circular badge + the vector glyph,
+                # kept round to match the two image buttons beside it
+                if hovered:
+                    fill, ic = (223, 235, 249), (30, 48, 78)
+                else:
+                    fill, ic = (236, 242, 250), (36, 54, 86)
+                pygame.draw.circle(surface, fill, r.center, bs // 2)
+                pygame.draw.circle(surface, (95, 145, 212), r.center, bs // 2, 2)
+                self._sm_icon(surface, icon, r.centerx, r.centery, int(bs * 0.28), ic)
+            if key == "primary" and primary_locked:
+                # BLE handoff countdown -- a numeric overlay, not a word
+                # caption, so it stays even with the labels removed.
+                lock_s = str(lock_ms_left // 1000 + 1)
+                dim = pygame.Surface((bs, bs), pygame.SRCALPHA)
+                pygame.draw.circle(dim, (20, 26, 38, 150), (bs // 2, bs // 2), bs // 2)
+                surface.blit(dim, r.topleft)
+                ls = self.fnt["panel_title"].render(lock_s, True, (255, 255, 255))
+                surface.blit(ls, ls.get_rect(center=r.center))
+            by += bs + btn_gap
+
+        return strip_x - self._sc(20)
 
     def _sm_draw(self, surface, pa):
         """Panel-7 drawer: (surface, panel-area rect). Also draws the separate
         emergency STOP button at the lower-right of the whole interface."""
-        F = self.fnt
-        W, H = self.WIDTH, self.HEIGHT
+        W = self.WIDTH
         st  = self._sm_state or {}
         status = st.get("status", "connecting")
         tel = st.get("telemetry") or {}
@@ -3936,9 +4044,9 @@ class TherapistDashboardScene:
             pygame.draw.rect(surface, (205, 55, 50), tb_r, border_radius=self._sc(5))
             surface.blit(tb_s, tb_s.get_rect(center=tb_r.center))
 
-        self._sm_draw_alert_badge(surface, pa, status)
+        right_edge = self._sm_draw_right_strip(surface, pa, cfg, status)
 
-        y = self._sm_draw_info_header(surface, pa, x0, y, cfg)
+        y = self._sm_draw_info_header(surface, pa, x0, y, right_edge, cfg)
 
         # Elapsed Time / Score cards, then the adaptive Raw/Calibrated sensor
         # monitor -- both come from the SAME telemetry the old single "Score"
@@ -3963,12 +4071,11 @@ class TherapistDashboardScene:
         if remaining_val in (None, ""):
             remaining_val = (self._sm_result or {}).get("configured_duration_seconds")
 
-        # How much vertical room is actually left before the control row, so
-        # the cards + sensor monitor always size themselves to fit -- critical
-        # on the 800x480 touch panel where this screen is tightest.
-        bs  = max(int(108 * (H / 1080)), self._tt(104))
-        brow_y = pa.y + pa.height - bs - int(64 * (H / 1080))
-        avail_bottom_h = max(self._sc(60), brow_y - y - self._sc(10))
+        # How much vertical room is left for the cards + sensor monitor --
+        # the control row moved to the right-side strip, so (unlike before)
+        # nothing at the bottom of this main/left area competes for space;
+        # it can use everything down to the panel's own bottom margin.
+        avail_bottom_h = max(self._sc(60), (pa.y + pa.height - pad) - y - self._sc(10))
 
         game_name   = cfg.get("selected_game") or ""
         sensor_spec = GAME_SENSOR_SPEC.get(game_name, [])
@@ -3978,18 +4085,20 @@ class TherapistDashboardScene:
         # content (icon/text at natural size + fixed padding), never
         # stretched to consume whatever vertical room happens to be left --
         # that's what previously produced a mostly-empty container on a
-        # roomy screen. Leftover space (if any) is left as plain margin
-        # above the control row instead of being poured into either box.
+        # roomy screen. Leftover space (if any) is left as plain margin.
+        # Narrower now (bounded by right_edge, not the full panel width),
+        # so each is given more height to compensate -- a taller value font
+        # in the sensor box especially needs the room.
         gap_mid = self._sc(10)
         lbl_h, val_h, row_fh = (self.fnt["small"].get_height(),
                                 self.fnt["panel_title"].get_height(),
-                                self.fnt["label"].get_height())
+                                self.fnt["panel_title"].get_height())
         cards_content_h = lbl_h + self._sc(2) + val_h
-        cards_h = max(self._sc(64), min(self._sc(104), cards_content_h + self._sc(18)))
+        cards_h = max(self._sc(72), min(self._sc(120), cards_content_h + self._sc(22)))
 
         if sensor_spec:
             n_rows = len(sensor_spec)
-            sensor_content_h = lbl_h + self._sc(6) + n_rows * (row_fh + self._sc(4))
+            sensor_content_h = lbl_h + self._sc(6) + n_rows * (lbl_h + self._sc(1) + row_fh + self._sc(10))
             sensor_h = sensor_content_h + self._sc(24)
         else:
             sensor_h = 0
@@ -3997,78 +4106,20 @@ class TherapistDashboardScene:
         total_needed = cards_h + (gap_mid + sensor_h if sensor_spec else 0)
         if total_needed > avail_bottom_h:
             # Tightest touch-panel case (e.g. a 3-sensor game on 800x480):
-            # shrink both proportionally rather than overlapping the
-            # control row; each box's own renderer shrinks its text to fit
-            # whatever height it is actually given.
+            # shrink both proportionally; each box's own renderer shrinks
+            # its text to fit whatever height it is actually given.
             shrink = max(0.3, avail_bottom_h / max(1, total_needed))
-            cards_h = max(self._sc(40), int(cards_h * shrink))
+            cards_h = max(self._sc(48), int(cards_h * shrink))
             if sensor_spec:
-                sensor_h = max(self._sc(28), avail_bottom_h - cards_h - gap_mid)
+                sensor_h = max(self._sc(32), avail_bottom_h - cards_h - gap_mid)
             else:
                 cards_h = avail_bottom_h
 
-        y = self._sm_draw_session_cards(surface, pa, x0, y, cards_h, elapsed_val, score_val,
+        y = self._sm_draw_session_cards(surface, pa, x0, y, right_edge, cards_h, elapsed_val, score_val,
                                          reps_val, goal_val, session_mode, remaining_val)
         if sensor_spec:
-            self._sm_draw_sensor_monitor(surface, pa, x0, y, sensor_h, sensor_spec, sensors_tel,
+            self._sm_draw_sensor_monitor(surface, pa, x0, y, right_edge, sensor_h, sensor_spec, sensors_tel,
                                           active_label=tel.get("required_finger"))
-
-        # ── control row: [ primary(START/PAUSE/RESUME/RESTART) ] [ STOP ] [ VOLUME ] ──
-        # Icon-only now (word captions removed); STOP used to be a separate
-        # wide red button anchored to the lower-right corner of the whole
-        # interface -- it now lives in this same row, right after primary.
-        # (EXIT removed -- use the standard dashboard Back button in the header)
-        gap = int(34 * (W / 1920))
-        p_icon, _p_label, _p_cmd = self._sm_primary(status)
-        # The initial START is held for a few seconds after "Start Session" so the
-        # BLE controller can move from this process to the patient process before
-        # the game runs. RESUME / RESTART / PAUSE are never locked.
-        lock_ms_left = self._sm_start_lock_ms - (pygame.time.get_ticks() - self._sm_started_ms)
-        primary_locked = (
-            _p_cmd == _rc_cmd.START_GAME
-            and status in (_rc_cmd.READY, _rc_cmd.IDLE, "connecting")
-            and lock_ms_left > 0
-        )
-        specs = [
-            ("primary", p_icon,   not primary_locked),
-            ("stop",    "stop",   True),
-            ("volume",  "volume", True),
-        ]
-        total = bs * len(specs) + gap * (len(specs) - 1)
-        bx = pa.x + (pa.width - total) // 2
-        brow_y = pa.y + pa.height - bs - int(64 * (H / 1080))
-        self._sm_btn_rects = {}
-        for key, icon, enabled in specs:
-            r = pygame.Rect(bx, brow_y, bs, bs)
-            self._sm_btn_rects[key] = (r, bool(enabled))
-            hovered = self._sm_hover == key and enabled
-            asset = self._SM_BTN_ASSETS.get(icon)
-            img = _img(asset, bs) if asset else None
-            if img is not None:
-                if not enabled:
-                    img = img.copy()
-                    img.set_alpha(120)
-                surface.blit(img, r.topleft)
-            else:
-                # volume has no asset -- a circular badge + the vector glyph,
-                # kept round to match the two image buttons beside it
-                if hovered:
-                    fill, ic = (223, 235, 249), (30, 48, 78)
-                else:
-                    fill, ic = (236, 242, 250), (36, 54, 86)
-                pygame.draw.circle(surface, fill, r.center, bs // 2)
-                pygame.draw.circle(surface, (95, 145, 212), r.center, bs // 2, 2)
-                self._sm_icon(surface, icon, r.centerx, r.centery, int(bs * 0.28), ic)
-            if key == "primary" and primary_locked:
-                # BLE handoff countdown -- a numeric overlay, not a word
-                # caption, so it stays even with the labels removed.
-                lock_s = str(lock_ms_left // 1000 + 1)
-                dim = pygame.Surface((bs, bs), pygame.SRCALPHA)
-                pygame.draw.circle(dim, (20, 26, 38, 150), (bs // 2, bs // 2), bs // 2)
-                surface.blit(dim, r.topleft)
-                ls = F["panel_title"].render(lock_s, True, (255, 255, 255))
-                surface.blit(ls, ls.get_rect(center=r.center))
-            bx += bs + gap
 
         # ── "Game Stopped" screen (both monitors show this) ──
         if self._sm_stopped_notice:
@@ -5497,6 +5548,84 @@ class TherapistDashboardScene:
         ty = pill_r.centery - block_h // 2
         surface.blit(t_surf, (cx, ty))
         surface.blit(d_surf, (cx, ty + t_surf.get_height() + line_gap))
+
+        # Patient Condition Alert -- immediately right of the sidebar, left
+        # of the calendar pill. Only space left in this row; see
+        # _draw_alert_indicator for the (unchanged) detection logic it
+        # reflects.
+        self._draw_alert_indicator(surface, self.sidebar_w + self._sc(16),
+                                    pill_r.left - gap, top + row_h // 2, row_h)
+
+    def _draw_alert_indicator(self, surface, left_bound, right_bound, cy, row_h):
+        """Patient Condition Alert -- a circular, smoothly pulsing indicator
+        with its status text beside it, shown only while a game is actually
+        RUNNING (the alert clock itself is frozen otherwise -- see
+        _sm_update_alert). This is an activity/engagement cue for the
+        therapist, NOT a diagnosis -- built entirely from the same score/
+        reps/calibrated-sensor telemetry Session in Progress already shows,
+        never a second detection system. Only relocated (sidebar-to-
+        calendar strip, was a pill on the session card) and restyled
+        (pulsing circle + text, was a static dot+label pill) -- the
+        underlying _alert_level/_sm_update_alert logic is untouched."""
+        status = (self._sm_state or {}).get("status", "")
+        if status != _rc_cmd.RUNNING:
+            return
+        col, label = {
+            "green":  ((35, 165, 85),  "Normal Activity"),
+            "yellow": ((205, 140, 15), "Activity Change Detected"),
+            "red":    ((200, 50, 45),  "No Activity Detected"),
+        }.get(self._alert_level, ((35, 165, 85), "Normal Activity"))
+
+        # Text color now matches the indicator's own color exactly (was a
+        # fixed dark gray before) -- colors chosen slightly deeper/more
+        # saturated than the circle's own fill so the text stays readable
+        # as text (not just a color swatch) against a light background.
+        #
+        # Significantly larger than before (was row_h*0.17) -- still kept
+        # within the shared bar height so it can't overlap the sidebar,
+        # calendar pill, or spill above/below this row. The circle's own
+        # size never shrinks (consistent-sizing requirement) -- only the
+        # TEXT narrows, and only as a last resort (see below).
+        dot_r = max(11, int(row_h * 0.34))
+        gap_lbl = self._sc(8)
+        avail_w = right_bound - left_bound
+        text_avail_w = avail_w - dot_r * 2 - gap_lbl
+
+        # The description must NEVER disappear, on any screen width or
+        # patient-name length -- it previously fell back to dropping the
+        # text entirely once "Activity Change Detected" (the longest of the
+        # 3) didn't fit the room left after the circle. Instead, shrink
+        # only the label font, in 1px steps, down to a readable floor --
+        # same pattern CalibrationWindow._fit_text already uses -- so it
+        # always fits whatever room is actually available. At every
+        # resolution this app targets (800x480 and up) this only ever
+        # needs a few px of shrink, if any; it is a guarantee for extreme
+        # cases, not the normal rendering size.
+        base_size = max(1, int(25 * self._fs))
+        min_size  = max(12, int(base_size * 0.6))
+        size = base_size
+        lbl_s = self.fnt["small"].render(label, True, col)
+        while lbl_s.get_width() > text_avail_w and size > min_size:
+            size -= 1
+            lbl_s = self._sm_font("small", size).render(label, True, col)
+
+        if avail_w < dot_r * 2:
+            return   # truly no room even for the circle itself -- defensive floor only,
+                      # not reachable at any resolution this app actually targets
+
+        import math
+        cx = left_bound + dot_r
+        t = pygame.time.get_ticks()
+        pulse = (math.sin(t / 260.0) + 1) / 2   # smooth 0..1 oscillation
+        glow_r = dot_r + int(dot_r * 0.9 * pulse)
+        glow_alpha = int(40 + 110 * (1.0 - pulse))
+        glow_surf = pygame.Surface((glow_r * 2 + 4, glow_r * 2 + 4), pygame.SRCALPHA)
+        pygame.draw.circle(glow_surf, (*col, glow_alpha), (glow_r + 2, glow_r + 2), glow_r)
+        surface.blit(glow_surf, (cx - glow_r - 2, cy - glow_r - 2))
+        pygame.draw.circle(surface, col, (cx, cy), dot_r)
+        pygame.draw.circle(surface, (255, 255, 255), (cx, cy), dot_r, 1)
+
+        surface.blit(lbl_s, (cx + dot_r + gap_lbl, cy - lbl_s.get_height() // 2))
 
     # ──────────────────────────────────────────────────────────────────
     #  ESP32 CONTROLLER CONNECTION MONITOR
