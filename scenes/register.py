@@ -56,6 +56,14 @@ class RegisterScene:
         self.HEIGHT = height
         self.db     = Database()
 
+        # Close (X) button -- main.py reads this each frame; when a scene
+        # provides it, main.py draws the close_button.png asset there
+        # instead of falling back to the plain red box+X it uses for scenes
+        # that don't (see main.py's _scene_close_rect handling). Same fixed
+        # top-right position/size main.py's own default uses, so this just
+        # swaps the icon, not the layout.
+        self._close_btn_rect = pygame.Rect(width - 56, 0, 56, 46)
+
         # ── Touch scaling (mirrors scenes/login.py / therapist_dashboard.py) ──
         # A plain H/1080 reference gives ~8-15px text and ~16px fields on the
         # 800x480 panel. _fs uses a H/512 reference in touch mode so text and
