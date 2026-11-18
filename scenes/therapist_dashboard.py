@@ -3833,7 +3833,7 @@ class TherapistDashboardScene:
         max_cell_w = max(1, col_w - self._sc(6))
 
         f_hdr    = self.fnt["small"]       # sensor name, column header
-        f_rowlbl = self.fnt["smallb"]      # "Raw" / "Calibrated" row labels
+        f_rowlbl = self.fnt["body_b"]      # "Raw" / "Calibrated" row labels
         f_val    = self.fnt["panel_title"] # the actual reading -- large
 
         def _fit(s, max_w=max_cell_w):
