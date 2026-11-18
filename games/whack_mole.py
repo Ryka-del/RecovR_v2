@@ -409,20 +409,24 @@ class WhackMoleGame(SessionModeMixin, FatigueMixin, BaseScreen):
         back_y  = int(H * BACK_Y_FRAC)
         self._hole_pos    = []
         self._hole_finger = []
-        # Which finger occupies which hole mirrors with self.hand_flipped --
-        # HOLE_CONFIG's own x_frac/row positions (screen layout) never move,
-        # only which finger name is assigned to each one. This is NOT
-        # cosmetic: the physical MUX channel behind each finger ALSO flips
-        # with affected hand (see firmware/recovr_controller/
-        # recovr_controller.ino's GLOVE_RIGHT_HAND), so without this the
-        # channel wired to the LEFTMOST hole would change depending on which
-        # hand is affected. Mirroring the finger assignment here keeps the
-        # channel<->screen-position mapping constant regardless of hand --
-        # e.g. MUX channel C5 always ends up driving the RIGHTMOST hole,
-        # never the leftmost, whichever hand the patient is using.
-        hole_names = [name for name, _x, _row in HOLE_CONFIG]
-        if self.hand_flipped:
-            hole_names = list(reversed(hole_names))
+        # Which finger (array index into state["finger_flex"], i.e. a FIXED
+        # physical MUX channel -- flex_thumb_raw is always C5's data,
+        # flex_pinky_raw is always C9's, see firmware/recovr_controller/
+        # recovr_controller.ino) occupies which hole is a PERMANENTLY FIXED
+        # mapping, independent of the patient's affected hand -- the
+        # leftmost hole (HOLE_CONFIG's lowest x_frac) always requires
+        # Pinky (index 4, always C9); the rightmost always requires Thumb
+        # (index 0, always C5). This used to flip with self.hand_flipped,
+        # which was wrong: the physical channel behind each hole never
+        # actually moves (there's one glove, its firmware is never
+        # reflashed per patient), so flipping which finger a hole requires
+        # made the channel driving the leftmost/rightmost hole change
+        # depending on affected hand instead of staying fixed. Which
+        # ANATOMICAL finger (Thumb vs Pinky) that represents for THIS
+        # patient is a display-only concern -- see
+        # sensors/input_handler.py's anatomical_finger_name(), used by the
+        # therapist dashboard, not here.
+        hole_names = list(reversed([name for name, _x, _row in HOLE_CONFIG]))
         for (_, x_frac, row), name in zip(HOLE_CONFIG, hole_names):
             x = int(W * x_frac)
             y = front_y if row == "front" else back_y

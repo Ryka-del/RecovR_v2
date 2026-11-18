@@ -45,7 +45,7 @@ from scenes.calibration_window import (CalibrationWindow, GAME_PARAM_SCHEMA, SEN
                                        BASELINE_DURATION, _FINGER_FLEX_KEYS)
 from audio import (play_confirm_alert, play_start_session, play_click,
                     start_lobby_music, stop_lobby_music)
-from sensors.input_handler import input_handler
+from sensors.input_handler import input_handler, anatomical_finger_name
 try:
     from sensors.ble_receiver import ble_receiver as _ble_receiver
 except Exception:
@@ -3789,106 +3789,130 @@ class TherapistDashboardScene:
         return y + row_h + self._sc(10)
 
     def _sm_draw_sensor_monitor(self, surface, pa, x0, y, right_edge, box_h, sensor_spec, sensors_tel,
-                                 active_label=None):
-        """Adaptive Raw Sensor Input / Calibrated Game Input container --
-        shows exactly the sensor(s) GAME_SENSOR_SPEC says the active game
-        uses (1 for single-skill, 2+ for dual/triple-skill), paired row for
-        row between the two columns. Values come straight from telemetry's
-        "sensors" dict (posted by the patient-side adapter, computed by each
-        game's OWN existing _normalize*/_normalize_tilt method) -- no second
-        calibration calculation is performed here, except the Pressed/Idle
-        read for finger-flexion games, which reuses the SAME FLEX_THRESH
-        constant the sensor pipeline itself fires lane presses on.
+                                 active_label=None, affected_hand=""):
+        """Horizontal live-sensor TABLE -- one COLUMN per sensor (e.g.
+        Thumb/Index/Middle/Ring/Pinky), with a left-side row-label column
+        ("Raw" / "Calibrated") and the sensor name as that column's header,
+        so it reads like a spreadsheet:
 
-        Each row is a small sensor-name label with the actual reading
-        rendered much larger right underneath it (not sharing one line),
-        so the number the therapist is actually watching is the dominant
-        thing in the box, not the label. `right_edge` stops short of the
-        right-side control strip (see _sm_draw_right_strip)."""
+                     Thumb   Index   Middle   Ring   Pinky
+            Raw        37      42      51      28      33
+            Calibrated Idle   Idle   Pressed  Idle    Idle
+
+        Replaces the old layout (2 fixed columns for Raw/Calibrated, one
+        row per sensor) which gave a 5-finger game barely any width per
+        value and forced the reading font to shrink small on an 800x480
+        panel -- this uses the screen's own wide-but-short aspect ratio
+        instead, so the value font can stay large regardless of sensor
+        count. Values still come straight from telemetry's "sensors" dict
+        (posted by the patient-side adapter, computed by each game's OWN
+        existing _normalize*/_normalize_tilt method) -- no second
+        calibration calculation is performed here. `right_edge` stops
+        short of the right-side control strip (see _sm_draw_right_strip)."""
+        from constants import is_dark_mode
+        dark = is_dark_mode()
+        bg_col      = (30, 36, 48)    if dark else (250, 251, 253)
+        border_col  = (58, 68, 88)    if dark else (222, 230, 242)
+        div_col     = border_col
+        hdr_col     = (150, 190, 235) if dark else (46, 110, 180)
+        rowlbl_col  = (165, 176, 196) if dark else (90, 105, 128)
+        val_col     = (225, 230, 240) if dark else (40, 55, 75)
+        active_col  = (90, 210, 140)  if dark else (30, 150, 80)
+
         box_w = right_edge - x0
         box_r = pygame.Rect(x0, y, box_w, box_h)
-        pygame.draw.rect(surface, (250, 251, 253), box_r, border_radius=14)
-        pygame.draw.rect(surface, (222, 230, 242), box_r, 1, border_radius=14)
+        pygame.draw.rect(surface, bg_col, box_r, border_radius=14)
+        pygame.draw.rect(surface, border_col, box_r, 1, border_radius=14)
 
-        mid_x = box_r.centerx
-        pygame.draw.line(surface, (222, 230, 242), (mid_x, box_r.y + self._sc(6)),
-                         (mid_x, box_r.bottom - self._sc(6)), 1)
+        n = max(1, len(sensor_spec))
+        pad = self._sc(10)
+        row_lbl_w = self._sc(84)   # left column: "Raw" / "Calibrated"
+        grid_x0   = box_r.x + pad + row_lbl_w
+        grid_w    = max(1, box_r.width - pad * 2 - row_lbl_w)
+        col_w     = grid_w // n
+        max_cell_w = max(1, col_w - self._sc(6))
 
-        inner_pad = self._sc(10)
-        col_w = box_r.width // 2
-        left_x  = box_r.x + inner_pad
-        right_x = mid_x + inner_pad
-        max_w   = col_w - inner_pad - self._sc(6)
+        f_hdr    = self.fnt["small"]       # sensor name, column header
+        f_rowlbl = self.fnt["smallb"]      # "Raw" / "Calibrated" row labels
+        f_val    = self.fnt["panel_title"] # the actual reading -- large
 
-        # Render header + one row per sensor at their natural (readable) base
-        # size first, THEN see whether the whole stack fits the box this
-        # game's sensor count was given. The box itself is already sized to
-        # its content by the caller (not stretched to fill leftover screen
-        # space), so this only ever needs to SHRINK -- on the tightest
-        # touch-panel case (3 sensors) -- never grow past natural size.
-        f_hdr = self.fnt["small"]
-        f_lbl = self.fnt["small"]
-        f_val = self.fnt["panel_title"]   # much larger -- the actual reading
-        gap_row = self._sc(10)
-        gap_lv  = self._sc(1)
-        hdr_l = f_hdr.render("Raw Sensor Input", True, (46, 110, 180))
-        hdr_r = f_hdr.render("Calibrated Game Input", True, (46, 110, 180))
-        rows = []
-        for key, label, _hw, fmt in sensor_spec:
-            entry = sensors_tel.get(key)
-            raw = entry.get("raw") if entry else None
-            cal = entry.get("calibrated") if entry else None
-            raw_txt, cal_txt = self._sm_fmt_sensor(raw, cal, fmt)
-            # Whack-a-Mole: bold + accent-colored row for whichever
-            # finger the active mole currently requires, so the therapist
-            # can tell at a glance which reading matters right now among
-            # the 5 always-live channels. Every other game leaves
-            # active_label None and this is identical to before.
-            is_active = active_label is not None and label == active_label
-            row_col = (30, 150, 80) if is_active else (40, 55, 75)
-            prefix  = "> " if is_active else ""
-            lbl_s = f_lbl.render(f"{prefix}{label}", True, (90, 105, 128))
-            raw_s = f_val.render(raw_txt, True, row_col)
-            cal_s = f_val.render(cal_txt, True, row_col)
-            rows.append((lbl_s, raw_s, cal_s))
-
-        pad_v = self._sc(12)
-        hdr_gap = self._sc(6)
-        row_h_of = lambda row: row[0].get_height() + gap_lv + row[1].get_height()
-        natural_h = (hdr_l.get_height() + hdr_gap
-                    + sum(row_h_of(r) + gap_row for r in rows))
-        avail_h = max(1, box_h - pad_v * 2)
-        # Shrink-only: the box is already sized to fit this content, so
-        # vscale is 1.0 in the normal case and only drops below 1 on the
-        # tightest touch-panel / multi-sensor combinations.
-        vscale = min(1.0, avail_h / natural_h) if natural_h > 0 else 1.0
-        if vscale < 0.97:
-            def _shr(s):
-                return pygame.transform.smoothscale(
-                    s, (max(1, int(s.get_width()*vscale)), max(1, int(s.get_height()*vscale))))
-            hdr_l, hdr_r = _shr(hdr_l), _shr(hdr_r)
-            rows = [(_shr(lb), _shr(rs), _shr(cs)) for lb, rs, cs in rows]
-            hdr_gap, gap_row, gap_lv = int(hdr_gap*vscale), int(gap_row*vscale), int(gap_lv*vscale)
-
-        def _fit_w(s):
+        def _fit(s, max_w=max_cell_w):
             if s.get_width() > max_w and max_w > 0:
                 sc_ = max_w / s.get_width()
                 return pygame.transform.smoothscale(
                     s, (max(1, int(s.get_width()*sc_)), max(1, int(s.get_height()*sc_))))
             return s
 
-        content_h = hdr_l.get_height() + hdr_gap + sum(row_h_of(r) + gap_row for r in rows)
-        ry = box_r.y + max(pad_v, (box_h - content_h) // 2)
-        surface.blit(_fit_w(hdr_l), (left_x, ry))
-        surface.blit(_fit_w(hdr_r), (right_x, ry))
-        ry += hdr_l.get_height() + hdr_gap
-        for lbl_s, raw_s, cal_s in rows:
-            surface.blit(_fit_w(lbl_s), (left_x, ry))
-            surface.blit(_fit_w(lbl_s), (right_x, ry))
-            vy = ry + lbl_s.get_height() + gap_lv
-            surface.blit(_fit_w(raw_s), (left_x, vy))
-            surface.blit(_fit_w(cal_s), (right_x, vy))
-            ry += row_h_of((lbl_s, raw_s, cal_s)) + gap_row
+        # Build every cell at natural size first, then shrink the whole
+        # table vertically only if it doesn't fit the box this game's
+        # sensor spec was given -- same shrink-only philosophy as before,
+        # just applied to 3 fixed rows (header/Raw/Calibrated) instead of
+        # len(sensor_spec) rows, so height no longer grows with sensor
+        # count at all.
+        hdr_cells, raw_cells, cal_cells = [], [], []
+        for key, label, _hw, fmt in sensor_spec:
+            entry = sensors_tel.get(key)
+            raw = entry.get("raw") if entry else None
+            cal = entry.get("calibrated") if entry else None
+            raw_txt, cal_txt = self._sm_fmt_sensor(raw, cal, fmt)
+            # Whack-a-Mole: bold + accent-colored column for whichever
+            # finger the active mole currently requires, so the therapist
+            # can tell at a glance which reading matters right now among
+            # the 5 always-live channels. Every other game leaves
+            # active_label None and this is identical to before.
+            is_active = active_label is not None and label == active_label
+            cell_col = active_col if is_active else val_col
+            prefix   = "> " if is_active else ""
+            # label/active_label stay compared in the FIXED physical-channel
+            # identity (see sensors/input_handler.py's FINGER_NAMES) -- only
+            # what's actually rendered is translated to the patient's
+            # anatomical finger name; non-finger labels (Grip Strength,
+            # Wrist Movement, etc.) pass through anatomical_finger_name()
+            # unchanged since they're not in its mirror table.
+            disp_label = anatomical_finger_name(label, affected_hand)
+            hdr_cells.append(_fit(f_hdr.render(f"{prefix}{disp_label}", True, hdr_col)))
+            raw_cells.append(_fit(f_val.render(raw_txt, True, cell_col)))
+            cal_cells.append(_fit(f_val.render(cal_txt, True, cell_col)))
+
+        rowlbl_raw = f_rowlbl.render("Raw", True, rowlbl_col)
+        rowlbl_cal = f_rowlbl.render("Calibrated", True, rowlbl_col)
+        row_gap    = self._sc(6)
+        hdr_h      = max([c.get_height() for c in hdr_cells] + [f_hdr.get_height()])
+        raw_h      = max([c.get_height() for c in raw_cells] + [f_val.get_height()])
+        cal_h      = max([c.get_height() for c in cal_cells] + [f_val.get_height()])
+        pad_v      = self._sc(10)
+        natural_h  = pad_v * 2 + hdr_h + row_gap + raw_h + row_gap + cal_h
+
+        vscale = min(1.0, max(1, box_h) / natural_h) if natural_h > 0 else 1.0
+        if vscale < 0.97:
+            def _shr(s):
+                return pygame.transform.smoothscale(
+                    s, (max(1, int(s.get_width()*vscale)), max(1, int(s.get_height()*vscale))))
+            hdr_cells = [_shr(c) for c in hdr_cells]
+            raw_cells = [_shr(c) for c in raw_cells]
+            cal_cells = [_shr(c) for c in cal_cells]
+            rowlbl_raw, rowlbl_cal = _shr(rowlbl_raw), _shr(rowlbl_cal)
+            hdr_h, raw_h, cal_h = int(hdr_h*vscale), int(raw_h*vscale), int(cal_h*vscale)
+            row_gap, pad_v = int(row_gap*vscale), int(pad_v*vscale)
+
+        content_h = pad_v * 2 + hdr_h + row_gap + raw_h + row_gap + cal_h
+        top_y = box_r.y + max(pad_v, (box_h - content_h) // 2)
+
+        row_lbl_x = box_r.x + pad
+        ry = top_y + pad_v
+        surface.blit(rowlbl_raw, (row_lbl_x, ry + (raw_h - rowlbl_raw.get_height()) // 2 + hdr_h + row_gap))
+        surface.blit(rowlbl_cal, (row_lbl_x, ry + (cal_h - rowlbl_cal.get_height()) // 2
+                                   + hdr_h + row_gap + raw_h + row_gap))
+
+        for i in range(len(sensor_spec)):
+            cx = grid_x0 + i * col_w + col_w // 2
+            if i > 0:
+                div_x = grid_x0 + i * col_w
+                pygame.draw.line(surface, div_col, (div_x, top_y), (div_x, top_y + content_h), 1)
+            hc, rc, cc = hdr_cells[i], raw_cells[i], cal_cells[i]
+            surface.blit(hc, hc.get_rect(midtop=(cx, ry)))
+            surface.blit(rc, rc.get_rect(midtop=(cx, ry + hdr_h + row_gap)))
+            surface.blit(cc, cc.get_rect(midtop=(cx, ry + hdr_h + row_gap + raw_h + row_gap)))
 
     @staticmethod
     def _sm_fmt_sensor(raw, cal, fmt):
@@ -4097,8 +4121,11 @@ class TherapistDashboardScene:
         cards_h = max(self._sc(72), min(self._sc(120), cards_content_h + self._sc(22)))
 
         if sensor_spec:
-            n_rows = len(sensor_spec)
-            sensor_content_h = lbl_h + self._sc(6) + n_rows * (lbl_h + self._sc(1) + row_fh + self._sc(10))
+            # Horizontal table now (see _sm_draw_sensor_monitor): one
+            # column per sensor, 3 fixed rows (header/Raw/Calibrated) --
+            # height no longer grows with how many sensors this game uses,
+            # unlike the old row-per-sensor layout.
+            sensor_content_h = lbl_h + self._sc(6) + row_fh + self._sc(6) + row_fh
             sensor_h = sensor_content_h + self._sc(24)
         else:
             sensor_h = 0
@@ -4119,7 +4146,8 @@ class TherapistDashboardScene:
                                          reps_val, goal_val, session_mode, remaining_val)
         if sensor_spec:
             self._sm_draw_sensor_monitor(surface, pa, x0, y, right_edge, sensor_h, sensor_spec, sensors_tel,
-                                          active_label=tel.get("required_finger"))
+                                          active_label=tel.get("required_finger"),
+                                          affected_hand=(self.selected_patient or {}).get("affected_hand", ""))
 
         # ── "Game Stopped" screen (both monitors show this) ──
         if self._sm_stopped_notice:

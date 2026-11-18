@@ -96,12 +96,6 @@ FLEX_THRESHOLD = {"Easy": 0.30, "Medium": 0.70, "Hard": 0.90}  # calibrated flex
 PT_RELEASE_MARGIN = 0.65  # release threshold = press threshold * this -- same hysteresis concept as
                           # games/whack_mole.py's own RELEASE_MARGIN (must release below it to re-arm)
 HIT_WINDOW     = {"Easy": 130, "Medium": 95,  "Hard": 65}     # px, +/- around the hit line
-# Affected-Hand Adaptation anchor -- the UNMIRRORED lane order (lane 0 =
-# leftmost = Thumb ... lane 4 = rightmost = Pinky) is correct for a
-# RIGHT-hand-affected patient; see on_enter's self.hand_flipped/
-# self._finger_order, same convention as games/whack_mole.py's own
-# DEFAULT_HAND = "right".
-DEFAULT_HAND   = "right"
 SPAWN_GAP      = {"Easy": 1.0,  "Medium": 0.7,  "Hard": 0.45}  # pause after a tile resolves before the next spawns
 TILE_GOAL      = {"Easy": 50,  "Medium": 75,  "Hard": 100}    # Target Mode: points to reach
 DURATION       = {"Easy": 300, "Medium": 420, "Hard": 600}    # Timed Mode: session length in seconds (5/7/10 min)
@@ -306,22 +300,23 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self.hit_window     = HIT_WINDOW[self.difficulty]
 
         self._session_init(data, TILE_GOAL, DURATION, self.difficulty, cal_goal_key="pt_goal")
-        # Affected-Hand Adaptation -- which finger is required to hit each
-        # SCREEN lane mirrors with the patient's affected hand, same concept
-        # as games/whack_mole.py's own self.hand_flipped/_hole_finger
-        # mirroring. Lane POSITIONS themselves (screen columns, left to
-        # right) never move -- only which finger each one requires does.
-        # This matters because the physical MUX channel behind each finger
-        # ALSO flips with affected hand (see firmware/recovr_controller/
-        # recovr_controller.ino's GLOVE_RIGHT_HAND) -- mirroring here keeps
-        # the channel<->screen-position mapping constant regardless of
-        # hand (e.g. MUX channel C5 always drives the rightmost lane).
-        # _finger_order is its own inverse (a straight reversal), so the
-        # same list converts lane-position->finger AND finger->lane-
-        # position (see _try_flex_tap).
-        self.hand_flipped = bool(self.affected_hand) and self.affected_hand != DEFAULT_HAND
-        self._finger_order = (list(range(LANE_COUNT)) if not self.hand_flipped
-                              else list(reversed(range(LANE_COUNT))))
+        # Which finger (array index into state["finger_flex"], i.e. a FIXED
+        # physical MUX channel -- see sensors/input_handler.py's
+        # FINGER_NAMES docstring) is required to hit each SCREEN lane is a
+        # PERMANENTLY FIXED mapping, independent of the patient's affected
+        # hand -- the leftmost lane always requires Pinky (index 4, always
+        # channel C9's data), the rightmost always requires Thumb (index 0,
+        # always C5's). This used to flip with affected hand (hand_flipped/
+        # DEFAULT_HAND, removed), which was wrong: there is one glove,
+        # never reflashed per patient, so the physical channel behind each
+        # lane never actually moves. _finger_order is its own inverse (a
+        # straight reversal), so the same list converts lane-position->
+        # finger AND finger->lane-position (see _try_flex_tap). Which
+        # ANATOMICAL finger that represents for THIS patient is a
+        # display-only concern -- see sensors/input_handler.py's
+        # anatomical_finger_name(), used by the therapist dashboard, not
+        # here.
+        self._finger_order = list(reversed(range(LANE_COUNT)))
         # Every session gets a minimum read time on the How-To-Play screen --
         # a curious first finger bend shouldn't be able to skip past the
         # instructions before the patient has had any chance to read them

@@ -43,7 +43,53 @@ def _clamp(v, lo, hi):
 # Whack-a-Mole's 5-finger glove -- canonical finger order/names, shared
 # by input_handler, games/whack_mole.py, and the therapist monitoring panel
 # (scenes/therapist_dashboard.py) so all three never drift out of sync.
+#
+# This is a FIXED INTERNAL identity tied to physical MUX channel, NOT an
+# anatomical label -- FINGER_NAMES[0] ("Thumb") always means "channel C5's
+# data", FINGER_NAMES[4] ("Pinky") always means "channel C9's data" (see
+# firmware/recovr_controller/recovr_controller.ino; the one glove's
+# firmware is never reflashed per patient). state["finger_flex"], every
+# game's press_threshold/_hole_finger/_finger_order, and calibration's own
+# sensor_results keys all index by THIS fixed identity, regardless of which
+# hand is affected -- see anatomical_finger_name() below for the SEPARATE,
+# patient-hand-aware label a therapist should actually be shown.
 FINGER_NAMES = ["Thumb", "Index", "Middle", "Ring", "Pinky"]
+
+# The mirror of each fixed FINGER_NAMES identity -- Thumb<->Pinky,
+# Index<->Ring, Middle stays Middle -- used by anatomical_finger_name()
+# below. A right hand's anatomy is the mirror image of a left hand's at
+# each physical channel position (see games/whack_mole.py's _hole_finger
+# comment and the A.2 investigation this resolves).
+_ANATOMICAL_MIRROR = {"Thumb": "Pinky", "Index": "Ring", "Middle": "Middle",
+                       "Ring": "Index", "Pinky": "Thumb"}
+
+
+def anatomical_finger_name(finger, affected_hand):
+    """The ANATOMICAL finger name a therapist should see for a FIXED
+    finger identity (see FINGER_NAMES' own docstring above), given the
+    currently selected patient's affected_hand ("Left"/"Right"/"").
+
+    `finger` may be an int 0-4 (an index into FINGER_NAMES/
+    state["finger_flex"]) or one of the FINGER_NAMES strings directly.
+
+    FINGER_NAMES' own fixed identity already matches the LEFT-hand
+    convention 1:1 (FINGER_NAMES[0] == "Thumb" literally means "channel
+    C5", which is also what the glove's firmware itself calls that
+    channel) -- so for any affected_hand OTHER than "right"
+    (case-insensitive; covers "Left", "", None, anything else -- same
+    permissive fallback games/*.py's own DEFAULT_HAND comparisons already
+    use), this returns the fixed name unchanged. For "right", it returns
+    the anatomical mirror instead.
+
+    This function is PURELY for display -- it must never be used to
+    reorder sensor_results/state["finger_flex"]/press_threshold or to
+    decide which hole/lane a channel drives. Those stay fixed by physical
+    channel regardless of affected_hand; only what a therapist is shown
+    changes here."""
+    name = FINGER_NAMES[finger] if isinstance(finger, int) else finger
+    if str(affected_hand or "").strip().lower() != "right":
+        return name
+    return _ANATOMICAL_MIRROR.get(name, name)
 
 
 class InputHandler:

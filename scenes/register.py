@@ -134,6 +134,16 @@ class RegisterScene:
         self.sq_complete_hov   = False
         self.sq_active_slot    = None
 
+        # Touch-drag scroll state for an OPEN dropdown's own option popup
+        # (see _sq_popup_scroll_handle_event) -- separate from _sq_scroll's
+        # outer-column drag state below, since the two can be active at
+        # different times and must not interfere with each other.
+        self._sq_popup_drag_active       = False
+        self._sq_popup_drag_is_scroll    = False
+        self._sq_popup_drag_start_pos    = None
+        self._sq_popup_drag_start_scroll = 0
+        self._sq_popup_pending_tap_pos   = None
+
         # "Discard Registration?" -- shown instead of navigating away
         # immediately when Back/Login would otherwise discard entered data.
         self._discard_confirm  = False
@@ -627,6 +637,7 @@ class RegisterScene:
     def update(self, mouse_pos, dt):
         if self.reg_step == 2:
             self.sq_complete_hov = self.sq_complete_rect.collidepoint(mouse_pos)
+            self.back_hovered    = self._back_rect().collidepoint(mouse_pos)
             if self.alpha < 255:
                 self.alpha = min(255, self.alpha + 4)
             return
@@ -969,6 +980,84 @@ class RegisterScene:
         Step 2 column scroll (touch) whenever one is open."""
         return next((sf for sf in self.sq_fields if sf["q_open"]), None)
 
+    def _sq_popup_scroll_handle_event(self, event):
+        """Touch-drag scroll for an OPEN dropdown's own option popup.
+        Previously only MOUSEWHEEL was handled for this popup -- touch
+        devices had no way to scroll it at all, since the existing
+        FINGERDOWN/FINGERMOTION/FINGERUP handling always drove the OUTER
+        column's own scroll (self._sq_scroll) with no awareness that a
+        dropdown might be open on top of it. Takes priority over that outer
+        scroll and the generic tap dispatch whenever a dropdown is open and
+        the touch lands inside its popup. The UP resolve also checks the
+        net down->up displacement directly (not just whatever a MOTION
+        event already flagged), since some touch drivers only report the
+        down and up positions with no motion samples in between -- same
+        fix as scenes/login.py's own profile-grid scroll.
+        Returns (consumed, result)."""
+        sf = self._sq_open_dropdown()
+        if sf is None:
+            return False, None
+        popup = sf.get("q_popup_rect")
+        if popup is None:
+            return False, None
+
+        pos, down = None, False
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            pos, down = event.pos, True
+        elif event.type == pygame.FINGERDOWN:
+            pos, down = (int(event.x * self.WIDTH), int(event.y * self.HEIGHT)), True
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            pos = event.pos
+        elif event.type == pygame.FINGERUP:
+            pos = (int(event.x * self.WIDTH), int(event.y * self.HEIGHT))
+        elif event.type == pygame.MOUSEMOTION:
+            pos = event.pos
+        elif event.type == pygame.FINGERMOTION:
+            pos = (int(event.x * self.WIDTH), int(event.y * self.HEIGHT))
+        else:
+            return False, None
+
+        if down:
+            if not popup.collidepoint(pos):
+                return False, None
+            self._sq_popup_drag_active       = True
+            self._sq_popup_drag_is_scroll    = False
+            self._sq_popup_drag_start_pos    = pos
+            self._sq_popup_drag_start_scroll = sf.get("q_scroll", 0)
+            self._sq_popup_pending_tap_pos   = pos
+            return True, None
+
+        if not self._sq_popup_drag_active:
+            return False, None
+
+        threshold = self._sc(20)
+        opt_h = self._tt(40) if self._touch_ui else sf["q_rect"].height
+        natural_h = len(SECURITY_QUESTIONS) * opt_h + 6
+        scroll_max = max(0, natural_h - popup.height)
+
+        if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION):
+            dy = pos[1] - self._sq_popup_drag_start_pos[1]
+            if not self._sq_popup_drag_is_scroll and abs(dy) > threshold:
+                self._sq_popup_drag_is_scroll  = True
+                self._sq_popup_pending_tap_pos = None
+            if self._sq_popup_drag_is_scroll:
+                sf["q_scroll"] = max(0, min(scroll_max, self._sq_popup_drag_start_scroll - dy))
+            return True, None
+
+        # MOUSEBUTTONUP / FINGERUP -- resolve
+        self._sq_popup_drag_active = False
+        dy = pos[1] - self._sq_popup_drag_start_pos[1]
+        if not self._sq_popup_drag_is_scroll and abs(dy) > threshold:
+            self._sq_popup_drag_is_scroll = True
+        result = None
+        if self._sq_popup_drag_is_scroll:
+            sf["q_scroll"] = max(0, min(scroll_max, self._sq_popup_drag_start_scroll - dy))
+        elif self._sq_popup_pending_tap_pos is not None:
+            result = self._sq_handle_click(self._sq_popup_pending_tap_pos)
+        self._sq_popup_drag_is_scroll  = False
+        self._sq_popup_pending_tap_pos = None
+        return True, result
+
     def _sq_handle_event(self, event):
         """Route events when reg_step == 2."""
         if event.type == pygame.MOUSEWHEEL:
@@ -983,6 +1072,10 @@ class RegisterScene:
                     sf["q_scroll"] = max(0, min(
                         sf.get("q_scroll", 0) - event.y * int(40 * self._fs), scroll_max))
                     return None
+
+        consumed, result = self._sq_popup_scroll_handle_event(event)
+        if consumed:
+            return result
 
         if self._touch_ui:
             if event.type == pygame.MOUSEWHEEL:
@@ -1036,6 +1129,15 @@ class RegisterScene:
                         return None
                 sf["q_open"] = False
                 return None
+
+        # Back -- returns to Step 1 (account form), not out of registration
+        # entirely; Step 1's own fields are untouched/preserved, so nothing
+        # needs a discard-confirmation here (unlike _try_leave_registration,
+        # which actually abandons the whole flow back to Login).
+        if self._back_rect().collidepoint(pos):
+            play_click()
+            self.reg_step = 1
+            return None
 
         for i, sf in enumerate(self.sq_fields):
             if sf["q_rect"].collidepoint(pos):
@@ -1158,6 +1260,8 @@ class RegisterScene:
         cs = self.font_btn.render("Complete Setup", True, (255, 255, 255))
         surface.blit(cs, cs.get_rect(center=self.sq_complete_rect.center))
 
+        self._draw_back_link(surface)
+
         if open_slot is not None:
             sf = self.sq_fields[open_slot]
             self._sq_draw_dropdown(surface, sf, sf["q_rect"], W)
@@ -1251,6 +1355,8 @@ class RegisterScene:
         pygame.draw.rect(surface, bc, self.sq_complete_rect, border_radius=12)
         cs = self.font_btn.render("Complete Setup", True, (255, 255, 255))
         surface.blit(cs, cs.get_rect(center=self.sq_complete_rect.center))
+
+        self._draw_back_link(surface)
 
         # Drawn LAST so the open dropdown is always on top of everything
         # above, including the error message and Complete Setup button --

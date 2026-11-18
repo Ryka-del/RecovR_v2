@@ -154,6 +154,14 @@ class LoginScene:
         self.sq_error_msg    = ""
         self.sq_complete_hov = False
 
+        # Touch-drag scroll state for an OPEN dropdown's own option popup
+        # (see _sq_popup_scroll_handle_event).
+        self._sq_popup_drag_active       = False
+        self._sq_popup_drag_is_scroll    = False
+        self._sq_popup_drag_start_pos    = None
+        self._sq_popup_drag_start_scroll = 0
+        self._sq_popup_pending_tap_pos   = None
+
         sq_cw   = int(width  * 0.55)
         sq_cx   = (width - sq_cw) // 2
         sq_top  = int(height * 0.22)
@@ -1378,6 +1386,80 @@ class LoginScene:
     # SECURITY QUESTIONS SETUP OVERLAY
     # ------------------------------------------------------------------
 
+    def _sq_popup_scroll_handle_event(self, event):
+        """Touch-drag scroll for an OPEN dropdown's own option popup -- only
+        MOUSEWHEEL was ever handled for this popup before, so a touchscreen
+        had no way to scroll it at all. Takes priority over the generic tap
+        dispatch whenever a dropdown is open and the touch lands inside its
+        popup. The UP resolve also checks the net down->up displacement
+        directly (not just whatever a MOTION event already flagged), since
+        some touch drivers only report the down and up positions with no
+        motion samples in between -- same fix as the profile-grid scroll
+        (see _profile_scroll_handle_event). Returns (consumed, result)."""
+        sf = next((sf for sf in self.sq_fields if sf["q_open"]), None)
+        if sf is None:
+            return False, None
+        popup = sf.get("q_popup_rect")
+        if popup is None:
+            return False, None
+
+        pos, down = None, False
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            pos, down = builtins.normalise_pos(event.pos), True
+        elif event.type == pygame.FINGERDOWN:
+            pos, down = (int(event.x * self.WIDTH), int(event.y * self.HEIGHT)), True
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            pos = builtins.normalise_pos(event.pos)
+        elif event.type == pygame.FINGERUP:
+            pos = (int(event.x * self.WIDTH), int(event.y * self.HEIGHT))
+        elif event.type == pygame.MOUSEMOTION:
+            pos = builtins.normalise_pos(event.pos)
+        elif event.type == pygame.FINGERMOTION:
+            pos = (int(event.x * self.WIDTH), int(event.y * self.HEIGHT))
+        else:
+            return False, None
+
+        if down:
+            if not popup.collidepoint(pos):
+                return False, None
+            self._sq_popup_drag_active       = True
+            self._sq_popup_drag_is_scroll    = False
+            self._sq_popup_drag_start_pos    = pos
+            self._sq_popup_drag_start_scroll = sf.get("q_scroll", 0)
+            self._sq_popup_pending_tap_pos   = pos
+            return True, None
+
+        if not self._sq_popup_drag_active:
+            return False, None
+
+        threshold = self._sc(20)
+        opt_h = sf["q_opts"][0].height if sf["q_opts"] else 1
+        natural_h = len(SECURITY_QUESTIONS) * opt_h + 6
+        scroll_max = max(0, natural_h - popup.height)
+
+        if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION):
+            dy = pos[1] - self._sq_popup_drag_start_pos[1]
+            if not self._sq_popup_drag_is_scroll and abs(dy) > threshold:
+                self._sq_popup_drag_is_scroll  = True
+                self._sq_popup_pending_tap_pos = None
+            if self._sq_popup_drag_is_scroll:
+                sf["q_scroll"] = max(0, min(scroll_max, self._sq_popup_drag_start_scroll - dy))
+            return True, None
+
+        # MOUSEBUTTONUP / FINGERUP -- resolve
+        self._sq_popup_drag_active = False
+        dy = pos[1] - self._sq_popup_drag_start_pos[1]
+        if not self._sq_popup_drag_is_scroll and abs(dy) > threshold:
+            self._sq_popup_drag_is_scroll = True
+        result = None
+        if self._sq_popup_drag_is_scroll:
+            sf["q_scroll"] = max(0, min(scroll_max, self._sq_popup_drag_start_scroll - dy))
+        elif self._sq_popup_pending_tap_pos is not None:
+            result = self._sq_handle_click(self._sq_popup_pending_tap_pos)
+        self._sq_popup_drag_is_scroll  = False
+        self._sq_popup_pending_tap_pos = None
+        return True, result
+
     def _sq_handle_event(self, event):
         if event.type == pygame.MOUSEWHEEL:
             sf = next((sf for sf in self.sq_fields if sf["q_open"]), None)
@@ -1391,6 +1473,11 @@ class LoginScene:
                     sf["q_scroll"] = max(0, min(
                         sf.get("q_scroll", 0) - event.y * int(40 * self._fs), scroll_max))
                     return None
+
+        consumed, result = self._sq_popup_scroll_handle_event(event)
+        if consumed:
+            return result
+
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             pos = builtins.normalise_pos(event.pos)
             return self._sq_handle_click(pos)

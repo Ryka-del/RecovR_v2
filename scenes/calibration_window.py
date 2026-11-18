@@ -1659,7 +1659,15 @@ class CalibrationWindow:
                 # 5 separate sequential passes.
                 title_txt = "Sensor Calibration — All Finger Flex Sensors"
             else:
-                title_txt = f"Sensor Calibration — {self.cfg['sensor_name']}"
+                # A per-finger pass that fell back to the old one-at-a-time
+                # path (see _is_finger_group_start) still used the SPECIFIC
+                # finger's own sensor_name here (e.g. "Pinky Flex Sensor"),
+                # which read as a confusing/unexpected label -- generic
+                # "Flex Sensors" instead, consistent with the grouped
+                # path's own "All Finger Flex Sensors" title.
+                sensor_label = ("Flex Sensors" if self.game_type in _FINGER_FLEX_KEYS
+                                else self.cfg['sensor_name'])
+                title_txt = f"Sensor Calibration — {sensor_label}"
                 if len(self.game_types) > 1:
                     title_txt += f"  ({self.sensor_idx + 1} of {len(self.game_types)})"
             title_s = self._fit_title(title_txt, controls_left_x - self._scw(32) - self._scw(16), C["text"])
@@ -2265,13 +2273,22 @@ class CalibrationWindow:
         # a contiguous 5-finger run into one "Finger Flexion" placeholder
         # before checking eligibility, so Garden Wonders' 7-entry list (1
         # Grip + 5 fingers + 1 Wrist) is recognized as the same 3 categories
-        # this section already groups -- while Whack-a-Mole/Tile Rush's
-        # 5-ENTRIES-ALONE list collapses to a single placeholder (len 1,
-        # not > 1) and is correctly excluded, leaving their existing Results
-        # screen exactly as it was.
+        # this section already groups -- Whack-a-Mole/Tile Rush's 5-ENTRIES-
+        # ALONE list collapses to a single "Finger Flexion" placeholder
+        # (len 1, not > 1) -- that used to exclude them from this path
+        # entirely, silently falling back to the old single-sensor card
+        # below (self.game_type/self.trial_results, which after a live run
+        # only ever reflect whichever finger was calibrated LAST -- e.g.
+        # "Pinky Flex Sensor (5 of 5)" showing just Pinky's own result).
+        # _draw_finger_group_card already handles this exact shape
+        # correctly (it reads every one of the 5 fingers' own
+        # self.sensor_results entry independently); it just was never
+        # reached for this case. Explicitly including it here fixes that
+        # without touching the Garden Wonders multi-category path at all.
         _collapsed = self._collapse_finger_group(self.game_types)
-        _multi_card_eligible = (len(_collapsed) > 1 and
-                                all(t in self._MULTI_RESULTS_HEADING for t in _collapsed))
+        _is_finger_group_alone = (_collapsed == ["Finger Flexion"])
+        _multi_card_eligible = _is_finger_group_alone or (
+            len(_collapsed) > 1 and all(t in self._MULTI_RESULTS_HEADING for t in _collapsed))
         if not _multi_card_eligible:
             # +20 over the original 230 -- headroom for the "Resting baseline
             # removed" line below, but that line only actually draws when
@@ -2288,8 +2305,14 @@ class CalibrationWindow:
 
             rh_s = self.fnt["bold"].render("Calibration Results", True, C["text"])
             surface.blit(rh_s, (res_r.x + u(14), res_r.y + u(8)))
+            # Same generic "Flex Sensors" relabel as the live calibration
+            # title, for the rare case this single-card fallback is showing
+            # one specific finger (e.g. "Sensor: Pinky Flex Sensor
+            # (Pinky Flexion)") instead of the combined 5-row card.
+            _sensor_label = ("Flex Sensors" if self.game_type in _FINGER_FLEX_KEYS
+                             else self.cfg['sensor_name'])
             sn_s = self._fit_text(self._small_font_path, self._sc(18),
-                                   f"Sensor: {self.cfg['sensor_name']} ({self.game_type})",
+                                   f"Sensor: {_sensor_label} ({self.game_type})",
                                    res_r.width - u(28), C["sub"], self._sc(12))
             surface.blit(sn_s, (res_r.x + u(14), res_r.y + u(8) + rh_s.get_height() + u(2)))
 
@@ -2432,20 +2455,24 @@ class CalibrationWindow:
                 return gt[:i] + ["Finger Flexion"] + gt[i + n:]
         return gt
 
-    def _draw_finger_group_card(self, surface, lx, y, rw, C):
-        """One combined card for Garden Wonders' 5 independent finger-
-        flexion passes (added when its calibration moved to per-finger
-        thresholds -- see games/plant_the_garden.py's press_threshold/
-        release_threshold). Each of the 5 rows comes from that finger's own
-        self.sensor_results entry, populated by _finish_finger_group --
-        the exact same mechanism Whack-a-Mole/Tile Rush already use, never
-        a shared/averaged value. Height is measured from the real wrapped
-        lines before anything is drawn, matching every other card here."""
+    def _draw_finger_group_card(self, surface, lx, y, rw, C, header="Finger Flexion"):
+        """One combined card for a 5-finger flex group. Shared by two
+        callers (see _draw_multi_sensor_results): Garden Wonders, where
+        this card is one of several categories (Grip/Fingers/Wrist) and
+        keeps its original "Finger Flexion" header to match the others --
+        and Whack-a-Mole/Tile Rush, whose game_types is ONLY these 5
+        entries with nothing else, which now passes header="Flex Sensors"
+        instead (see task C) since there's no other category it needs to
+        read consistently alongside. Each of the 5 rows comes from that
+        finger's own self.sensor_results entry, populated by
+        _finish_finger_group -- never a shared/averaged value. Height is
+        measured from the real wrapped lines before anything is drawn,
+        matching every other card here."""
         u = self._sc
         f_small = self.fnt["small"]
         row_max_w = rw - u(28)
 
-        hd_s = self.fnt["bold"].render("Finger Flexion", True, C["text"])
+        hd_s = self.fnt["bold"].render(header, True, C["text"])
         sn_s = self.fnt["small"].render(
             "Sensor: Flex Sensors (5 independent channels)", True, C["sub"])
 
@@ -2536,14 +2563,16 @@ class CalibrationWindow:
         n_types = len(self.game_types)
         n_grp   = len(_FINGER_FLEX_KEYS)
         while idx < n_types:
-            # Garden Wonders' 5 independent finger passes -- one combined
-            # card with 5 sub-rows, not 5 separate cards (see
-            # _draw_finger_group_card). Does not fire for Whack-a-Mole/Tile
-            # Rush: their game_types is ONLY these 5 entries, which
-            # _collapse_finger_group's eligibility check in _draw_results
-            # already keeps on the old single-card path entirely.
+            # One combined card with 5 sub-rows for any 5-finger run, not 5
+            # separate cards (see _draw_finger_group_card). Two shapes
+            # reach here: Garden Wonders (this is ONE of several categories
+            # alongside Grip/Wrist -- keeps the "Finger Flexion" header to
+            # read consistently next to those) and Whack-a-Mole/Tile Rush
+            # (game_types is ONLY these 5 entries, nothing else -- uses the
+            # generic "Flex Sensors" header instead, see task C).
             if self.game_types[idx:idx + n_grp] == _FINGER_FLEX_KEYS:
-                y = self._draw_finger_group_card(surface, lx, y, rw, C)
+                header = "Finger Flexion" if n_types > n_grp else "Flex Sensors"
+                y = self._draw_finger_group_card(surface, lx, y, rw, C, header=header)
                 idx += n_grp
                 continue
             sensor_type = self.game_types[idx]
