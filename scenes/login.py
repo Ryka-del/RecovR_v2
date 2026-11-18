@@ -420,10 +420,17 @@ class LoginScene:
         # when there are more than 8 items (see _compute_layout). Consumes
         # the event (returns True) when it's a wheel scroll or a drag that
         # turned into a scroll, same pending-tap-vs-drag pattern as
-        # scenes/calibration_window.py's results-viewport scroll.
-        if (self.selected is None and not self.show_forgot and not self._limit_modal
-                and self._profile_scroll_max > 0 and self._profile_scroll_handle_event(event)):
-            return None
+        # scenes/calibration_window.py's results-viewport scroll. A tap that
+        # resolves through here (not a drag) forwards to _hit_test, whose
+        # return value (e.g. "register" from the Add Account icon) MUST be
+        # propagated back out -- it was previously discarded, so tapping Add
+        # Account set self.launch_triggered True (blocking all further input
+        # on this same Login screen, per the check above) without the scene
+        # switch that's supposed to go with it ever actually happening.
+        if self.selected is None and not self.show_forgot and not self._limit_modal and self._profile_scroll_max > 0:
+            consumed, result = self._profile_scroll_handle_event(event)
+            if consumed:
+                return result
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             pos = builtins.normalise_pos(event.pos)
@@ -441,7 +448,17 @@ class LoginScene:
         pending tap; if it moves past a small threshold before release, it
         becomes a scroll drag and the tap is cancelled -- released without
         crossing that threshold, it's forwarded to _hit_test as a normal
-        tap. Returns True if this event was consumed."""
+        tap.
+
+        Returns (consumed, result): `consumed` is True if this event was
+        handled here (caller should not fall through to its own default
+        handling); `result` is whatever _hit_test returned for a resolved
+        tap (e.g. "register"/"therapist_welcome" -- a scene-transition key)
+        or None otherwise. Must be propagated by the caller -- discarding it
+        previously meant tapping Add Account set self.launch_triggered True
+        without the matching scene switch ever happening, silently
+        stranding the app on this same Login screen with all further input
+        blocked by the self.launch_triggered check in handle_event."""
         _dbg = os.environ.get("RECOVR_LOGIN_DEBUG") == "1"
 
         if event.type == pygame.MOUSEWHEEL:
@@ -449,8 +466,8 @@ class LoginScene:
             if self._profile_viewport.collidepoint(mp):
                 self._profile_scroll = max(0, min(
                     self._profile_scroll_max, self._profile_scroll - event.y * int(50 * self._fs)))
-                return True
-            return False
+                return True, None
+            return False, None
 
         pos, down = None, False
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -466,7 +483,7 @@ class LoginScene:
         elif event.type == pygame.FINGERMOTION:
             pos = (int(event.x * self.WIDTH), int(event.y * self.HEIGHT))
         else:
-            return False
+            return False, None
 
         if _dbg and event.type in (pygame.FINGERDOWN, pygame.FINGERUP):
             print(f"[login-debug] {pygame.event.event_name(event.type)} pos={pos} "
@@ -475,16 +492,16 @@ class LoginScene:
 
         if down:
             if not self._profile_viewport.collidepoint(pos):
-                return False
+                return False, None
             self._profile_drag_active       = True
             self._profile_drag_is_scroll    = False
             self._profile_drag_start_pos    = pos
             self._profile_drag_start_scroll = self._profile_scroll
             self._profile_pending_tap_pos   = pos
-            return True
+            return True, None
 
         if not self._profile_drag_active:
-            return False
+            return False, None
 
         # How far a touch/click has to move before it counts as a scroll
         # instead of a tap. Scaled with the panel (not a flat raw-pixel
@@ -504,7 +521,7 @@ class LoginScene:
             if self._profile_drag_is_scroll:
                 self._profile_scroll = max(0, min(
                     self._profile_scroll_max, self._profile_drag_start_scroll - dy))
-            return True
+            return True, None
 
         # MOUSEBUTTONUP / FINGERUP -- resolve. Some touch drivers only ever
         # report the down and up events for a swipe, with no FINGERMOTION
@@ -516,17 +533,18 @@ class LoginScene:
         dy = pos[1] - self._profile_drag_start_pos[1]
         if not self._profile_drag_is_scroll and abs(dy) > _drag_threshold:
             self._profile_drag_is_scroll = True
+        tap_result = None
         if self._profile_drag_is_scroll:
             self._profile_scroll = max(0, min(
                 self._profile_scroll_max, self._profile_drag_start_scroll - dy))
         elif self._profile_pending_tap_pos is not None:
-            self._hit_test(self._profile_pending_tap_pos)
+            tap_result = self._hit_test(self._profile_pending_tap_pos)
         if _dbg:
             print(f"[login-debug] resolved drag: dy={dy} is_scroll={self._profile_drag_is_scroll} "
-                  f"new_scroll={self._profile_scroll}")
+                  f"new_scroll={self._profile_scroll} tap_result={tap_result!r}")
         self._profile_drag_is_scroll  = False
         self._profile_pending_tap_pos = None
-        return True
+        return True, tap_result
 
     def _handle_key(self, event):
         if event.key == pygame.K_ESCAPE:
