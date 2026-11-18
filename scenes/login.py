@@ -283,6 +283,13 @@ class LoginScene:
 
             self._profile_scroll_max = max(0, grid_h - visible_h)
             self._profile_scroll     = max(0, min(self._profile_scroll, self._profile_scroll_max))
+            if os.environ.get("RECOVR_LOGIN_DEBUG") == "1":
+                print(f"[login-debug] {self.WIDTH}x{self.HEIGHT} touch_ui={self._touch_ui} "
+                      f"n_accounts={len(self.accounts)} grid_cols={grid_cols} rows_n={rows_n} "
+                      f"circle_r={r} diam={diam} v_step={v_step} "
+                      f"heading_bottom={heading_bottom} back_top={back_top} avail_h={avail_h} "
+                      f"rows_by_height={rows_by_height} vis_rows={vis_rows} "
+                      f"scroll_max={self._profile_scroll_max} viewport=(pending)")
             lbl_gap = int(18 * self.HEIGHT / 1080)
             lbl_h   = self.font_username.get_linesize()
             self._profile_viewport = pygame.Rect(
@@ -424,6 +431,8 @@ class LoginScene:
         becomes a scroll drag and the tap is cancelled -- released without
         crossing that threshold, it's forwarded to _hit_test as a normal
         tap. Returns True if this event was consumed."""
+        _dbg = os.environ.get("RECOVR_LOGIN_DEBUG") == "1"
+
         if event.type == pygame.MOUSEWHEEL:
             mp = builtins.normalise_pos(pygame.mouse.get_pos())
             if self._profile_viewport.collidepoint(mp):
@@ -447,6 +456,11 @@ class LoginScene:
             pos = (int(event.x * self.WIDTH), int(event.y * self.HEIGHT))
         else:
             return False
+
+        if _dbg and event.type in (pygame.FINGERDOWN, pygame.FINGERUP):
+            print(f"[login-debug] {pygame.event.event_name(event.type)} pos={pos} "
+                  f"viewport={self._profile_viewport} inside={self._profile_viewport.collidepoint(pos)} "
+                  f"scroll_max={self._profile_scroll_max}")
 
         if down:
             if not self._profile_viewport.collidepoint(pos):
@@ -486,6 +500,9 @@ class LoginScene:
                 self._profile_scroll_max, self._profile_drag_start_scroll - dy))
         elif self._profile_pending_tap_pos is not None:
             self._hit_test(self._profile_pending_tap_pos)
+        if _dbg:
+            print(f"[login-debug] resolved drag: dy={dy} is_scroll={self._profile_drag_is_scroll} "
+                  f"new_scroll={self._profile_scroll}")
         self._profile_drag_is_scroll  = False
         self._profile_pending_tap_pos = None
         return True
