@@ -31,6 +31,7 @@
 
 import os
 import sys
+import time
 
 # --- ENTRY-POINT DISPATCH -----------------------------------------------------
 # `python main.py` with no role = the dual-monitor production launcher.
@@ -283,10 +284,14 @@ SCENES = {
 
 # --- CROSSFADE ---
 def crossfade(screen, outgoing_scene, incoming_scene, clock, steps=25):
+    _perf = os.environ.get("RECOVR_PERF_DEBUG") == "1"
+    _t0 = time.perf_counter()
     old_frame = pygame.Surface((WIDTH, HEIGHT))
     outgoing_scene.draw(old_frame)
+    _t1 = time.perf_counter()
     new_frame = pygame.Surface((WIDTH, HEIGHT))
     incoming_scene.draw(new_frame)
+    _t2 = time.perf_counter()
     for i in range(steps + 1):
         alpha = int((i / steps) * 255)
         screen.blit(old_frame, (0, 0))
@@ -295,6 +300,11 @@ def crossfade(screen, outgoing_scene, incoming_scene, clock, steps=25):
         pygame.display.flip()
         clock.tick(60)
     new_frame.set_alpha(255)
+    if _perf:
+        _t3 = time.perf_counter()
+        print(f"[perf]   crossfade breakdown: outgoing.draw={(_t1-_t0)*1000:.0f}ms "
+              f"incoming.draw={(_t2-_t1)*1000:.0f}ms {steps}-step loop={(_t3-_t2)*1000:.0f}ms "
+              f"(~{(_t3-_t2)*1000/steps:.1f}ms/frame)")
 
 # --- DRAW CONFIRM DIALOG ---
 def _draw_confirm_dialog():
@@ -392,9 +402,16 @@ while True:
         next_scene_name = current_scene.handle_event(event)
 
         if next_scene_name and next_scene_name in SCENES:
+            _perf = os.environ.get("RECOVR_PERF_DEBUG") == "1"
+            _t0 = time.perf_counter()
             incoming_scene = SCENES[next_scene_name](screen, WIDTH, HEIGHT)
+            _t1 = time.perf_counter()
             _fade_steps = 70 if next_scene_name in _game_scene_names else 25
             crossfade(screen, current_scene, incoming_scene, clock, steps=_fade_steps)
+            _t2 = time.perf_counter()
+            if _perf:
+                print(f"[perf] -> {next_scene_name}: construct={(_t1-_t0)*1000:.0f}ms "
+                      f"crossfade={(_t2-_t1)*1000:.0f}ms total={(_t2-_t0)*1000:.0f}ms")
             current_scene       = incoming_scene
             _current_scene_name = next_scene_name
 
@@ -404,9 +421,16 @@ while True:
     # Handle transitions triggered by update()
     pending = getattr(current_scene, "_pending_scene", None)
     if pending and pending in SCENES:
+        _perf = os.environ.get("RECOVR_PERF_DEBUG") == "1"
+        _t0 = time.perf_counter()
         current_scene._pending_scene = None
         incoming_scene = SCENES[pending](screen, WIDTH, HEIGHT)
+        _t1 = time.perf_counter()
         crossfade(screen, current_scene, incoming_scene, clock)
+        _t2 = time.perf_counter()
+        if _perf:
+            print(f"[perf] -> {pending}: construct={(_t1-_t0)*1000:.0f}ms "
+                  f"crossfade={(_t2-_t1)*1000:.0f}ms total={(_t2-_t0)*1000:.0f}ms")
         current_scene       = incoming_scene
         _current_scene_name = pending
 
