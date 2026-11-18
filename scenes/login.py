@@ -376,12 +376,17 @@ class LoginScene:
             return None
 
         # Add button
+        if os.environ.get("RECOVR_LOGIN_DEBUG") == "1":
+            print(f"[login-debug] hit_test pos={pos} add_rect={self.add_rect} "
+                  f"add_hit={self.add_rect.collidepoint(pos)} scrollable={scrollable} "
+                  f"viewport={self._profile_viewport} viewport_hit={self._profile_viewport.collidepoint(pos)}")
         if self.add_rect.collidepoint(pos) and (not scrollable or self._profile_viewport.collidepoint(pos)):
             play_click()
             if len(self.accounts) >= MAX_ACCOUNTS:
                 self._limit_modal = True
                 return None
             self.launch_triggered = True
+            print(f"[login-debug] Add Account tapped -> launch_triggered=True, returning 'register'") if os.environ.get("RECOVR_LOGIN_DEBUG") == "1" else None
             return "register"
 
         # Back
@@ -398,6 +403,9 @@ class LoginScene:
 
     def handle_event(self, event):
         if self.launch_triggered:
+            if os.environ.get("RECOVR_LOGIN_DEBUG") == "1" and event.type in (
+                    pygame.FINGERDOWN, pygame.FINGERUP, pygame.MOUSEBUTTONDOWN):
+                print("[login-debug] handle_event bailing early: self.launch_triggered is already True")
             return None
 
         if self.setup_sq:
@@ -478,9 +486,19 @@ class LoginScene:
         if not self._profile_drag_active:
             return False
 
+        # How far a touch/click has to move before it counts as a scroll
+        # instead of a tap. Scaled with the panel (not a flat raw-pixel
+        # value) so it stays a sensible real-world distance on any screen
+        # density; generous enough to absorb ordinary finger tremor on a
+        # touchscreen during a stationary tap, which a too-tight threshold
+        # was misreading as a scroll (every touch -- including an intended
+        # tap on an icon -- getting classified as a drag, so nothing could
+        # ever be selected even though scrolling itself worked fine).
+        _drag_threshold = self._sc(24)
+
         if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION):
             dy = pos[1] - self._profile_drag_start_pos[1]
-            if not self._profile_drag_is_scroll and abs(dy) > 10:
+            if not self._profile_drag_is_scroll and abs(dy) > _drag_threshold:
                 self._profile_drag_is_scroll  = True
                 self._profile_pending_tap_pos = None
             if self._profile_drag_is_scroll:
@@ -496,7 +514,7 @@ class LoginScene:
         # a MOTION event having crossed the threshold mid-drag.
         self._profile_drag_active = False
         dy = pos[1] - self._profile_drag_start_pos[1]
-        if not self._profile_drag_is_scroll and abs(dy) > 10:
+        if not self._profile_drag_is_scroll and abs(dy) > _drag_threshold:
             self._profile_drag_is_scroll = True
         if self._profile_drag_is_scroll:
             self._profile_scroll = max(0, min(
