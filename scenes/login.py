@@ -284,12 +284,15 @@ class LoginScene:
             self._profile_scroll_max = max(0, grid_h - visible_h)
             self._profile_scroll     = max(0, min(self._profile_scroll, self._profile_scroll_max))
             if os.environ.get("RECOVR_LOGIN_DEBUG") == "1":
-                print(f"[login-debug] {self.WIDTH}x{self.HEIGHT} touch_ui={self._touch_ui} "
-                      f"n_accounts={len(self.accounts)} grid_cols={grid_cols} rows_n={rows_n} "
-                      f"circle_r={r} diam={diam} v_step={v_step} "
-                      f"heading_bottom={heading_bottom} back_top={back_top} avail_h={avail_h} "
-                      f"rows_by_height={rows_by_height} vis_rows={vis_rows} "
-                      f"scroll_max={self._profile_scroll_max} viewport=(pending)")
+                _fp = (grid_cols, rows_n, vis_rows, self._profile_scroll_max, len(self.accounts))
+                if _fp != getattr(self, "_dbg_layout_fp", None):
+                    self._dbg_layout_fp = _fp
+                    print(f"[login-debug] {self.WIDTH}x{self.HEIGHT} touch_ui={self._touch_ui} "
+                          f"n_accounts={len(self.accounts)} grid_cols={grid_cols} rows_n={rows_n} "
+                          f"circle_r={r} diam={diam} v_step={v_step} "
+                          f"heading_bottom={heading_bottom} back_top={back_top} avail_h={avail_h} "
+                          f"rows_by_height={rows_by_height} vis_rows={vis_rows} "
+                          f"scroll_max={self._profile_scroll_max}")
             lbl_gap = int(18 * self.HEIGHT / 1080)
             lbl_h   = self.font_username.get_linesize()
             self._profile_viewport = pygame.Rect(
@@ -781,6 +784,15 @@ class LoginScene:
     # ------------------------------------------------------------------
 
     def update(self, mouse_pos, dt):
+        # Recompute circle/viewport positions every frame -- they depend on
+        # self._profile_scroll, which handle_event's drag/wheel scrolling
+        # changes continuously. _compute_layout() was previously only ever
+        # called once at construction, so the scroll VALUE was updating
+        # correctly (see _profile_scroll_handle_event) but nothing re-placed
+        # the icons at their new scrolled position -- they stayed frozen at
+        # their initial (scroll=0) spots, which looked like scrolling simply
+        # did nothing.
+        self._compute_layout()
         if self.setup_sq:
             self.sq_complete_hov = self.sq_complete_rect.collidepoint(mouse_pos)
             if self.alpha < 255:
