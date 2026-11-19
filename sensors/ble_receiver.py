@@ -323,11 +323,19 @@ class BLEReceiver:
                     else:
                         print("[BLE]   (no BLE devices at all — is Bluetooth on?)")
                 if not gave_up:
-                    # Give BlueZ a moment to settle before starting another
-                    # discovery session -- restarting scans back-to-back with
-                    # no gap is unreliable on real BlueZ/Raspberry Pi hardware
-                    # (same reasoning as the other retry paths in this loop,
-                    # e.g. _RECONNECT_DELAY after a dropped connection).
+                    # Reset the adapter before retrying, same as every other
+                    # retry path in this loop (e.g. after a dropped
+                    # connection) -- repeated BlueZ StartDiscovery/
+                    # StopDiscovery cycles with no hard reset in between can
+                    # leave the adapter's discovery state degraded on real
+                    # Raspberry Pi hardware (missing advertisements it would
+                    # otherwise see, or producing an unstable connection even
+                    # once one is found), which a scan-miss retry loop could
+                    # run into many times in a row without ever hitting the
+                    # connect-failure branch that already resets. Also gives
+                    # BlueZ a moment to settle -- restarting scans back-to-
+                    # back with no gap at all is unreliable on its own.
+                    self._reset_adapter()
                     await asyncio.sleep(_RECONNECT_DELAY)
                 continue
 
