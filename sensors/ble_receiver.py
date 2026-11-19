@@ -38,6 +38,16 @@ _LEGACY_PACKET_SIZE   = struct.calcsize(_LEGACY_PACKET_FORMAT)   # 9 bytes
 _SCAN_TIMEOUT    = 5.0
 _RECONNECT_DELAY = 2.0
 _ERROR_DELAY     = 3.0
+# How long a freshly-enabled session keeps retrying a miss before it parks as
+# "not_found" -- covers the dual-monitor handoff's own disconnect-then-
+# re-advertise chain (the other process's deliberate release, the ESP32's
+# ~200ms advertising restart, BlueZ's own connection teardown), which can
+# easily eat a single _SCAN_TIMEOUT window on its own, making the very first
+# scan of a session come up empty through no fault of the controller actually
+# being out of range. Retrying within this budget instead of giving up after
+# one miss is what makes "every game start" reconnect reliably instead of
+# needing a manual rescan tap almost every time.
+_HANDOFF_RETRY_SECONDS = 30.0   # ~4 scan+settle cycles at _SCAN_TIMEOUT+_RECONNECT_DELAY each
 # How long client.is_connected must read False CONTINUOUSLY before it's
 # treated as a real disconnect -- see the hold loop in _ble_loop(). Real BLE
 # stacks (especially BlueZ on the Pi) occasionally report a transient False
@@ -191,20 +201,29 @@ class BLEReceiver:
             self._stage, self._detail = "no_bleak", "pip install bleak"
             return
 
-        # Search ONCE per "enabled session" (a patient being selected, or an
-        # explicit manual rescan -- both go through set_enabled/rescan()),
-        # not an indefinite scan-forever retry loop. `gave_up` is set when a
-        # scan completes without finding the controller, and only cleared
-        # again on the NEXT disabled->enabled transition -- so this never
-        # re-scans on its own after a miss; the therapist taps the monitor
-        # (rescan()) to try again. A connection that succeeds and later
-        # drops for real is unaffected -- that still reconnects normally
-        # (see `gave_up` is only ever set in the "not found" branch below,
-        # never after a successful connect), so "keep it connected" through
-        # a real mid-session drop still works -- only the "never found it in
-        # the first place" case stops auto-retrying.
+        # Two different retry policies per "enabled session" (a patient
+        # being selected, or an explicit manual rescan -- both go through
+        # set_enabled/rescan()):
+        #   - Never connected yet this session: retry misses for
+        #     _HANDOFF_RETRY_SECONDS, then give up (`gave_up`) and park
+        #     until the therapist taps the monitor for a manual rescan --
+        #     avoids scanning forever for a controller that may genuinely
+        #     not be there (dead battery, powered off).
+        #   - Connected at least once this session (`ever_connected`): it's
+        #     known to be around, so a later miss keeps retrying (still
+        #     paced) indefinitely instead of giving up -- a mid-session
+        #     drop reconnects on its own, no manual tap needed.
+        # Both are reset on the NEXT disabled->enabled transition.
         was_enabled = False
         gave_up = False
+        enabled_since = 0.0
+        # Once this enabled session has connected successfully at least
+        # once, the controller is known to be around -- a later miss is far
+        # more likely a brief handoff/range blip than "it was never here,"
+        # so give-up-after-a-budget no longer applies and it keeps retrying
+        # (still paced) until reconnected or disabled. Reset alongside
+        # gave_up/enabled_since on every fresh enable.
+        ever_connected = False
 
         while True:
             # ── Park while disabled: no scanning, no connection held ──────────
@@ -219,7 +238,9 @@ class BLEReceiver:
                 continue
 
             if not was_enabled:
-                gave_up = False   # fresh enable -- allow one new scan attempt
+                gave_up = False   # fresh enable -- allow new scan attempts
+                enabled_since = time.monotonic()
+                ever_connected = False
             was_enabled = True
 
             # ── Already searched once this session and found nothing: park
@@ -276,8 +297,18 @@ class BLEReceiver:
                 self._seen_names = list(seen.values())
 
             if device is None:
-                gave_up = True   # single-shot: don't auto-rescan after a miss
-                self._detail = f"not advertising (scan #{self._scan_count})"
+                if ever_connected:
+                    # Known to be around (we've already connected to it this
+                    # session) -- keep retrying indefinitely instead of
+                    # giving up, so a mid-session drop reconnects on its own.
+                    self._detail = f"not advertising, reconnecting (scan #{self._scan_count})"
+                else:
+                    retry_budget_left = _HANDOFF_RETRY_SECONDS - (time.monotonic() - enabled_since)
+                    if retry_budget_left <= 0:
+                        gave_up = True   # retry budget spent -- stop auto-rescanning
+                        self._detail = f"not advertising (scan #{self._scan_count})"
+                    else:
+                        self._detail = f"not advertising, retrying (scan #{self._scan_count})"
                 # Nothing matched -- print what IS visible, so the user can tell
                 # "Bluetooth sees nothing" from "the ESP32 is advertising nameless".
                 if self._first_run:
@@ -291,6 +322,13 @@ class BLEReceiver:
                               "(it needs setScanResponse(true)).")
                     else:
                         print("[BLE]   (no BLE devices at all — is Bluetooth on?)")
+                if not gave_up:
+                    # Give BlueZ a moment to settle before starting another
+                    # discovery session -- restarting scans back-to-back with
+                    # no gap is unreliable on real BlueZ/Raspberry Pi hardware
+                    # (same reasoning as the other retry paths in this loop,
+                    # e.g. _RECONNECT_DELAY after a dropped connection).
+                    await asyncio.sleep(_RECONNECT_DELAY)
                 continue
 
             # ── Connect ───────────────────────────────────────────────────────
@@ -320,6 +358,7 @@ class BLEReceiver:
                         await asyncio.sleep(5.0)
                     else:
                         self._connected = True
+                        ever_connected = True
                         self._stage  = "connected"
                         self._detail = self._dev_name
                         print("[BLE] Controller connected!  Sensor data is live.")
