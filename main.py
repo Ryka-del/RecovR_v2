@@ -86,6 +86,17 @@ if sys.platform == "win32":
             pass
 
 # --- START PYGAME ---
+# pygame.init() auto-initialises the mixer submodule with SDL_mixer's own
+# small default buffer -- audio.py's own `pygame.mixer.init(buffer=4096)`
+# (meant to give headroom against scheduling jitter on a Raspberry Pi
+# running 3 processes at once) never actually runs, since by the time any
+# audio.py function checks `pygame.mixer.get_init()` the mixer is already
+# initialised. That left every sound this app plays subject to underruns
+# audible as weak/crackly audio, while anything played outside this
+# process's own mixer sounded fine. pre_init() here sets the buffer BEFORE
+# pygame.init() brings the mixer up, so the intended buffer size actually
+# takes effect.
+pygame.mixer.pre_init(buffer=4096)
 pygame.init()
 
 # --- CREATE WINDOW ---

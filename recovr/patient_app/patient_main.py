@@ -134,6 +134,12 @@ class PatientApp:
         if pos:
             os.environ.setdefault("SDL_VIDEO_WINDOW_POS", pos)
 
+        # See main.py's matching pre_init() call for why this has to happen
+        # before pygame.init() -- otherwise pygame.init()'s own mixer
+        # auto-init locks in SDL_mixer's small default buffer and audio.py's
+        # intended buffer=4096 (headroom against Pi scheduling jitter) never
+        # actually takes effect, heard as weak/crackly app audio.
+        pygame.mixer.pre_init(buffer=4096)
         pygame.init()
         size, flags = _window_size()
         self.screen = _create_display(size, flags)
