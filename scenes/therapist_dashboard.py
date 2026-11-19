@@ -5015,9 +5015,29 @@ class TherapistDashboardScene:
         # and we are NOT on "Session in Progress" (select -> Game Config ->
         # calibration all read the live sensor here). Entering panel 7 releases
         # it so the patient process can take it for the game; leaving panel 7
-        # with a patient still selected reclaims it. Deselect always releases.
+        # with a patient still selected reclaims it -- UNLESS the patient
+        # process is still actually holding it for a live session. The
+        # sidebar nav has no guard against clicking to another panel (e.g.
+        # Patient List) while a game is running on the patient screen --
+        # active_panel alone can't tell "session over" from "therapist just
+        # looked away," and reclaiming the controller while the patient
+        # process still has it live made BOTH processes' independent
+        # BLEReceiver try to hold the same physical BLE link at once, which
+        # is a likely cause of disconnects seen mid-calibration/mid-game
+        # with no screen transition involved. The patient process holds the
+        # controller for READY (How-to-Play) through COMPLETE (Session
+        # Complete, still shown) -- see recovr/patient_app/patient_main.py's
+        # _reconcile_ble, gated on mode HOWTOPLAY/PLAYING -- so mirror that
+        # here via the actual session status (read fresh, not via
+        # self._sm_state, which only refreshes while panel 7 is active and
+        # would already be stale by the time this matters) instead of
+        # inferring it from which panel is currently on screen.
         if _DUAL_MONITOR and _ble_receiver is not None:
-            want_ble = bool(self.selected_patient) and self.active_panel != 7
+            sm_status = (therapist_link.get_state() or {}).get("status", "")
+            session_holds_controller = sm_status in (
+                _rc_cmd.READY, _rc_cmd.RUNNING, _rc_cmd.PAUSED, _rc_cmd.COMPLETE)
+            want_ble = (bool(self.selected_patient) and self.active_panel != 7
+                        and not session_holds_controller)
             if want_ble != self._ble_want:
                 self._ble_want = want_ble
                 try:
