@@ -24,6 +24,12 @@ EP_RESULT = "/api/session/result"    # POST -> final result at game end (patient
 EP_ACK = "/api/ack"                  # POST -> patient acknowledges a state/action
 EP_VOLUME = "/api/volume"            # POST -> {"volume": 0.0-1.0} (therapist)
 EP_THERAPIST = "/api/therapist"      # POST -> {"present": bool} (therapist logged in / out)
+EP_BLE_LEASE = "/api/ble/lease"      # GET  -> {"owner","target","generation","pending_seconds"}
+                                      # Deliberately tiny/cheap -- polled independently of the
+                                      # normal /api/state poll by each process's own BLEReceiver
+                                      # watchdog thread (see sensors/ble_receiver.py) AND by
+                                      # recovr/launch_production.py's supervisor loop, both at a
+                                      # much higher frequency than EP_STATE's own consumers need.
 
 # --- Timing --------------------------------------------------------------
 # How often the Pygame client polls the server for state.

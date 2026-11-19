@@ -26,6 +26,7 @@ Alt+F4, kill, or any other exit never does, so the Pi is never auto-shut-down
 except through that one explicit, user-confirmed action.
 """
 
+import json
 import os
 import sys
 import time
@@ -56,6 +57,41 @@ def _wait_for_health(timeout: float) -> bool:
     return False
 
 
+# How long a BLE ownership handoff may sit unconfirmed before this supervisor
+# treats it as unsafe to leave running and shuts the whole app down for a
+# clean restart. Deliberately longer than both the per-receiver lease
+# watchdog's own _LEASE_TIMEOUT_SEC (sensors/ble_receiver.py, default 4s) and
+# the therapist UI's own "handoff stuck" warning threshold
+# (scenes/therapist_dashboard.py's _BLE_HANDOFF_TIMEOUT_MS, default 5s) --
+# giving the normal, much faster paths every reasonable chance to resolve it
+# on their own first. This is a LAST RESORT, not a normal operating path:
+# the supervisor never selectively kills one child and grants the survivor
+# ownership (that would require a way to PROVE the killed process's BLE
+# connection was actually released before resuming, which is exactly the
+# guarantee a bare timeout can't provide) -- it only ever shuts everything
+# down, via the existing _shutdown() path, which already waits for every
+# child to actually exit (OS-level process teardown is what genuinely
+# guarantees any BLE handle it held is released). See
+# recovr/shared/session_state.py's ble_generation docstring for why there is
+# no "force" method any more.
+_BLE_SUPERVISOR_SHUTDOWN_SEC = float(os.environ.get("RECOVR_BLE_SUPERVISOR_SHUTDOWN_SEC", "10.0"))
+
+
+def _ble_handoff_stuck_too_long() -> bool:
+    try:
+        url = protocol.BASE_URL + protocol.EP_BLE_LEASE
+        with urllib.request.urlopen(url, timeout=1.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        # Broker unreachable -- can't determine handoff age from here either;
+        # the existing proc.poll() check already catches a broker that
+        # actually crashed, so this isn't this function's job to escalate.
+        return False
+    target = str(data.get("target", ""))
+    pending = float(data.get("pending_seconds", 0.0) or 0.0)
+    return bool(target) and pending > _BLE_SUPERVISOR_SHUTDOWN_SEC
+
+
 def _spawn(args: list[str], env: dict) -> subprocess.Popen:
     return subprocess.Popen(args, cwd=_ROOT, env=env)
 
@@ -69,6 +105,7 @@ def _shutdown(*_a):
     if _SHUTTING_DOWN:
         return
     _SHUTTING_DOWN = True
+    all_confirmed_exited = True
     for name, proc in _PROCS.items():
         if proc.poll() is None:
             print(f"[launch] terminating '{name}' (pid {proc.pid}) ...")
@@ -76,11 +113,23 @@ def _shutdown(*_a):
                 proc.terminate()
                 proc.wait(timeout=5)
             except Exception:
+                # Graceful termination didn't finish in time -- escalate,
+                # and verify the escalation itself actually worked instead
+                # of assuming kill() alone is enough (SIGKILL is sent
+                # immediately but the OS reaping it is a separate, still-
+                # unconfirmed step without this wait).
                 try:
                     proc.kill()
+                    proc.wait(timeout=5)
                 except Exception:
-                    pass
-    print("[launch] all children stopped.")
+                    print(f"[launch] WARNING: could not confirm '{name}' "
+                          f"(pid {proc.pid}) actually exited.")
+                    all_confirmed_exited = False
+    if all_confirmed_exited:
+        print("[launch] all children stopped.")
+    else:
+        print("[launch] shutdown finished, but not every child was confirmed "
+              "exited -- see the WARNING(s) above.")
 
 
 # The one and only place that may ever power off the Pi. This sentinel is
@@ -137,9 +186,12 @@ def main():
     base_env = os.environ.copy()
     base_env["RECOVR_DUAL_MONITOR"] = "1"
     # The therapist and patient processes each hold a BLEReceiver, but only one
-    # may own the controller at a time. Start both with BLE parked; each enables
-    # it when the session gives it the controller (therapist: a patient is
-    # selected and not mid-game; patient: How-to-Play + gameplay).
+    # may own the controller at a time, tracked by the broker's ble_owner field
+    # (default "therapist" -- see recovr/shared/session_state.py). The patient
+    # must stay parked until the therapist explicitly hands it over (Start
+    # Session), so it starts BLE-disabled; the therapist searches for the
+    # controller immediately on launch, so this is overridden back off for it
+    # alone below (RECOVR_BLE_START_DISABLED=0).
     base_env["RECOVR_BLE_START_DISABLED"] = "1"
 
     atexit.register(_shutdown)
@@ -184,6 +236,9 @@ def main():
     # 2. Therapist app (real main.py) on Monitor 2
     ther_env = base_env.copy()
     ther_env["RECOVR_ROLE"] = "therapist"   # main.py: run the scene loop, not the launcher
+    # Therapist owns the controller by default (ble_owner starts "therapist") --
+    # search for it immediately on launch, not just once a patient is selected.
+    ther_env["RECOVR_BLE_START_DISABLED"] = "0"
     if dual:
         t_mon = monitors.therapist_monitor()
         ther_env["RECOVR_THERAPIST_DISPLAY"] = str(t_mon.index)
@@ -217,6 +272,12 @@ def main():
                 if proc.poll() is not None:
                     print(f"[launch] '{name}' exited (code {proc.returncode}) -- shutting down.")
                     raise KeyboardInterrupt
+            if _ble_handoff_stuck_too_long():
+                print(f"[launch] BLE ownership handoff unconfirmed past "
+                      f"{_BLE_SUPERVISOR_SHUTDOWN_SEC:.0f}s -- shutting down for safety "
+                      "rather than risk two processes holding the controller at once. "
+                      "Restart once the unresponsive process/controller issue is resolved.")
+                raise KeyboardInterrupt
             time.sleep(0.5)
     except KeyboardInterrupt:
         pass

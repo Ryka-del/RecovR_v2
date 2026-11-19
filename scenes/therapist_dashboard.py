@@ -65,6 +65,34 @@ if _DUAL_MONITOR:
     except Exception as _exc:               # pragma: no cover - defensive
         print(f"[recovr] dual-monitor link unavailable ({_exc}); staying single-window")
         _DUAL_MONITOR = False
+    else:
+        # Enables this receiver's independent lease watchdog (see
+        # sensors/ble_receiver.py) -- called once, here, rather than per
+        # TherapistDashboardScene instance (the scene is recreated on every
+        # return-from-game). A receiver with no role never polls the broker
+        # at all, so this is the one line that turns that feature on for
+        # the therapist process specifically.
+        if _ble_receiver is not None:
+            try:
+                _ble_receiver.set_role("therapist")
+            except Exception:
+                pass
+
+# How long the therapist waits, after requesting a patient->therapist
+# handoff, before showing it as stuck in the controller-monitor UI -- see
+# the BLE-ownership block in update(). This NO LONGER forces ownership past
+# an unconfirmed handoff (a logical ble_owner flip here would not mean the
+# patient's physical BLE connection was actually released) -- it only
+# surfaces a visible warning. Generous enough to absorb normal broker-poll
+# latency (~150ms) plus the patient's own disable/disconnect time (and, if
+# its main thread is frozen, however long its own lease watchdog's
+# _LEASE_TIMEOUT_SEC takes to fail closed), but short enough to tell the
+# therapist promptly that something needs attention. The only thing that
+# may ever force past a stuck handoff is recovr/launch_production.py's
+# supervisor, and only by shutting the whole app down after independently
+# confirming (via OS process exit) that the previous owner actually
+# terminated -- never by granting ownership on a bare timeout.
+_BLE_HANDOFF_TIMEOUT_MS = 5000
 
 # Development/testing only -- shows the "Test Mode (Bypass)" toggle on Start
 # Session. Permanently on for this development phase (no env var / launch
@@ -1477,6 +1505,9 @@ class TherapistDashboardScene:
         self._sm_started_ms = 0                # pygame ticks when "Start Session" was pressed
         self._sm_start_lock_ms = 5000          # START held for this long -> BLE handoff window
         self._ble_want    = None               # last enable/disable pushed to the BLE receiver
+        self._ble_handoff_stuck = False        # patient->therapist handoff past its deadline,
+                                                # unconfirmed -- surfaced in _controller_status(),
+                                                # never auto-forced (see the BLE-ownership block)
         self._sm_hover    = None
         self._sm_volume   = None               # music volume (lazy-init from broker state)
         self._sm_stopped_notice = False        # "Game Stopped" screen shown on panel 7
@@ -2455,9 +2486,13 @@ class TherapistDashboardScene:
             return None
 
         # Controller monitor: tap to force a fresh BLE scan (manual retry).
+        # Only meaningful while THIS process actually owns the controller
+        # (active_panel != 7) -- rescan() force-enables the receiver, which
+        # would wrongly make the therapist start scanning/connecting while
+        # the patient process is the current ble_owner otherwise.
         if self._ctrl_btn_rect.collidepoint(pos):
             play_click()
-            if _ble_receiver is not None and (not _DUAL_MONITOR or self.selected_patient):
+            if _ble_receiver is not None and (not _DUAL_MONITOR or self.active_panel != 7):
                 try:
                     _ble_receiver.rescan()
                     self._ble_want = True        # keep the reconcile in step
@@ -5010,34 +5045,82 @@ class TherapistDashboardScene:
             self._lobby_want = want_lobby
             (start_lobby_music if want_lobby else stop_lobby_music)()
 
-        # ── BLE controller ownership (dual-monitor) ──
-        # The therapist process holds the controller while a patient is selected
-        # and we are NOT on "Session in Progress" (select -> Game Config ->
-        # calibration all read the live sensor here). Entering panel 7 releases
-        # it so the patient process can take it for the game; leaving panel 7
-        # with a patient still selected reclaims it -- UNLESS the patient
-        # process is still actually holding it for a live session. The
-        # sidebar nav has no guard against clicking to another panel (e.g.
-        # Patient List) while a game is running on the patient screen --
-        # active_panel alone can't tell "session over" from "therapist just
-        # looked away," and reclaiming the controller while the patient
-        # process still has it live made BOTH processes' independent
-        # BLEReceiver try to hold the same physical BLE link at once, which
-        # is a likely cause of disconnects seen mid-calibration/mid-game
-        # with no screen transition involved. The patient process holds the
-        # controller for READY (How-to-Play) through COMPLETE (Session
-        # Complete, still shown) -- see recovr/patient_app/patient_main.py's
-        # _reconcile_ble, gated on mode HOWTOPLAY/PLAYING -- so mirror that
-        # here via the actual session status (read fresh, not via
-        # self._sm_state, which only refreshes while panel 7 is active and
-        # would already be stale by the time this matters) instead of
-        # inferring it from which panel is currently on screen.
+        # ── BLE controller ownership: two-phase, acknowledged handoff ──
+        # Screen-based: the therapist wants to own the controller on every
+        # page except "Session in Progress" (panel 7), regardless of patient
+        # selection or session/game status -- entering/leaving panel 7 is
+        # the ONLY thing that should ever move ownership; a game completing,
+        # stopping, or restarting on panel 7 must not, since active_panel
+        # hasn't changed.
+        #
+        # The receiving side must never enable before the outgoing side has
+        # CONFIRMED it actually released (not merely been told to) -- see
+        # recovr/shared/session_state.py's ble_owner/ble_handoff_target for
+        # the full protocol. ble_owner only ever changes via an explicit
+        # confirm, never a direct set and never a bare timeout -- so the two
+        # processes' BLEReceiver enablement (keyed on `owner == self and
+        # target != the other side`, mirrored on the patient side in
+        # recovr/patient_app/patient_main.py's _reconcile_dual, AND
+        # independently re-enforced by each receiver's own lease watchdog --
+        # see sensors/ble_receiver.py) can never both read "enabled" at once.
         if _DUAL_MONITOR and _ble_receiver is not None:
-            sm_status = (therapist_link.get_state() or {}).get("status", "")
-            session_holds_controller = sm_status in (
-                _rc_cmd.READY, _rc_cmd.RUNNING, _rc_cmd.PAUSED, _rc_cmd.COMPLETE)
-            want_ble = (bool(self.selected_patient) and self.active_panel != 7
-                        and not session_holds_controller)
+            desired = "patient" if self.active_panel == 7 else "therapist"
+            bsnap  = therapist_link.get_state() or {}
+            owner  = bsnap.get("ble_owner", "therapist")
+            target = bsnap.get("ble_handoff_target", "")
+
+            # 1. Notice a new desired owner and kick off a handoff toward it
+            #    (skip if one toward the same target is already in flight).
+            if desired != owner and target != desired:
+                try:
+                    therapist_link.request_ble_handoff(desired)
+                except Exception:
+                    pass
+                target = desired
+                # Deadline for the ONE direction with a cross-process
+                # dependency (waiting on the PATIENT to confirm) -- see step 3.
+                self._ble_handoff_deadline = pygame.time.get_ticks() + _BLE_HANDOFF_TIMEOUT_MS
+
+            # 2. We're the outgoing owner, handing off to the patient -- our
+            #    own release has no cross-process dependency, so confirm it
+            #    unconditionally as soon as our OWN receiver is verifiably
+            #    disconnected (not merely "told to disable"). Redundant with
+            #    (and harmless alongside) our own receiver's lease watchdog,
+            #    which does the exact same check independently.
+            if owner == "therapist" and target == "patient":
+                try:
+                    st = _ble_receiver.status()
+                except Exception:
+                    st = {}
+                if st.get("stage") == "disabled" and not st.get("connected"):
+                    try:
+                        therapist_link.confirm_ble_released()
+                    except Exception:
+                        pass
+
+            # 3. We're waiting to receive ownership back from the patient.
+            #    Past _BLE_HANDOFF_TIMEOUT_MS this is surfaced as stuck in
+            #    the controller-monitor UI -- it is NOT forced. A logical
+            #    ble_owner flip here would not prove the patient's physical
+            #    BLE connection was actually released (that process may be
+            #    frozen, or its own lease watchdog may still be mid-fail-
+            #    close); granting ownership on a bare timeout is exactly the
+            #    risk this protocol exists to rule out. The only thing that
+            #    may ever force past this is recovr/launch_production.py's
+            #    supervisor, and only after independently confirming (via
+            #    OS process exit, not a broker timestamp) that the patient
+            #    process actually terminated -- and even then, by shutting
+            #    the whole app down for a clean restart, not by granting
+            #    ownership to a process still running.
+            if owner == "patient" and target == "therapist":
+                self._ble_handoff_stuck = (
+                    pygame.time.get_ticks() >= getattr(self, "_ble_handoff_deadline", 0))
+            else:
+                self._ble_handoff_stuck = False
+
+            # 4. Our own receiver is enabled iff we are the CONFIRMED owner
+            #    and not actively handing off away from ourselves.
+            want_ble = (owner == "therapist") and (target != "patient")
             if want_ble != self._ble_want:
                 self._ble_want = want_ble
                 try:
@@ -5687,6 +5770,7 @@ class TherapistDashboardScene:
         "scanning":      ("Searching…",      (230, 165, 30), (166, 112, 12)),
         "handed_off":    ("On patient screen",    (60, 140, 225), (40, 100, 175)),
         "handed_off_lost": ("Lost on patient screen", (215, 60, 55),  (170, 40, 36)),
+        "handoff_stuck": ("Controller handoff stuck", (215, 60, 55),  (170, 40, 36)),
         "idle":          ("Controller idle",      (172, 184, 198), (118, 132, 150)),
         "disabled":      ("Controller off",       (172, 184, 198), (118, 132, 150)),
         "not_found":     ("Not found",            (215, 60, 55),  (170, 40, 36)),
@@ -5700,9 +5784,12 @@ class TherapistDashboardScene:
     def _controller_status(self):
         """(stage, label, detail, dot_col, txt_col) for the controller monitor.
 
-        Handoff-aware: with RECOVR_DUAL_MONITOR the therapist process gives the
-        controller up on purpose (no patient selected, or the patient process is
-        running the game), so 'not connected' there is normal, not a fault."""
+        Handoff-aware: with RECOVR_DUAL_MONITOR the therapist process searches
+        for/holds the controller by default (from launch, regardless of patient
+        selection) and only gives it up on purpose while on the Session in
+        Progress screen (patient process has it), so 'not connected' there is
+        normal, not a fault -- everywhere else, the real receiver status is
+        shown as-is."""
         st = {}
         if _ble_receiver is not None:
             try:
@@ -5731,8 +5818,14 @@ class TherapistDashboardScene:
                 # No telemetry relayed yet (e.g. still on How-to-Play, before
                 # the first telemetry post) -- can't know either way yet.
                 stage, detail = "handed_off", "used by the game"
-        elif _DUAL_MONITOR and not self.selected_patient:
-            stage, detail = "idle", "select a patient"
+        elif _DUAL_MONITOR and getattr(self, "_ble_handoff_stuck", False):
+            # Left Session in Progress, requested the controller back, and
+            # the patient hasn't confirmed release within the deadline --
+            # see the BLE-ownership block in update(). Deliberately NOT
+            # forced: this is an honest "something needs attention" signal,
+            # not a transient state that silently resolves on its own.
+            stage  = "handoff_stuck"
+            detail = "patient hasn't confirmed release"
         else:
             stage  = st.get("stage", "error")
             detail = st.get("detail", "")

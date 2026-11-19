@@ -149,6 +149,18 @@ class PatientApp:
         self.comms = PatientCommsClient()
         self.comms.start()
 
+        # Enables this receiver's independent lease watchdog (see
+        # sensors/ble_receiver.py) -- a receiver with no role never polls
+        # the broker at all, so this is the one line that turns that
+        # feature on for the patient process specifically. Prototype/
+        # single-process mode never sets a role, so stays unaffected.
+        if DUAL:
+            try:
+                from sensors.ble_receiver import ble_receiver
+                ble_receiver.set_role("patient")
+            except Exception:
+                pass
+
         # screens
         self.s_welcome = _make_welcome(self.screen)
         self.s_waiting = WaitingScreen()
@@ -268,6 +280,44 @@ class PatientApp:
         pending = snap.get("pending_action", "")
         therapist_present = bool(snap.get("therapist_present", False))
         booting = bool(snap.get("session_booting", False))
+
+        # BLE controller ownership: two-phase, acknowledged handoff. The
+        # single source of truth is the broker's `ble_owner`/
+        # `ble_handoff_target` fields -- ble_handoff_target is requested
+        # ONLY by the therapist process on its own navigation (entering/
+        # leaving the Session in Progress screen -- see
+        # scenes/therapist_dashboard.py's BLE-ownership block), never by
+        # game/session status, so completing or stopping a game, or
+        # returning to the session interface, can never move ownership. This
+        # process must NEVER decide on its own that it owns the controller,
+        # and must NEVER enable before confirming the handoff is actually
+        # meant for it -- see recovr/shared/session_state.py's ble_owner
+        # docstring for the full protocol. Checked every poll, unconditional
+        # on mode/status, same reasoning as the therapist side.
+        ble_owner  = snap.get("ble_owner", "therapist")
+        ble_target = snap.get("ble_handoff_target", "")
+        # Enabled iff we are the CONFIRMED owner and not actively handing
+        # off away from ourselves (mirrors the therapist's own formula).
+        self._reconcile_ble(ble_owner == "patient" and ble_target != "therapist")
+        # We're the outgoing owner of a patient->therapist handoff -- our
+        # own release has no cross-process dependency (unlike the
+        # therapist's wait for OUR confirmation), so confirm it
+        # unconditionally as soon as our OWN receiver is verifiably
+        # disconnected (not merely "told to disable"). Only send the ack
+        # once per pending handoff -- _ble_release_acked resets the moment
+        # we're no longer in this specific situation.
+        if ble_owner == "patient" and ble_target == "therapist":
+            try:
+                from sensors.ble_receiver import ble_receiver
+                st = ble_receiver.status()
+            except Exception:
+                st = {}
+            if (st.get("stage") == "disabled" and not st.get("connected")
+                    and not getattr(self, "_ble_release_acked", False)):
+                self._ble_release_acked = True
+                self.comms.post_ack({"ble_released": True})
+        else:
+            self._ble_release_acked = False
 
         # 0a. No therapist logged in. Welcome normally; Waiting Screen once the
         #     therapist has left their Welcome page (booting) but not logged in.
@@ -592,11 +642,17 @@ class PatientApp:
         self.mode_t = 0.0
         if mode == INSTRUCTIONS:
             self.instr_elapsed = 0.0
-        # BLE controller ownership: the patient process holds the controller only
-        # for How-to-Play (connecting during the therapist's ~5 s START lock) and
-        # the running game. Every other mode releases it so the therapist process
-        # can own it (patient selection / Game Config / calibration).
-        self._reconcile_ble(mode in (HOWTOPLAY, PLAYING))
+        # BLE controller ownership (prototype/single-process path only --
+        # DUAL mode reconciles this every poll in _reconcile_dual() against
+        # the broker's ble_owner field instead, independent of mode, so a
+        # game completing/stopping can't release the controller there; see
+        # that method's comment). The patient process holds the controller
+        # only for How-to-Play (connecting during the therapist's ~5 s START
+        # lock) and the running game. Every other mode releases it so the
+        # therapist process can own it (patient selection / Game Config /
+        # calibration).
+        if not DUAL:
+            self._reconcile_ble(mode in (HOWTOPLAY, PLAYING))
 
     def _reconcile_ble(self, want: bool):
         if getattr(self, "_ble_want", None) == want:

@@ -87,6 +87,27 @@ class TherapistLink:
         whatever screen it is currently showing."""
         self._enqueue(protocol.EP_THERAPIST, {"dark_mode": bool(value)})
 
+    def request_ble_handoff(self, target: str):
+        """Request a two-phase BLE ownership handoff toward `target`
+        ("therapist"/"patient") -- driven by this process's OWN navigation
+        (see scenes/therapist_dashboard.py's BLE-ownership block), never by
+        game/session status. The target does NOT become the confirmed owner
+        until the current owner explicitly confirms release -- see
+        confirm_ble_released(). There is no force/override: if the previous
+        owner never confirms, the handoff simply stays pending -- see
+        scenes/therapist_dashboard.py's handoff-stuck UI handling."""
+        self._enqueue(protocol.EP_THERAPIST, {"ble_handoff_target": str(target)})
+
+    def confirm_ble_released(self):
+        """This (therapist) process confirms its OWN BLE receiver is now
+        actually disabled + disconnected, completing a pending
+        therapist->patient handoff. Only call this after verifying the
+        receiver's own status, not merely after calling set_enabled(False).
+        Safe to call redundantly with the BLEReceiver's own lease watchdog
+        (see sensors/ble_receiver.py) -- the store-side confirm is
+        idempotent."""
+        self._enqueue(protocol.EP_THERAPIST, {"ble_release_confirmed": True})
+
     def reset(self):
         self._enqueue("/api/reset", {})
 

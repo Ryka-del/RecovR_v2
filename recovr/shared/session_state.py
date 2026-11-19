@@ -137,6 +137,71 @@ class SessionState:
     dark_mode: bool = False                          # THE single source of truth for the RecovR
                                                      # light/dark theme. Therapist toggles it; the
                                                      # patient applies it live on every screen.
+    ble_owner: str = "therapist"                     # CONFIRMED BLE controller owner --
+                                                     # "therapist" or "patient". This only ever
+                                                     # changes once the previous owner has
+                                                     # explicitly confirmed it actually released
+                                                     # (disabled + disconnected) -- see
+                                                     # confirm_therapist_released() /
+                                                     # confirm_patient_released() -- there is no
+                                                     # force/override method; an unconfirmed handoff
+                                                     # simply never changes this field. Never driven
+                                                     # by game/session status, only by the therapist
+                                                     # process's own navigation (Session in
+                                                     # Progress screen entered/left) -- see
+                                                     # scenes/therapist_dashboard.py's BLE-
+                                                     # ownership block and
+                                                     # recovr/patient_app/patient_main.py's
+                                                     # _reconcile_dual, which mirrors this +
+                                                     # ble_handoff_target. Defaults to "therapist"
+                                                     # so a freshly launched app starts the
+                                                     # therapist searching for the controller
+                                                     # immediately.
+    ble_handoff_target: str = ""                     # "" (no handoff in progress) or the owner
+                                                     # ("therapist"/"patient") a two-phase BLE
+                                                     # ownership handoff is currently moving
+                                                     # toward. Set by the therapist process when it
+                                                     # wants a different owner than ble_owner
+                                                     # currently says; cleared automatically the
+                                                     # moment the handoff is confirmed. The process
+                                                     # currently enabled is always exactly the one
+                                                     # named by ble_owner AND NOT the outgoing side
+                                                     # of an in-flight handoff -- see each side's
+                                                     # "want local" formula (now also independently
+                                                     # enforced by each BLEReceiver's own lease
+                                                     # watchdog, not just the main-thread
+                                                     # reconcile methods -- see
+                                                     # sensors/ble_receiver.py).
+    ble_generation: int = 0                          # Fencing token -- incremented every time a
+                                                     # handoff is initiated (set_ble_handoff_target,
+                                                     # on a genuine change) AND every time ownership
+                                                     # is actually confirmed
+                                                     # (confirm_therapist_released /
+                                                     # confirm_patient_released). Each BLEReceiver's
+                                                     # watchdog only trusts a /api/ble/lease response
+                                                     # whose generation is >= the highest it has
+                                                     # already seen -- a delayed/out-of-order
+                                                     # response carrying a LOWER generation is
+                                                     # discarded wholesale, so it can never reactivate
+                                                     # (or incorrectly deactivate) a receiver based on
+                                                     # stale information. Deliberately NOT bumped by a
+                                                     # failed/ambiguous handoff -- there is no
+                                                     # automatic force path any more (see
+                                                     # scenes/therapist_dashboard.py's handoff-stuck
+                                                     # handling and recovr/launch_production.py's
+                                                     # supervisor): if the previous owner never
+                                                     # confirms, ble_owner simply never changes, and
+                                                     # the receiving side correctly never enables.
+    ble_handoff_requested_at: float = 0.0             # server time.time() when the CURRENT
+                                                     # ble_handoff_target was set (0.0 when no
+                                                     # handoff is pending) -- the one authoritative
+                                                     # clock both the requesting process (for its own
+                                                     # "handoff stuck" UI) and the launch_production.py
+                                                     # supervisor (for its own, longer, shutdown-
+                                                     # trigger threshold) measure elapsed time against,
+                                                     # instead of each keeping its own local timer that
+                                                     # could drift from when the request actually
+                                                     # landed.
     updated_at: float = field(default_factory=time.time)
 
     def snapshot(self) -> dict:
@@ -330,6 +395,64 @@ class SessionStore:
             self._touch()
             return self._state.snapshot()
 
+    # -- BLE controller ownership: two-phase, acknowledged handoff -----
+    # ble_owner only ever changes via one of the two confirm methods below --
+    # never a direct setter -- so it can never show a new owner before that
+    # owner's predecessor has actually confirmed release. There is
+    # deliberately NO force/override method any more: if the previous owner
+    # never confirms (main thread frozen AND its BLEReceiver's own lease
+    # watchdog also can't reach the broker, or the process is genuinely
+    # unresponsive), ble_owner simply never changes -- see
+    # scenes/therapist_dashboard.py's handoff-stuck UI handling and
+    # recovr/launch_production.py's supervisor, which treats a handoff stuck
+    # past ITS OWN (longer) threshold as grounds to shut the whole app down
+    # for safety, never to grant ownership without proof of release.
+    def set_ble_handoff_target(self, value) -> dict:
+        """Therapist process only: request a handoff toward `value`
+        ("therapist"/"patient"). Only takes effect (bumps ble_generation,
+        stamps ble_handoff_requested_at) on a GENUINE change -- calling it
+        again with the value already pending is a harmless no-op, so a
+        caller that re-evaluates every frame doesn't spam new generations.
+        No-op for any other value, including clearing -- the two confirm
+        methods below are the only way ble_handoff_target is ever cleared."""
+        with self._lock:
+            target = str(value or "").strip().lower()
+            if target in ("therapist", "patient") and target != self._state.ble_handoff_target:
+                self._state.ble_handoff_target = target
+                self._state.ble_generation += 1
+                self._state.ble_handoff_requested_at = time.time()
+            self._touch()
+            return self._state.snapshot()
+
+    def confirm_therapist_released(self) -> dict:
+        """Therapist process confirms ITS OWN BLE receiver is now actually
+        disabled + disconnected, completing a therapist->patient handoff.
+        Only applies if the therapist is still the confirmed owner and a
+        handoff toward the patient is actually pending -- a stale/duplicate
+        call (e.g. a second confirmation from both the main thread and the
+        BLEReceiver watchdog for the same handoff) is a harmless no-op."""
+        with self._lock:
+            if self._state.ble_owner == "therapist" and self._state.ble_handoff_target == "patient":
+                self._state.ble_owner = "patient"
+                self._state.ble_handoff_target = ""
+                self._state.ble_handoff_requested_at = 0.0
+                self._state.ble_generation += 1
+            self._touch()
+            return self._state.snapshot()
+
+    def confirm_patient_released(self) -> dict:
+        """Patient process confirms ITS OWN BLE receiver is now actually
+        disabled + disconnected, completing a patient->therapist handoff.
+        Same staleness guard as confirm_therapist_released()."""
+        with self._lock:
+            if self._state.ble_owner == "patient" and self._state.ble_handoff_target == "therapist":
+                self._state.ble_owner = "therapist"
+                self._state.ble_handoff_target = ""
+                self._state.ble_handoff_requested_at = 0.0
+                self._state.ble_generation += 1
+            self._touch()
+            return self._state.snapshot()
+
     # -- volume (therapist) -------------------------------------------
     def set_volume(self, value) -> dict:
         with self._lock:
@@ -390,6 +513,15 @@ class SessionStore:
                 session_booting=self._state.session_booting,
                 selected_patient=self._state.selected_patient,
                 dark_mode=dark,
+                ble_owner=self._state.ble_owner,
+                # Never regress the fencing token -- a receiver's watchdog
+                # may already have cached a higher generation than a fresh
+                # SessionState's default (0) would otherwise produce, which
+                # would make every future lease response look "stale" and
+                # get permanently discarded. ble_handoff_target/
+                # ble_handoff_requested_at are safe to drop back to their
+                # defaults (no pending handoff carries over a manual reset).
+                ble_generation=self._state.ble_generation,
             )
             self._state.config.dark_mode = dark          # carry the theme onto the fresh config
             return self._state.snapshot()
