@@ -69,11 +69,23 @@ TEST_RAMP_RATE     = 0.5  # normalized units/second (-1..1 range) -- Keyboard Te
 
 # Required Wrist Rotation -- a MINIMUM rotation-magnitude gate, separate
 # from TOLERANCE above (which is an angle-MATCHING precision window around
-# the rolled target, unaffected by this). The patient's current raw wrist
-# reading (abs(tilt_x), same domain SENSOR_CFG["Wrist Rotation"] calibrates
-# against) must reach this % of their own calibrated resting->peak range
-# before hold-time progress accumulates at all -- see on_enter()'s
-# self._wrist_rotation_min and update()'s "rotated_enough" check.
+# the rolled target, unaffected by this). The patient's current rotation
+# must reach this % of THIS ROUND'S OWN target_angle (in the same
+# calibrated-degree units "aligned" already uses) before hold-time progress
+# accumulates at all -- see update()'s "rotated_enough" check.
+#
+# This used to be measured against a flat % of the patient's calibrated
+# resting->peak range instead (independent of any given round's actual
+# target) -- on Medium/Hard that floor (63deg / 81deg equivalent) ended up
+# numerically higher than TARGET_ANGLE_RANGE ever rolls (max 34deg / 42deg),
+# so "aligned" and "rotated enough" could never both be true at once: the
+# hold timer would never start no matter how precisely the patient held the
+# arrow on the target. Deriving the requirement from each round's own
+# target_angle instead guarantees it's always satisfiable exactly at
+# alignment (requiring pct <= 100% of the target's own magnitude can never
+# exceed the target itself), while still making higher difficulties demand
+# getting closer to the FULL target rotation rather than just skimming the
+# tolerance band.
 WRIST_REQUIREMENT = {"Easy": 0.30, "Medium": 0.70, "Hard": 0.90}
 
 # Magnitude range (degrees) a turn's target angle is rolled from -- always
@@ -283,17 +295,11 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self.tolerance   = cal_params.get("kl_tolerance", TOLERANCE[self.difficulty])
         self.hold_time   = cal_params.get("kl_hold_time", HOLD_TIME_DEFAULT)
 
-        # Required Wrist Rotation: a minimum raw-rotation gate, derived from
-        # THIS patient's own calibration trials (baseline = resting reading,
-        # average = their measured peak-effort reading -- the same pair
-        # CalibrationWindow's own generic threshold slider uses), not a flat
-        # per-difficulty raw number. Falls back to 0 (no gate) if this
-        # sensor was never actually calibrated (e.g. Test Mode bypass).
+        # Required Wrist Rotation: see WRIST_REQUIREMENT's own comment --
+        # this % is applied against EACH ROUND'S OWN target_angle in
+        # update()'s "rotated_enough" check (_pick_next_target rolls a new
+        # target_angle every round), not a separately-calibrated floor.
         self.wrist_requirement_pct = cal_params.get("kl_wrist_requirement", WRIST_REQUIREMENT[self.difficulty])
-        _avg      = self.cal.get("average", 0.0)
-        _baseline = self.cal.get("baseline", 0.0)
-        _span     = max(0.0, _avg - _baseline)
-        self._wrist_rotation_min = _baseline + _span * self.wrist_requirement_pct
 
         self.game_over           = False
         self.game_over_score     = 0
@@ -538,12 +544,17 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
         elif self.phase == "playing":
             dist    = abs(self.current_angle - self.target_angle)
             aligned = dist <= self.tolerance
-            # Required Wrist Rotation: the patient must actually rotate the
-            # wrist by at least this much (raw magnitude, independent of
-            # which way "aligned" is measured) before hold-time progress
-            # counts at all -- composes with the existing angle/tolerance
-            # check rather than replacing it.
-            rotated_enough = abs(raw_tilt_x) >= self._wrist_rotation_min
+            # Required Wrist Rotation: the patient must rotate to at least
+            # this % of THIS ROUND'S OWN target_angle magnitude (independent
+            # of which way "aligned" is measured -- both sides use abs())
+            # before hold-time progress counts at all -- composes with the
+            # existing angle/tolerance check rather than replacing it.
+            # Compared in the same calibrated-degree units as "aligned"
+            # itself (current_angle/target_angle), not a separate raw-
+            # sensor floor -- see WRIST_REQUIREMENT's own comment for why
+            # that used to make this unsatisfiable on Medium/Hard.
+            required_angle = abs(self.target_angle) * self.wrist_requirement_pct
+            rotated_enough = abs(self.current_angle) >= required_angle
 
             if self._need_neutral:
                 self.hold_timer = 0.0
