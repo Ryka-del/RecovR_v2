@@ -23,8 +23,8 @@ tracked).
 import atexit
 
 GPIO_PIN = 17          # BCM numbering -- confirmed unused elsewhere in this codebase
-ON_TIME_SEC  = 0.15
-OFF_TIME_SEC = 0.15
+ON_TIME_SEC  = 0.10
+OFF_TIME_SEC = 0.10
 BLINKS_PER_SEQUENCE = 3
 
 try:
