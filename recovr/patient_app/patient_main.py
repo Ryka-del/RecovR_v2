@@ -21,6 +21,7 @@ Env:  RECOVR_PATIENT_POS="x,y"  RECOVR_PATIENT_SIZE="WxH"  RECOVR_FULLSCREEN=1
 """
 
 import os
+import signal
 import sys
 
 # make the project root importable (screens/, constants, ...) even if launched oddly
@@ -723,6 +724,10 @@ class PatientApp:
                 self.runner.stop()          # -> game.external_stop() -> stop_music()
             except Exception:
                 pass
+            try:
+                self.runner.teardown()      # releases the LED feedback's GPIO pin
+            except Exception:
+                pass
         self.runner = None
         self._result_posted = False
         self._howto_elapsed = 0.0
@@ -732,8 +737,42 @@ class PatientApp:
             pass
 
 
+def _raise_keyboard_interrupt(*_a):
+    raise KeyboardInterrupt
+
+
 def main():
-    PatientApp().run()
+    # Python's default SIGTERM disposition terminates the process
+    # immediately -- atexit handlers (see hardware/led_feedback.py's
+    # LedFeedback.__init__) do NOT run on an untrapped SIGTERM, only on a
+    # normal interpreter exit. recovr/launch_production.py's supervisor
+    # stops this process with exactly that signal (proc.terminate()), so
+    # without this, the LED fail-safe cleanup could be skipped on every
+    # ordinary app shutdown, not just a crash. Mirrors
+    # recovr/launch_production.py's own _raise_keyboard_interrupt pattern.
+    for sig_name in ("SIGTERM", "SIGINT"):
+        sig = getattr(signal, sig_name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, _raise_keyboard_interrupt)
+            except (ValueError, OSError):
+                pass
+
+    app = PatientApp()
+    try:
+        app.run()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # Hardware fail-safe: force the LED off and release GPIO17 on every
+        # exit path (normal QUIT/ESC, Ctrl+C/SIGINT, or the launcher's
+        # SIGTERM) -- not only the ones _teardown_runner() already covers
+        # mid-session. Idempotent and safe even if no runner is active.
+        if app.runner is not None:
+            try:
+                app.runner.teardown()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

@@ -94,6 +94,18 @@ class GameRunner:
         self.game = spec.cls()
         self.game.on_enter(dict(config))
 
+        # LED scoring feedback -- GameRunner is only ever constructed in the
+        # patient process (see recovr/patient_app/patient_main.py), which is
+        # the one place every real game's update() actually runs, so this
+        # is the single, naturally-exclusive owner of the GPIO pin -- see
+        # hardware/led_feedback.py's own docstring for why no lock/thread
+        # is needed. self._last_score is the baseline a later increase is
+        # compared against; starts at whatever on_enter() already left
+        # self.game.score at (normally 0, but never assumed to be).
+        from hardware.led_feedback import LedFeedback
+        self._led = LedFeedback()
+        self._last_score = getattr(self.game, "score", 0)
+
         self.paused = False
         self.stopped = False
         self.finished = False
@@ -191,6 +203,16 @@ class GameRunner:
         if callable(hook):
             hook()
 
+    def teardown(self):
+        """Release this runner's hardware resources (currently just the LED
+        feedback's GPIO pin). Call exactly once, when this runner is being
+        permanently discarded -- see patient_main.py's _teardown_runner() --
+        so the NEXT GameRunner's own LedFeedback can claim GPIO17 again
+        (gpiozero ties one pin to one live device at a time within a
+        process; GameRunner instances are recreated every session, not
+        just once per process, so this can't wait for atexit)."""
+        self._led.cleanup()
+
     def stop(self):
         self.stopped = True
         # A countdown (or a fade leading into one) that gets cancelled must
@@ -212,6 +234,12 @@ class GameRunner:
         self.game.handle_event(event)
 
     def update(self, dt: float):
+        # Ticked unconditionally, before any of this method's own early
+        # returns below -- an already-started blink sequence must keep
+        # progressing in real time even if the game itself is paused/
+        # fading/counting down for a while, rather than freezing mid-blink.
+        self._led.tick(dt)
+
         if self._fading:
             self._fade_t += dt
             if self._fade_t >= FADE_TOTAL_SEC:
@@ -240,6 +268,18 @@ class GameRunner:
             self.sensor_frames += 1
 
         self.game.update(dt)
+
+        # LED scoring feedback -- a plain increase, not a change, so Apple
+        # Catching's insect penalty (score decreases) and every other
+        # "nothing happened this frame" case never trigger it. One
+        # request_blink() call per frame in which score went up is enough
+        # even if it rose by more than one point in a single frame -- the
+        # LED controller's own coalescing collapses any burst into at most
+        # one follow-up sequence regardless (see hardware/led_feedback.py).
+        current_score = getattr(self.game, "score", self._last_score)
+        if current_score > self._last_score:
+            self._led.request_blink()
+        self._last_score = current_score
 
         # A game signals completion either by asking its ScreenManager to move
         # on (older games) or by raising an internal `game_over` flag without
