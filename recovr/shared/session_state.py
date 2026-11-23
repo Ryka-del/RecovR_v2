@@ -420,7 +420,7 @@ class SessionStore:
             if target in ("therapist", "patient") and target != self._state.ble_handoff_target:
                 self._state.ble_handoff_target = target
                 self._state.ble_generation += 1
-                self._state.ble_handoff_requested_at = time.time()
+                self._state.ble_handoff_requested_at = time.monotonic()
             self._touch()
             return self._state.snapshot()
 

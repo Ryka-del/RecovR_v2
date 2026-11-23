@@ -9,6 +9,29 @@ import datetime
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recovr.db")
 
+def _utc_to_local(ts):
+    """SQLite's CURRENT_TIMESTAMP defaults (played_at / calibrated_at /
+    created_at) are stored in UTC. Convert to the OS-configured local
+    timezone for DISPLAY only (the OS owns the timezone -- nothing is
+    hardcoded here). Returns the input unchanged if it can't be parsed."""
+    try:
+        dt = datetime.datetime.strptime(str(ts)[:19], "%Y-%m-%d %H:%M:%S")
+        return (dt.replace(tzinfo=datetime.timezone.utc)
+                  .astimezone().strftime("%Y-%m-%d %H:%M:%S"))
+    except (ValueError, TypeError, OverflowError, OSError):
+        return ts
+
+
+def _localize_rows(rows, key):
+    out = []
+    for r in rows:
+        d = dict(r)
+        if d.get(key):
+            d[key] = _utc_to_local(d[key])
+        out.append(d)
+    return out
+
+
 MAX_PIN_ATTEMPTS = 5
 LOCK_DURATION_HOURS = 1
 
@@ -315,7 +338,7 @@ class Database:
                 )
                 ORDER BY c.calibrated_at DESC
             """, (therapist_id, therapist_id))
-        return [dict(r) for r in cur.fetchall()]
+        return _localize_rows(cur.fetchall(), "calibrated_at")
 
     # ── SESSION RECORDS ───────────────────────────────────────────────
 
@@ -362,7 +385,7 @@ class Database:
                 WHERE s.therapist_id = ?
                 ORDER BY s.played_at DESC
             """, (int(therapist_id),))
-        return [dict(r) for r in cur.fetchall()]
+        return _localize_rows(cur.fetchall(), "played_at")
 
     def get_patient_progress_summary(self, patient_id):
         """Aggregate counts for the Patient Dashboard's Rehabilitation
@@ -632,7 +655,7 @@ class Database:
             """, (therapist_id, therapist_id))
         else:
             c = self.conn.execute("SELECT * FROM patients ORDER BY created_at ASC")
-        return [dict(r) for r in c.fetchall()]
+        return _localize_rows(c.fetchall(), "created_at")
 
     def create_patient(self, data: dict, therapist_id: int):
         """

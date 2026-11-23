@@ -41,7 +41,7 @@ def ble_lease():
     everyone reasons about handoff age against the same server clock."""
     snap = _store().snapshot()
     requested_at = snap.get("ble_handoff_requested_at") or 0.0
-    pending_seconds = (time.time() - requested_at) if requested_at else 0.0
+    pending_seconds = (time.monotonic() - requested_at) if requested_at else 0.0
     return jsonify(
         owner=snap.get("ble_owner", "therapist"),
         target=snap.get("ble_handoff_target", ""),

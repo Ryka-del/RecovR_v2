@@ -10,7 +10,7 @@
 #      to prevent field overlap
 #   3. Register Patient dropdowns now draw in a second pass so they always
 #      appear on top of all other fields (z-order fix)
-#   4. Calibration bypass toggle added to Start Session panel for dev testing
+#   4. (removed -- dev-only calibration bypass toggle no longer exists)
 #   5. Patients are now private per therapist — get_all_patients filters by
 #      therapist_id so each therapist only sees their own patients plus those
 #      explicitly shared with them
@@ -93,13 +93,6 @@ if _DUAL_MONITOR:
 # confirming (via OS process exit) that the previous owner actually
 # terminated -- never by granting ownership on a bare timeout.
 _BLE_HANDOFF_TIMEOUT_MS = 5000
-
-# Development/testing only -- shows the "Test Mode (Bypass)" toggle on Start
-# Session. Permanently on for this development phase (no env var / launch
-# flag needed, so `python main.py` alone shows it); the toggle itself still
-# defaults to OFF each run (self._test_mode_bypass below) and must be
-# switched on by hand. Flip this back to False once testing is done.
-_TEST_MODE_AVAILABLE = True
 
 # ─────────────────────────────────────────────────────────────────────
 #  NAV / PANEL CONSTANTS
@@ -1310,12 +1303,6 @@ class TherapistDashboardScene:
         self._init_register_state()
         self._init_game_config_state()
 
-        # ── Calibration bypass for dev testing ────────────────────────
-        # Allows therapists to bypass sensor calibration during development
-        self.calibration_bypassed = False
-        self._bypass_btn_rect     = pygame.Rect(0, 0, 1, 1)
-        self._bypass_hov          = False
-
         # ── Real calibration state ─────────────────────────────────────
         self.calibration_done     = False       # True after CalibrationWindow accepted
         self.calibration_result   = None        # dict from CalibrationWindow
@@ -1348,12 +1335,6 @@ class TherapistDashboardScene:
         self._reuse_recal_rect      = pygame.Rect(0, 0, 1, 1)
         self._reuse_use_hov         = False
         self._reuse_recal_hov       = False
-
-        # ── Dev/testing-only bypass (OFF by default; toggled by hand) ───
-        self._test_mode_bypass   = False        # toggled on Start Session
-        self._test_mode_btn_rect = pygame.Rect(0, 0, 1, 1)
-        self._test_mode_hov      = False
-        self._sm_test_mode       = False        # True while a bypassed session is live (panel 7 badge)
 
         # ── Tutorial toggle (ON/OFF, confirmed via a popup like the Language
         # chip -- clicking it never launches or navigates by itself; it only
@@ -2735,7 +2716,7 @@ class TherapistDashboardScene:
         # each frame and the other to a dead 1x1, so only one of the two
         # checks below can ever actually fire. ──
         if self.active_panel == 5:
-            if _TEST_MODE_AVAILABLE and self._language_btn_rect.collidepoint(pos):
+            if self._language_btn_rect.collidepoint(pos):
                 play_click()
                 self._pending_language = "fil" if self._patient_language == "en" else "en"
                 self.modal = "language_confirm"
@@ -2747,11 +2728,6 @@ class TherapistDashboardScene:
                 self.modal = "tutorial_confirm"
                 return None
 
-            if _TEST_MODE_AVAILABLE and self._test_mode_btn_rect.collidepoint(pos):
-                play_click()
-                self._test_mode_bypass = not self._test_mode_bypass
-                return None
-
             if self._calibrate_btn_rect.collidepoint(pos):
                 play_click()
                 game_name, game_type = self.gc.get("selected_game") or (None, "Grip Strength")
@@ -2761,15 +2737,13 @@ class TherapistDashboardScene:
 
             if self._start_btn_rect.collidepoint(pos):
                 # _start_btn_rect is only ever live when the draw code's own
-                # `ready` (which already accounts for Test Mode) was True, so
-                # no separate _session_ready() re-check is needed here.
-                test_mode_on = _TEST_MODE_AVAILABLE and self._test_mode_bypass
-                if not test_mode_on and self._calibration_mismatched():
+                # `ready` was True, so no separate _session_ready() re-check
+                # is needed here.
+                if self._calibration_mismatched():
                     self.modal = "calibration_mismatch"
                     return None
                 play_start_session()
-                self._sm_test_mode = test_mode_on
-                return self._launch_game(test_mode=test_mode_on, tutorial=self._tutorial_enabled)
+                return self._launch_game(tutorial=self._tutorial_enabled)
 
         return None
 
@@ -3105,7 +3079,7 @@ class TherapistDashboardScene:
     def _session_ready(self):
         return (self.selected_patient is not None and
                 self.gc["selected_game"] is not None and
-                (self.calibration_done or self.calibration_bypassed))
+                self.calibration_done)
 
     def _calibration_mismatched(self):
         """True when calibration_done but what was actually calibrated
@@ -3123,7 +3097,7 @@ class TherapistDashboardScene:
         already cover a simpler game's single required sensor (e.g. Grip
         Strength, calibrated as part of Garden Wonders, satisfies
         Basketball too) instead of forcing a pointless recalibration."""
-        if not self.calibration_done or self.calibration_bypassed:
+        if not self.calibration_done:
             return False
         game_name, game_type = self.gc.get("selected_game") or (None, "")
         game_type = game_type or ""
@@ -3217,7 +3191,7 @@ class TherapistDashboardScene:
                 shown = int(shown)
         return f"Goal: {CalibrationWindow._fmt_unit(shown, spec['unit'])}"
 
-    def _launch_game(self, test_mode=False, tutorial=False):
+    def _launch_game(self, tutorial=False):
         import builtins
         game_name = (self.gc.get("selected_game") or (None,))[0]
         scene_key = self._GAME_SCENE_MAP.get(game_name)
@@ -3226,14 +3200,9 @@ class TherapistDashboardScene:
         raw_diff  = self.gc.get("difficulty", "Easy")
         game_diff = raw_diff
 
-        # Test Mode (dev-only) only bypasses the Session Readiness Checklist
-        # gate above -- the game itself launches through
-        # this exact same path with the real patient_id/account_id attached,
-        # so it saves, scores, and reports exactly like a normal session.
-        # Tutorial is different: it DOES need to reach the game itself (see
+        # Tutorial needs to reach the game itself (see
         # SessionModeMixin._session_init's "tutorial" read), since it also
-        # skips the game's own save_session() call and shows a TUTORIAL badge
-        # -- unlike test_mode, which only ever matters to this dashboard.
+        # skips the game's own save_session() call and shows a TUTORIAL badge.
         patient_id   = (self.selected_patient or {}).get("id")
         account_id   = self.account.get("id")
 
@@ -3444,10 +3413,6 @@ class TherapistDashboardScene:
         self._sm_result = None
         self._sm_volume = None
         self._sm_stopped_notice = False
-        # Dev-only bypass auto-disables the moment a (possibly bypassed)
-        # session ends, so the next one always starts from normal validation.
-        self._test_mode_bypass = False
-        self._sm_test_mode     = False
         # Tutorial auto-disables the same way, so the next session for this
         # (or another) patient never silently inherits it by accident.
         self._tutorial_enabled = False
@@ -4076,32 +4041,11 @@ class TherapistDashboardScene:
         tel = st.get("telemetry") or {}
         cfg = st.get("config") or {}
 
-        sm_test_mode = getattr(self, "_sm_test_mode", False)
-        # Dev-only: a red card border costs no extra layout space at all
-        # (800x480 has none to spare here), so it's the PRIMARY always-safe
-        # Test Mode cue; a small "TEST" chip adds a second, textual one using
-        # the least height that still reads clearly. This session was
-        # launched via the Test Mode bypass -- no real patient/therapist id
-        # was attached to it (see _launch_game), so nothing about it gets
-        # saved as a real rehabilitation session.
         _card_bg(surface, pa, alpha=140, radius=16,
-                 border_col=(205, 55, 50) if sm_test_mode else (200, 218, 240),
-                 border_w=2 if sm_test_mode else 1)
+                 border_col=(200, 218, 240), border_w=1)
         pad = int(44 * (W / 1920))
         x0  = pa.x + pad
         y   = pa.y + pad
-
-        if sm_test_mode:
-            # 800x480 has no vertical budget to spare below this (the
-            # sensor-monitor box already sizes itself down to a hard floor
-            # on this screen) -- so the tag sits ON the card's own top
-            # border, like a flag, instead of reserving a row of its own.
-            # `y` is deliberately left untouched.
-            tb_s = self.fnt["eyebrow"].render("TEST MODE", True, (255, 255, 255))
-            tb_r = pygame.Rect(0, 0, tb_s.get_width() + self._sc(12), tb_s.get_height() + self._sc(4))
-            tb_r.center = (pa.right - self._sc(10) - tb_r.width // 2, pa.y)
-            pygame.draw.rect(surface, (205, 55, 50), tb_r, border_radius=self._sc(5))
-            surface.blit(tb_s, tb_s.get_rect(center=tb_r.center))
 
         right_edge = self._sm_draw_right_strip(surface, pa, cfg, status)
 
@@ -5148,9 +5092,7 @@ class TherapistDashboardScene:
         self.start_hov         = self._start_btn_rect.collidepoint(mouse_pos)      # Start Session button
         self.register_link_hov = self._register_link_rect.collidepoint(mouse_pos)  # Patient list "register" link
         self.preset_hov        = self._preset_btn_rect.collidepoint(mouse_pos)     # Smart Preset button
-        self._bypass_hov      = self._bypass_btn_rect.collidepoint(mouse_pos)      # Calibration bypass toggle
         self._calibrate_hov   = self._calibrate_btn_rect.collidepoint(mouse_pos)  # Real Calibrate button
-        self._test_mode_hov   = self._test_mode_btn_rect.collidepoint(mouse_pos)  # Dev-only Bypass toggle
         self._tutorial_hov    = self._tutorial_btn_rect.collidepoint(mouse_pos)  # Tutorial launch chip
         self._language_hov   = self._language_btn_rect.collidepoint(mouse_pos)  # Language chip
 
@@ -8741,7 +8683,7 @@ class TherapistDashboardScene:
         gc = self.gc
         pt = self.selected_patient or {}
 
-        cal_done     = self.calibration_done or self.calibration_bypassed
+        cal_done     = self.calibration_done
         cal_mismatch = self._calibration_mismatched()
 
         pad    = self._sc(14)
@@ -8822,9 +8764,7 @@ class TherapistDashboardScene:
         # therapist finished it: the Recommended preset left as-is, or
         # Advanced Settings customized -- both end in the same _accept()
         # that fills "params"), not merely once a game has been picked.
-        # Bypass skips that whole screen, so it counts too -- there is no
-        # params set to confirm in that path.
-        game_configured = self.calibration_bypassed or bool(
+        game_configured = bool(
             (self.calibration_result or {}).get("params"))
         # "Patient Selected" / "Game Selected" are still REQUIRED for the
         # session to be ready -- the game-config flow already can't reach
@@ -8845,30 +8785,18 @@ class TherapistDashboardScene:
         steps = _hidden_requirements + display_steps
         # The CTA button only becomes "Start Session" once every item above
         # is checked -- the checklist IS the readiness gate now, not a
-        # separate self._session_ready() computation. The dev-only Test Mode
-        # toggle's whole purpose is letting a developer launch a game without
-        # having completed any of the hardware/prep-heavy steps, so it treats
-        # Sensor Calibrated, Game Configured, AND Controller Connected as
-        # satisfied for THIS gate -- it never touches what the checklist
-        # itself displays, so e.g. a disconnected controller still correctly
-        # shows as disconnected even while the CTA reads "Start Session".
-        _bypassable = {"Sensor Calibrated", "Game Configured", "Controller Connected"}
-        test_mode_on = _TEST_MODE_AVAILABLE and self._test_mode_bypass
-        if test_mode_on:
-            ready = all(ok or lbl in _bypassable for lbl, ok in steps)
-        else:
-            ready = all(ok for _, ok in steps)
+        # separate self._session_ready() computation.
+        ready = all(ok for _, ok in steps)
         hpad = self._sc(10)
         head_s = self.fnt["section"].render("Session Readiness Checklist", True, (75, 95, 125))
         # More room between the heading and the first row, and a taller cap
         # per row, now that only 3 rows (not 5) need to share the available
         # height -- both freed up by dropping the two hidden rows above.
         head_gap = self._sc(16)
-        # The header's top-right corner holds three stacked chips (Language,
-        # then Tutorial, then Bypass) rather than the single Test Mode toggle
-        # it used to -- measure their combined height up front so the header
-        # zone reserves enough room for all three regardless of the title's
-        # own (usually smaller) height.
+        # The header's top-right corner holds two stacked chips (Language,
+        # then Tutorial) -- measure their combined height up front so the
+        # header zone reserves enough room for both regardless of the
+        # title's own (usually smaller) height.
         chip_gap = self._sc(6)
         tutorial_lbl = "TUTORIAL ON" if self._tutorial_enabled else "Tutorial"
         tutorial_s = self.fnt["tag"].render(tutorial_lbl, True, (255, 255, 255))
@@ -8877,10 +8805,10 @@ class TherapistDashboardScene:
         # checklist_r.y below); the rows live entirely on the left (dot +
         # short label, never reaching the chip column's x-range). So rows
         # should start right under the TITLE text, not under the taller
-        # 3-chip stack -- only the overall card height needs to grow enough
+        # chip stack -- only the overall card height needs to grow enough
         # to actually contain that stack without clipping it.
         title_zone_h = head_s.get_height()
-        chip_stack_h = (chip_h * 3 + chip_gap * 2) if _TEST_MODE_AVAILABLE else 0
+        chip_stack_h = chip_h * 2 + chip_gap
         avail_rows_h = max(1, content_bottom - (y + hpad + title_zone_h + head_gap) - hpad)
         row_h = min(self._sc(62), avail_rows_h / len(display_steps))
         checklist_h = hpad + title_zone_h + head_gap + row_h * len(display_steps) + hpad
@@ -8889,50 +8817,28 @@ class TherapistDashboardScene:
         _card_bg(surface, checklist_r, alpha=235, border_col=(185, 210, 240), border_w=1)
         surface.blit(head_s, (checklist_r.x + hpad, checklist_r.y + hpad))
 
-        # Language chip (top slot -- the corner the old single Test Mode
-        # toggle used to occupy on its own) + Tutorial launch (now middle)
-        # + the Bypass toggle (renamed from "Test Mode (Bypass)", now
-        # bottom). Permanently shown for this development phase
-        # (_TEST_MODE_AVAILABLE); remove that flag once testing is done --
-        # Language and Tutorial are real, patient-facing features and stay
-        # regardless.
-        if _TEST_MODE_AVAILABLE:
-            lang_lbl = "FIL" if self._patient_language == "fil" else "EN"
-            lang_s = self.fnt["tag"].render(lang_lbl, True, (255, 255, 255))
-            lang_w = max(tutorial_s.get_width(), lang_s.get_width()) + self._sc(16)
-            lang_r = pygame.Rect(checklist_r.right - hpad - lang_w, checklist_r.y + hpad, lang_w, chip_h)
-            lang_col = (28, 120, 176) if self._language_hov else (34, 140, 198)
-            pygame.draw.rect(surface, lang_col, lang_r, border_radius=self._sc(6))
-            surface.blit(lang_s, lang_s.get_rect(center=lang_r.center))
-            self._language_btn_rect = lang_r
+        # Language chip (top slot) + Tutorial launch chip below it.
+        lang_lbl = "FIL" if self._patient_language == "fil" else "EN"
+        lang_s = self.fnt["tag"].render(lang_lbl, True, (255, 255, 255))
+        lang_w = max(tutorial_s.get_width(), lang_s.get_width()) + self._sc(16)
+        lang_r = pygame.Rect(checklist_r.right - hpad - lang_w, checklist_r.y + hpad, lang_w, chip_h)
+        lang_col = (28, 120, 176) if self._language_hov else (34, 140, 198)
+        pygame.draw.rect(surface, lang_col, lang_r, border_radius=self._sc(6))
+        surface.blit(lang_s, lang_s.get_rect(center=lang_r.center))
+        self._language_btn_rect = lang_r
 
-            game_selected = bool(self.gc.get("selected_game"))
-            tut_w = tutorial_s.get_width() + self._sc(16)
-            tut_r = pygame.Rect(checklist_r.right - hpad - tut_w, lang_r.bottom + chip_gap, tut_w, chip_h)
-            if not game_selected:
-                tut_col = (150, 158, 172)
-            elif self._tutorial_enabled:
-                tut_col = (190, 140, 20) if self._tutorial_hov else (215, 160, 30)
-            else:
-                tut_col = (28, 150, 176) if self._tutorial_hov else (34, 170, 198)
-            pygame.draw.rect(surface, tut_col, tut_r, border_radius=self._sc(6))
-            surface.blit(tutorial_s, tutorial_s.get_rect(center=tut_r.center))
-            self._tutorial_btn_rect = tut_r if game_selected else pygame.Rect(0, 0, 1, 1)
-
-            tm_lbl = "BYPASS ON" if self._test_mode_bypass else "Bypass"
-            tm_s = self.fnt["tag"].render(tm_lbl, True, (255, 255, 255))
-            tm_w = tm_s.get_width() + self._sc(16)
-            tm_r = pygame.Rect(checklist_r.right - hpad - tm_w, tut_r.bottom + chip_gap, tm_w, chip_h)
-            tm_col = ((170, 40, 40) if self._test_mode_hov else (200, 60, 55)) \
-                if self._test_mode_bypass else \
-                ((90, 100, 115) if self._test_mode_hov else (110, 120, 136))
-            pygame.draw.rect(surface, tm_col, tm_r, border_radius=self._sc(6))
-            surface.blit(tm_s, tm_s.get_rect(center=tm_r.center))
-            self._test_mode_btn_rect = tm_r
+        game_selected = bool(self.gc.get("selected_game"))
+        tut_w = tutorial_s.get_width() + self._sc(16)
+        tut_r = pygame.Rect(checklist_r.right - hpad - tut_w, lang_r.bottom + chip_gap, tut_w, chip_h)
+        if not game_selected:
+            tut_col = (150, 158, 172)
+        elif self._tutorial_enabled:
+            tut_col = (190, 140, 20) if self._tutorial_hov else (215, 160, 30)
         else:
-            self._language_btn_rect = pygame.Rect(0, 0, 1, 1)
-            self._tutorial_btn_rect = pygame.Rect(0, 0, 1, 1)
-            self._test_mode_btn_rect = pygame.Rect(0, 0, 1, 1)
+            tut_col = (28, 150, 176) if self._tutorial_hov else (34, 170, 198)
+        pygame.draw.rect(surface, tut_col, tut_r, border_radius=self._sc(6))
+        surface.blit(tutorial_s, tutorial_s.get_rect(center=tut_r.center))
+        self._tutorial_btn_rect = tut_r if game_selected else pygame.Rect(0, 0, 1, 1)
 
         rows_top = checklist_r.y + hpad + title_zone_h + head_gap
         dot_r    = self._sc(9)
