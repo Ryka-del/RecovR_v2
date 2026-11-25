@@ -1408,7 +1408,6 @@ class TherapistDashboardScene:
         self._ep              = {}
         self._ep_active_key   = None
         self._ep_error        = ""
-        self._ep_success      = ""
         self._ep_drop_open    = {}
         self._ep_drop_rects   = {}
         self._ep_confirm_del  = False
@@ -1423,6 +1422,12 @@ class TherapistDashboardScene:
         self._transfer_ok_rect   = pygame.Rect(0, 0, 1, 1)   # "transfer_success" dismiss
         self._transfer_ok_hov    = False
         self._transfer_success_msg = ""
+        # "patient_update_success" dismiss -- same draw_confirm_dialog pattern
+        # as register_success/transfer_success above, replacing the inline
+        # "Patient updated successfully." text that used to sit above the
+        # Save/Cancel buttons in the Edit Patient modal.
+        self._ep_update_ok_rect = pygame.Rect(0, 0, 1, 1)
+        self._ep_update_ok_hov  = False
 
         # ── Share patient modal state ─────────────────────────────────
         # Allows therapists to share a patient with other therapists
@@ -1918,6 +1923,31 @@ class TherapistDashboardScene:
             elif event.type == pygame.FINGERUP:
                 self._share_shared_drag_y = None
 
+        # ── Edit Profile: icon-picker popup scroll (wheel + finger drag).
+        #    Checked here, ahead of the Patient List's own wheel handler
+        #    below, for the exact same reason as the Share popup above --
+        #    this modal opens on top of panel 0 (Patient List is still the
+        #    active_panel underneath it), so without this priority every
+        #    wheel event would scroll the hidden patient list instead of
+        #    the picker on top of it (the picker's mouse-wheel scroll was
+        #    unreachable code until this was moved up from below the
+        #    Patient List check). ──────────────────────────────────────
+        if self.modal == "edit_profile" and self.edit_icon_picker_open:
+            if event.type == pygame.MOUSEWHEEL:
+                self._eip_scroll = max(0, min(
+                    self._eip_scroll - event.y * int(60 * self._fs), self._eip_scroll_max))
+                return None
+            if event.type == pygame.FINGERDOWN:
+                self._eip_drag_y = event.y * self.HEIGHT
+            elif event.type == pygame.FINGERMOTION and self._eip_drag_y is not None:
+                cy = event.y * self.HEIGHT
+                self._eip_scroll = max(0, min(
+                    self._eip_scroll + (self._eip_drag_y - cy), self._eip_scroll_max))
+                self._eip_drag_y = cy
+                return None
+            elif event.type == pygame.FINGERUP:
+                self._eip_drag_y = None
+
         # ── Patient List scrolling (wheel + touch drag) ──────────────
         if self.active_panel == 0:
             if event.type == pygame.MOUSEWHEEL:
@@ -2079,23 +2109,6 @@ class TherapistDashboardScene:
             elif event.type == pygame.FINGERUP:
                 self._rp_drag_y = None
 
-        # ── Edit Profile: icon-picker popup scroll (wheel + finger drag) ──
-        if self.modal == "edit_profile" and self.edit_icon_picker_open:
-            if event.type == pygame.MOUSEWHEEL:
-                self._eip_scroll = max(0, min(
-                    self._eip_scroll - event.y * int(60 * self._fs), self._eip_scroll_max))
-                return None
-            if event.type == pygame.FINGERDOWN:
-                self._eip_drag_y = event.y * self.HEIGHT
-            elif event.type == pygame.FINGERMOTION and self._eip_drag_y is not None:
-                cy = event.y * self.HEIGHT
-                self._eip_scroll = max(0, min(
-                    self._eip_scroll + (self._eip_drag_y - cy), self._eip_scroll_max))
-                self._eip_drag_y = cy
-                return None
-            elif event.type == pygame.FINGERUP:
-                self._eip_drag_y = None
-
         # ── Touch screen input (mobile/tablet) ──
         if event.type == pygame.FINGERDOWN:
             # FINGERDOWN uses normalized coordinates (0.0-1.0), convert to pixels
@@ -2164,8 +2177,15 @@ class TherapistDashboardScene:
                 yr, nr = self._confirm_rects()
                 if yr.collidepoint(pos):
                     play_click()
+                    # _ep_submit() itself decides what happens next: on
+                    # success it closes this modal AND opens
+                    # "patient_update_success" (see that method) -- only
+                    # force-clear here if it did neither (the ownership-
+                    # check failure path), so the confirm dialog doesn't
+                    # get stuck open over the inline _ep_error it just set.
                     self._ep_submit()
-                    self.modal = None
+                    if self.modal == "save_patient_confirm":
+                        self.modal = None
                 elif nr.collidepoint(pos):
                     play_click()
                     self.modal = None
@@ -2347,8 +2367,15 @@ class TherapistDashboardScene:
             if yr.collidepoint(pos):
                 play_click()
                 self._ep_submit()
-                self.modal = None
+                if self.modal == "save_patient_confirm":
+                    self.modal = None
             if nr.collidepoint(pos):
+                play_click()
+                self.modal = None
+            return None
+
+        if self.modal == "patient_update_success":
+            if self._ep_update_ok_rect.collidepoint(pos):
                 play_click()
                 self.modal = None
             return None
@@ -4194,7 +4221,6 @@ class TherapistDashboardScene:
         self._ep_modal_open  = True
         self._ep_confirm_del = False
         self._ep_error       = ""
-        self._ep_success     = ""
         self._ep_active_key  = None
         self._ep_drop_open   = {k: False for k in
                                 ["sex","dominant_hand","affected_hand","stroke_type"]}
@@ -4375,8 +4401,14 @@ class TherapistDashboardScene:
                     target.update(fresh)
         if self.selected_patient and self.selected_patient.get("id") == self._ep_patient["id"]:
             self._push_selected_patient()
-        self._ep_success = "Patient updated successfully."
-        self._ep_error   = ""
+        self._ep_error = ""
+        # Closes the Edit Patient modal and shows a proper confirmation
+        # dialog (same draw_confirm_dialog pattern as register_success/
+        # transfer_success) instead of the inline "Patient updated
+        # successfully." text that used to sit above the Save/Cancel
+        # buttons -- see _draw_patient_update_success_modal.
+        self._ep_modal_open = False
+        self.modal = "patient_update_success"
 
     def _ep_delete(self):
         pid = self._ep_patient["id"]
@@ -4478,10 +4510,8 @@ class TherapistDashboardScene:
         else:
             self._ep_delete_rect = pygame.Rect(0, 0, 1, 1)
 
-        msg = self._ep_error or self._ep_success
-        if msg:
-            mc = (210, 50, 50) if self._ep_error else (50, 175, 75)
-            surface.blit(self.fnt["modal_err"].render(msg, True, mc),
+        if self._ep_error:
+            surface.blit(self.fnt["modal_err"].render(self._ep_error, True, (210, 50, 50)),
                          (mr.x + pad, btn_y - self.fnt["modal_err"].get_height() - self._sc(4)))
 
         btns = [(self._ep_save_rect,   (40,160,220), (25,125,180), self._ep_save_hov,   "Save",   self.fnt["btn"]),
@@ -5197,6 +5227,10 @@ class TherapistDashboardScene:
         if self.modal == "transfer_success":
             self._transfer_ok_hov = self._transfer_ok_rect.collidepoint(mouse_pos)
 
+        # ── Patient update success popup hover ──
+        if self.modal == "patient_update_success":
+            self._ep_update_ok_hov = self._ep_update_ok_rect.collidepoint(mouse_pos)
+
         # ── Confirmation modal hover ──
         if self.modal in ("logout_confirm","delete_confirm","delete_patient_confirm",
                           "select_patient_confirm","deselect_patient_confirm",
@@ -5306,6 +5340,8 @@ class TherapistDashboardScene:
             self._draw_register_success_modal(surface)
         elif self.modal == "transfer_success":
             self._draw_transfer_success_modal(surface)
+        elif self.modal == "patient_update_success":
+            self._draw_patient_update_success_modal(surface)
         elif self.modal == "reuse_calibration_choice":
             self._draw_reuse_calibration_modal(surface)
         elif self.modal == "calibration_mismatch":
@@ -9176,6 +9212,15 @@ class TherapistDashboardScene:
             title="Patient Successfully Transferred!", body=self._transfer_success_msg,
             confirm_label="Okay", single_button=True, confirm_hov=self._transfer_ok_hov)
         self._transfer_ok_rect = cr
+
+    def _draw_patient_update_success_modal(self, surface):
+        cr, _ = draw_confirm_dialog(
+            surface, self.WIDTH, self.HEIGHT, tt=self._tt, sc=self._sc,
+            fonts=self._dialog_fonts(), icon="check", accent=(60, 185, 100),
+            title="Patient Updated Successfully!",
+            body="The patient's information has been saved.",
+            confirm_label="Okay", single_button=True, confirm_hov=self._ep_update_ok_hov)
+        self._ep_update_ok_rect = cr
 
     def _draw_reuse_calibration_modal(self, surface):
         avail_names  = [SENSOR_CFG.get(s, {}).get("sensor_name", s) for s in self._reuse_available]
