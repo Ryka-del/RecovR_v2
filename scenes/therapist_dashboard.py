@@ -35,7 +35,7 @@
 # =============================================================================
 
 import pygame
-import sys, os, math, datetime
+import sys, os, math, datetime, time
 from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1169,6 +1169,14 @@ class TherapistDashboardScene:
         self._sh_down_rect  = pygame.Rect(0, 0, 1, 1)
         self._sh_drag_y     = None
         self._sh_row_rects  = []     # [(rect, session_record), ...] -- tap a row to open it
+        # Short-lived cache for get_sessions(): Session History and Analytics
+        # both draw() every frame while open and used to re-run the same
+        # multi-join SQL query (plus per-row datetime conversion) 60x/sec
+        # for as long as either screen stayed open. Shared between both
+        # panels since they query the exact same (therapist, patient) rows.
+        self._sessions_cache_key  = None
+        self._sessions_cache_at   = 0.0
+        self._sessions_cache_data = []
         # The full-page Session Details view, same pattern as Calibration
         # Record Details -- None = showing the list; set to a session dict
         # = showing that session's own page instead. A SEPARATE scroll/back
@@ -1205,6 +1213,11 @@ class TherapistDashboardScene:
         self._cr_down_rect  = pygame.Rect(0, 0, 1, 1)
         self._cr_drag_y     = None
         self._cr_row_rects  = []     # [(rect, record), ...] -- tap a row to open it
+        # Short-lived cache for get_calibrations() -- same reasoning as
+        # _sessions_cache_* above (Calibration Records draw() every frame).
+        self._calibrations_cache_key  = None
+        self._calibrations_cache_at   = 0.0
+        self._calibrations_cache_data = []
         # The full-page Calibration Record Details view. None = showing the
         # list; set to a record dict = showing that record's own page
         # instead (see _draw_calibration_detail). A SEPARATE scroll/back-nav
@@ -2507,10 +2520,6 @@ class TherapistDashboardScene:
 
         # ── Panel 0: Patient List ─────────────────────────────────────
         if self.active_panel == 0:
-            if self._pl_up_rect.collidepoint(pos):
-                play_click(); self._pl_scroll_by(-1); return None
-            if self._pl_down_rect.collidepoint(pos):
-                play_click(); self._pl_scroll_by(1); return None
             if self._pt_search_rect.collidepoint(pos):
                 self._pt_search_active = True; return None
             else:
@@ -2553,20 +2562,8 @@ class TherapistDashboardScene:
             # open because this block used to swallow every click here.
             if self._shd_back_rect.collidepoint(pos):
                 play_click(); self._sh_detail_record = None; return None
-            if self._shd_up_rect.collidepoint(pos):
-                play_click(); self._shd_scroll = max(0, self._shd_scroll - int(160*self._fs)); return None
-            if self._shd_down_rect.collidepoint(pos):
-                play_click()
-                self._shd_scroll = min(self._shd_scroll_max, self._shd_scroll + int(160*self._fs))
-                return None
 
         if self.active_panel == 8 and self._pv_tab == "history":
-            if self._sh_up_rect.collidepoint(pos):
-                play_click(); self._sh_scroll = max(0, self._sh_scroll - int(160*self._fs)); return None
-            if self._sh_down_rect.collidepoint(pos):
-                play_click()
-                self._sh_scroll = min(self._sh_scroll_max, self._sh_scroll + int(160*self._fs))
-                return None
             # Every session row is its own tap target, looked up by the
             # session's own DB id (via the stored record itself) -- not by
             # list position/index, which would point at the wrong record
@@ -2579,12 +2576,6 @@ class TherapistDashboardScene:
                     return None
 
         if self.active_panel == 8 and self._pv_tab == "analytics":
-            if self._an_up_rect.collidepoint(pos):
-                play_click(); self._an_scroll = max(0, self._an_scroll - int(160*self._fs)); return None
-            if self._an_down_rect.collidepoint(pos):
-                play_click()
-                self._an_scroll = min(self._an_scroll_max, self._an_scroll + int(160*self._fs))
-                return None
             # Metrics tree: the WHOLE row (category/subcategory/game/mode),
             # not just a chevron, toggles that node's expand/collapse state.
             for row_r, path in self._metrics_row_rects:
@@ -2605,20 +2596,8 @@ class TherapistDashboardScene:
             # fall through to the top nav tabs / Select-Deselect Patient.
             if self._crd_back_rect.collidepoint(pos):
                 play_click(); self._cr_detail_record = None; return None
-            if self._crd_up_rect.collidepoint(pos):
-                play_click(); self._crd_scroll = max(0, self._crd_scroll - int(160*self._fs)); return None
-            if self._crd_down_rect.collidepoint(pos):
-                play_click()
-                self._crd_scroll = min(self._crd_scroll_max, self._crd_scroll + int(160*self._fs))
-                return None
 
         if self.active_panel == 8 and self._pv_tab == "calibration":
-            if self._cr_up_rect.collidepoint(pos):
-                play_click(); self._cr_scroll = max(0, self._cr_scroll - int(160*self._fs)); return None
-            if self._cr_down_rect.collidepoint(pos):
-                play_click()
-                self._cr_scroll = min(self._cr_scroll_max, self._cr_scroll + int(160*self._fs))
-                return None
             for row_r, rec in self._cr_row_rects:
                 if row_r.collidepoint(pos):
                     play_click()
@@ -2628,12 +2607,6 @@ class TherapistDashboardScene:
 
         # ── Panel 8: the patient's own page (info + records + selection) ──
         if self.active_panel == 8:
-            if self._pv_info_up_rect.collidepoint(pos):
-                play_click(); self._pv_info_scroll = max(0, self._pv_info_scroll - int(160*self._fs)); return None
-            if self._pv_info_down_rect.collidepoint(pos):
-                play_click()
-                self._pv_info_scroll = min(self._pv_info_scroll_max, self._pv_info_scroll + int(160*self._fs))
-                return None
             for key, r in self._pv_tab_rects.items():
                 if r.collidepoint(pos):
                     play_click()
@@ -2663,16 +2636,6 @@ class TherapistDashboardScene:
 
         # ── Panel 6: Register Patient ─────────────────────────────────
         if self.active_panel == 6:
-            if self._touch_ui:
-                if self._rp_up_rect.collidepoint(pos):
-                    play_click()
-                    self._rp_scroll = max(0, self._rp_scroll - int(160 * self._fs))
-                    return None
-                if self._rp_down_rect.collidepoint(pos):
-                    play_click()
-                    self._rp_scroll = min(self._rp_scroll_max,
-                                          self._rp_scroll + int(160 * self._fs))
-                    return None
             self._rp_handle_click(pos)
 
         # ── Panel 4: Game Configuration -- 2 internal steps (see _gc_step).
@@ -2946,12 +2909,6 @@ class TherapistDashboardScene:
             self._restore_patient_theme(patient)
         else:
             self._apply_theme(False, persist=False)   # no patient -> Light
-
-    def _pl_scroll_by(self, direction):
-        """Scroll the Patient List (touchscreen ▲/▼ buttons and mouse wheel).
-        `direction` is -1 (up) or +1 (down); each press moves ~3 rows."""
-        step = int(120 * self._fs) * 3 * (1 if direction > 0 else -1)
-        self._pl_scroll = max(0, min(self._pl_scroll + step, self._pl_scroll_max))
 
     def _confirm_select_patient(self):
         """The single place a patient actually becomes the session patient:
@@ -4250,6 +4207,11 @@ class TherapistDashboardScene:
         keys = self._PV_SECTIONS[sec][1]
         return [(k,) + SPEC[k] for k in keys if k in SPEC]
 
+    def _ep_text_keys(self):
+        """Text-kind field keys for the CURRENT section only, in that
+        section's order -- dropdowns are click-to-open, not Tab-reachable."""
+        return [f[0] for f in self._ep_fields() if f[2] == "text"]
+
     def _ep_title(self):
         sec = getattr(self, "_ep_section", None)
         if sec and sec in self._PV_SECTIONS:
@@ -4305,8 +4267,7 @@ class TherapistDashboardScene:
                 return
 
         # Text field focus
-        for key in ["full_name","age","date_of_stroke","months_stroke",
-                     "notes_stiffness","notes_pain","notes_therapist"]:
+        for key in self._ep_text_keys():
             info = self._ep_drop_rects.get(key)
             if info and info[0].collidepoint(pos):
                 self._ep_active_key = key; return
@@ -4319,9 +4280,23 @@ class TherapistDashboardScene:
             else:
                 self._ep_modal_open = False
             return
-        if event.key == pygame.K_RETURN:
-            self._ep_active_key = None; return
         key = self._ep_active_key
+        text_keys = self._ep_text_keys()
+        if event.key == pygame.K_TAB:
+            if key in text_keys:
+                idx = text_keys.index(key)
+                self._ep_active_key = text_keys[(idx + 1) % len(text_keys)]
+            return
+        if event.key == pygame.K_RETURN:
+            if key in text_keys:
+                idx = text_keys.index(key)
+                if idx < len(text_keys) - 1:
+                    self._ep_active_key = text_keys[idx + 1]
+                else:
+                    self._ep_active_key = None
+            else:
+                self._ep_active_key = None
+            return
         if not key: return
         if event.key == pygame.K_BACKSPACE:
             self._ep[key] = self._ep[key][:-1]; self._ep_error = ""
@@ -4690,14 +4665,6 @@ class TherapistDashboardScene:
         self._eip_drag_y = None
 
     def _handle_icon_picker_click(self, pos):
-        if self._eip_up_rect.collidepoint(pos):
-            play_click()
-            self._eip_scroll = max(0, self._eip_scroll - int(160 * self._fs))
-            return None
-        if self._eip_down_rect.collidepoint(pos):
-            play_click()
-            self._eip_scroll = min(self._eip_scroll_max, self._eip_scroll + int(160 * self._fs))
-            return None
         if self._eip_done_rect.collidepoint(pos):
             play_click()
             self.edit_icon_picker_open = False
@@ -4821,9 +4788,7 @@ class TherapistDashboardScene:
                     rp[open_key] = not rp[open_key]
                     return
 
-        text_keys = ["full_name","age","date_of_stroke","months_stroke",
-                     "notes_stiffness","notes_pain","notes_therapist"]
-        for key in text_keys:
+        for key in self._RP_TEXT_KEYS:
             info = self._rp_drop_rects.get(key)
             if info and info[0].collidepoint(pos):
                 rp["active_key"] = key
@@ -4833,6 +4798,12 @@ class TherapistDashboardScene:
     # Registration must ask for every field the Patient Info page shows.
     # Patient Information + Stroke & Therapy are required; Clinical Notes are
     # optional (notes_* are deliberately absent from this list).
+    # Tab/Enter cycle through text fields only (dropdowns are click-to-open,
+    # not keyboard-navigable) -- same order therapists fill the form in,
+    # documented where the touch layout builds its FIELDS list.
+    _RP_TEXT_KEYS = ["full_name", "age", "date_of_stroke", "months_stroke",
+                     "notes_stiffness", "notes_pain", "notes_therapist"]
+
     _RP_REQUIRED = [
         ("full_name",      "Full Name"),
         ("age",            "Age"),
@@ -4889,8 +4860,15 @@ class TherapistDashboardScene:
         if not key: return
         if event.key == pygame.K_BACKSPACE:
             rp[key] = rp[key][:-1]; rp["error"] = ""
+        elif event.key == pygame.K_TAB:
+            idx = self._RP_TEXT_KEYS.index(key)
+            rp["active_key"] = self._RP_TEXT_KEYS[(idx + 1) % len(self._RP_TEXT_KEYS)]
         elif event.key == pygame.K_RETURN:
-            rp["active_key"] = None
+            idx = self._RP_TEXT_KEYS.index(key)
+            if idx < len(self._RP_TEXT_KEYS) - 1:
+                rp["active_key"] = self._RP_TEXT_KEYS[idx + 1]
+            else:
+                rp["active_key"] = None
         elif event.key == pygame.K_ESCAPE:
             rp["active_key"] = None
         elif event.unicode:
@@ -6377,9 +6355,10 @@ class TherapistDashboardScene:
             pygame.draw.line(surface, (208, 218, 234),
                              (pa.x + pad, ry + row_h), (pa.right - pad, ry + row_h), 1)
 
-            # Share button -- the ONLY right-side action. Large touch target,
-            # clearly separated from the name.
-            ic = self._tt(52)
+            # Share button -- the ONLY right-side action. Touch target
+            # shrunk from 52->44 (still clamped to the 50px touch-floor by
+            # _tt), clearly separated from the name.
+            ic = self._tt(44)
             shr_r = pygame.Rect(btn_x_r - ic, ry + (row_h - ic)//2, ic, ic)
             right_x = shr_r.x - bgap
 
@@ -6467,28 +6446,17 @@ class TherapistDashboardScene:
                 self._patient_rows.append((shr_r, pt, "share"))
         surface.set_clip(prev_clip)
 
-        # ── scroll arrows (only when the list overflows) ────────────
+        # ── scrollbar thumb (only when the list overflows) -- natural
+        # mouse-wheel/touch-drag scrolling replaces the old tap arrows ──
         if scrollable:
-            ah = view_h // 2 - int(4*H/1080)
             ax = pa.right - pad - arrow_w
-            self._pl_up_rect   = pygame.Rect(ax, list_top, arrow_w, ah)
-            self._pl_down_rect = pygame.Rect(ax, list_top + ah + int(8*H/1080), arrow_w, ah)
-            for r, tri, on in ((self._pl_up_rect, "▲", self._pl_scroll > 0),
-                               (self._pl_down_rect, "▼", self._pl_scroll < self._pl_scroll_max)):
-                pygame.draw.rect(surface, (226,238,250) if on else (238,240,244), r, border_radius=8)
-                pygame.draw.rect(surface, (150,175,210), r, 1, border_radius=8)
-                gc = (45,90,150) if on else (185,193,203)
-                g = self.fnt["nav_sym"].render(tri, True, gc)
-                surface.blit(g, g.get_rect(center=r.center))
-            # thumb
-            tb_x = ax + arrow_w + int(4*W/1920)
+            tb_x = ax + int(4*W/1920)
             track_h = view_h
             th = max(int(28*H/1080), int(track_h * view_h / max(content_h, 1)))
             ty0 = list_top + int((track_h - th) * (self._pl_scroll / self._pl_scroll_max))
             pygame.draw.rect(surface, (150,175,210),
                              pygame.Rect(tb_x, ty0, int(6*W/1920), th), border_radius=3)
-        else:
-            self._pl_up_rect = self._pl_down_rect = pygame.Rect(0, 0, 1, 1)
+        self._pl_up_rect = self._pl_down_rect = pygame.Rect(0, 0, 1, 1)
 
     # ──────────────────────────────────────────────────────────────────
     #  SHARE PATIENT MODAL
@@ -6524,7 +6492,7 @@ class TherapistDashboardScene:
 
         pad_px, icon_r_px = self._share_header_metrics()
         pad      = self._sc(pad_px)
-        btn_h    = self._tt(52)
+        btn_h    = self._tt(44)
         cancel_h = self._tt(46)
         gap      = self._sc(22)
         extra_h  = gap + btn_h + gap + cancel_h + self._sc(6)
@@ -7103,22 +7071,7 @@ class TherapistDashboardScene:
             y += row_h
         surface.set_clip(prev_clip)
 
-        if self._rp_scroll_max > 0:
-            ax = pa.right - int(8 * W / 1920) - arrow_w
-            ah = view_h // 2 - int(4 * H / 1080)
-            self._rp_up_rect   = pygame.Rect(ax, top, arrow_w, ah)
-            self._rp_down_rect = pygame.Rect(ax, top + ah + int(8 * H / 1080), arrow_w, ah)
-            for r, tri, on in ((self._rp_up_rect, "▲", self._rp_scroll > 0),
-                               (self._rp_down_rect, "▼",
-                                self._rp_scroll < self._rp_scroll_max)):
-                pygame.draw.rect(surface, (226, 238, 250) if on else (238, 240, 244),
-                                 r, border_radius=8)
-                pygame.draw.rect(surface, (150, 175, 210), r, 1, border_radius=8)
-                g = self.fnt["nav_sym"].render(tri, True,
-                                               (45, 90, 150) if on else (188, 196, 206))
-                surface.blit(g, g.get_rect(center=r.center))
-        else:
-            self._rp_up_rect = self._rp_down_rect = pygame.Rect(0, 0, 1, 1)
+        self._rp_up_rect = self._rp_down_rect = pygame.Rect(0, 0, 1, 1)
 
         if open_overlay:
             fr, opts, fkey = open_overlay
@@ -7416,19 +7369,7 @@ class TherapistDashboardScene:
             y += block_h(b)
         surface.set_clip(prev)
 
-        if self._pv_info_scroll_max > 0:
-            ax = pa.right - int(8 * W / 1920) - arrow_w
-            ah = view_h // 2 - int(4 * H / 1080)
-            self._pv_info_up_rect   = pygame.Rect(ax, top, arrow_w, ah)
-            self._pv_info_down_rect = pygame.Rect(ax, top + ah + int(8 * H / 1080), arrow_w, ah)
-            for r, tri, on in ((self._pv_info_up_rect, "▲", self._pv_info_scroll > 0),
-                               (self._pv_info_down_rect, "▼", self._pv_info_scroll < self._pv_info_scroll_max)):
-                pygame.draw.rect(surface, (226, 238, 250) if on else (238, 240, 244), r, border_radius=8)
-                pygame.draw.rect(surface, (150, 175, 210), r, 1, border_radius=8)
-                g = self.fnt["nav_sym"].render(tri, True, (45, 90, 150) if on else (185, 193, 203))
-                surface.blit(g, g.get_rect(center=r.center))
-        else:
-            self._pv_info_up_rect = self._pv_info_down_rect = pygame.Rect(0, 0, 1, 1)
+        self._pv_info_up_rect = self._pv_info_down_rect = pygame.Rect(0, 0, 1, 1)
         # The bottom instructional hint ("Selected -- use DESELECT PATIENT
         # above.") was removed -- selection state is already shown via the
         # SELECT/DESELECT button itself and the sidebar's Active Patient card.
@@ -7525,6 +7466,34 @@ class TherapistDashboardScene:
     #  PANEL 1: SESSION HISTORY
     # ──────────────────────────────────────────────────────────────────
 
+    _QUERY_CACHE_TTL = 1.5  # seconds -- short enough to feel live, long
+    # enough to cut a per-frame SQL+datetime-conversion cost (see callers)
+    # by ~90x while either screen is left open.
+
+    def _get_sessions_cached(self, patient_id):
+        key = (self.account["id"], patient_id)
+        now = time.monotonic()
+        if (key != self._sessions_cache_key
+                or now - self._sessions_cache_at >= self._QUERY_CACHE_TTL):
+            self._sessions_cache_data = (
+                self.db.get_sessions(self.account["id"], patient_id=patient_id)
+                if hasattr(self.db, "get_sessions") else [])
+            self._sessions_cache_key = key
+            self._sessions_cache_at  = now
+        return self._sessions_cache_data
+
+    def _get_calibrations_cached(self, patient_id):
+        key = (self.account["id"], patient_id)
+        now = time.monotonic()
+        if (key != self._calibrations_cache_key
+                or now - self._calibrations_cache_at >= self._QUERY_CACHE_TTL):
+            self._calibrations_cache_data = (
+                self.db.get_calibrations(self.account["id"], patient_id=patient_id)
+                if hasattr(self.db, "get_calibrations") else [])
+            self._calibrations_cache_key = key
+            self._calibrations_cache_at  = now
+        return self._calibrations_cache_data
+
     def _draw_session_history(self, surface, pa):
         if self._sh_detail_record is not None:
             self._draw_session_detail(surface, pa)
@@ -7564,8 +7533,7 @@ class TherapistDashboardScene:
             self._sh_up_rect = self._sh_down_rect = pygame.Rect(0, 0, 1, 1)
             return
 
-        sessions = (self.db.get_sessions(self.account["id"], patient_id=pt["id"])
-                    if hasattr(self.db, "get_sessions") else [])
+        sessions = self._get_sessions_cached(pt["id"])
         if not sessions:
             _empty_state(surface,
                          pygame.Rect(pa.x, hdr_line_y+self._sc(12), pa.width,
@@ -7658,21 +7626,9 @@ class TherapistDashboardScene:
             ry += rh
         surface.set_clip(prev_clip)
 
-        # ── scroll arrows (only when the history overflows) ──────────
-        if scrollable:
-            ah = view_h // 2 - int(4*H/1080)
-            ax = pa.right - int(8*W/1920) - arrow_w
-            self._sh_up_rect   = pygame.Rect(ax, view_top, arrow_w, ah)
-            self._sh_down_rect = pygame.Rect(ax, view_top + ah + int(8*H/1080), arrow_w, ah)
-            for r, tri, on in ((self._sh_up_rect, "▲", self._sh_scroll > 0),
-                               (self._sh_down_rect, "▼", self._sh_scroll < self._sh_scroll_max)):
-                pygame.draw.rect(surface, (226,238,250) if on else (238,240,244), r, border_radius=8)
-                pygame.draw.rect(surface, (150,175,210), r, 1, border_radius=8)
-                gc = (45,90,150) if on else (185,193,203)
-                g = self.fnt["nav_sym"].render(tri, True, gc)
-                surface.blit(g, g.get_rect(center=r.center))
-        else:
-            self._sh_up_rect = self._sh_down_rect = pygame.Rect(0, 0, 1, 1)
+        # Scroll arrows removed -- mouse-wheel/touch-drag scrolling (above)
+        # already covers this list; rects stay dummy so nothing is clickable.
+        self._sh_up_rect = self._sh_down_rect = pygame.Rect(0, 0, 1, 1)
 
     def _draw_session_detail(self, surface, pa):
         """Full-page Session Details (NOT a popup/modal) -- the actual
@@ -7790,20 +7746,7 @@ class TherapistDashboardScene:
             y = ry + self._sc(8)
         surface.set_clip(prev_clip)
 
-        if scrollable:
-            ah = view_h // 2 - self._sc(4)
-            ax = pa.right - pad - arrow_w
-            self._shd_up_rect   = pygame.Rect(ax, view_top, arrow_w, ah)
-            self._shd_down_rect = pygame.Rect(ax, view_top + ah + self._sc(8), arrow_w, ah)
-            for r, tri, on in ((self._shd_up_rect, "▲", self._shd_scroll > 0),
-                               (self._shd_down_rect, "▼", self._shd_scroll < self._shd_scroll_max)):
-                pygame.draw.rect(surface, (226,238,250) if on else (238,240,244), r, border_radius=8)
-                pygame.draw.rect(surface, (150,175,210), r, 1, border_radius=8)
-                gc = (45,90,150) if on else (185,193,203)
-                g = self.fnt["nav_sym"].render(tri, True, gc)
-                surface.blit(g, g.get_rect(center=r.center))
-        else:
-            self._shd_up_rect = self._shd_down_rect = pygame.Rect(0, 0, 1, 1)
+        self._shd_up_rect = self._shd_down_rect = pygame.Rect(0, 0, 1, 1)
 
     # ──────────────────────────────────────────────────────────────────
     #  PANEL 2: ANALYTICS
@@ -7958,8 +7901,7 @@ class TherapistDashboardScene:
             self._metrics_row_rects = []
             return
 
-        sessions = (self.db.get_sessions(self.account["id"], patient_id=pt["id"])
-                    if hasattr(self.db, "get_sessions") else [])
+        sessions = self._get_sessions_cached(pt["id"])
 
         by_game = defaultdict(list)
         for s in sessions:
@@ -8047,20 +7989,7 @@ class TherapistDashboardScene:
             cy += h + gap
         surface.set_clip(prev_clip)
 
-        if scrollable:
-            ah = view_h // 2 - int(4*H/1080)
-            ax = pa.right - int(8*W/1920) - arrow_w
-            self._an_up_rect   = pygame.Rect(ax, view_top, arrow_w, ah)
-            self._an_down_rect = pygame.Rect(ax, view_top + ah + int(8*H/1080), arrow_w, ah)
-            for r, tri, on in ((self._an_up_rect, "▲", self._an_scroll > 0),
-                               (self._an_down_rect, "▼", self._an_scroll < self._an_scroll_max)):
-                pygame.draw.rect(surface, (226,238,250) if on else (238,240,244), r, border_radius=8)
-                pygame.draw.rect(surface, (150,175,210), r, 1, border_radius=8)
-                gc = (45,90,150) if on else (185,193,203)
-                g = self.fnt["nav_sym"].render(tri, True, gc)
-                surface.blit(g, g.get_rect(center=r.center))
-        else:
-            self._an_up_rect = self._an_down_rect = pygame.Rect(0, 0, 1, 1)
+        self._an_up_rect = self._an_down_rect = pygame.Rect(0, 0, 1, 1)
 
     def _metrics_draw_mode_stats(self, surface, x, y, content_right, stats):
         """The 4 metric cards (Sessions / Best / Average / Elapsed Time) for
@@ -8124,9 +8053,7 @@ class TherapistDashboardScene:
             self._cr_up_rect = self._cr_down_rect = pygame.Rect(0, 0, 1, 1)
             return
 
-        records = (self.db.get_calibrations(self.account["id"],
-                                             patient_id=pt["id"])
-                   if hasattr(self.db, "get_calibrations") else [])
+        records = self._get_calibrations_cached(pt["id"])
 
         # Simplified to the 4 fields that identify a record at a glance --
         # Average/Threshold/Sensitivity moved into the full-page Calibration
@@ -8228,21 +8155,7 @@ class TherapistDashboardScene:
             ry += rh
         surface.set_clip(prev_clip)
 
-        # ── scroll arrows (only when records overflow the viewport) ──
-        if scrollable:
-            ah = view_h // 2 - int(4*H/1080)
-            ax = pa.right - int(8*W/1920) - arrow_w
-            self._cr_up_rect   = pygame.Rect(ax, view_top, arrow_w, ah)
-            self._cr_down_rect = pygame.Rect(ax, view_top + ah + int(8*H/1080), arrow_w, ah)
-            for r, tri, on in ((self._cr_up_rect, "▲", self._cr_scroll > 0),
-                               (self._cr_down_rect, "▼", self._cr_scroll < self._cr_scroll_max)):
-                pygame.draw.rect(surface, (226,238,250) if on else (238,240,244), r, border_radius=8)
-                pygame.draw.rect(surface, (150,175,210), r, 1, border_radius=8)
-                gc = (45,90,150) if on else (185,193,203)
-                g = self.fnt["nav_sym"].render(tri, True, gc)
-                surface.blit(g, g.get_rect(center=r.center))
-        else:
-            self._cr_up_rect = self._cr_down_rect = pygame.Rect(0, 0, 1, 1)
+        self._cr_up_rect = self._cr_down_rect = pygame.Rect(0, 0, 1, 1)
 
     def _draw_calibration_detail(self, surface, pa):
         """Full-page Calibration Record Details (NOT a popup/modal/accordion)
@@ -8364,20 +8277,7 @@ class TherapistDashboardScene:
             y = ry + self._sc(8)
         surface.set_clip(prev_clip)
 
-        if scrollable:
-            ah = view_h // 2 - self._sc(4)
-            ax = pa.right - pad - arrow_w
-            self._crd_up_rect   = pygame.Rect(ax, view_top, arrow_w, ah)
-            self._crd_down_rect = pygame.Rect(ax, view_top + ah + self._sc(8), arrow_w, ah)
-            for r, tri, on in ((self._crd_up_rect, "▲", self._crd_scroll > 0),
-                               (self._crd_down_rect, "▼", self._crd_scroll < self._crd_scroll_max)):
-                pygame.draw.rect(surface, (226,238,250) if on else (238,240,244), r, border_radius=8)
-                pygame.draw.rect(surface, (150,175,210), r, 1, border_radius=8)
-                gc = (45,90,150) if on else (185,193,203)
-                g = self.fnt["nav_sym"].render(tri, True, gc)
-                surface.blit(g, g.get_rect(center=r.center))
-        else:
-            self._crd_up_rect = self._crd_down_rect = pygame.Rect(0, 0, 1, 1)
+        self._crd_up_rect = self._crd_down_rect = pygame.Rect(0, 0, 1, 1)
 
     # ──────────────────────────────────────────────────────────────────
     #  PANEL 4: GAME CONFIGURATION
@@ -9034,22 +8934,7 @@ class TherapistDashboardScene:
                      border_width=max(3, self._sc(4)) if sel else 0)
         surface.set_clip(prev_clip)
 
-        if self._eip_scroll_max > 0:
-            ax = pr.right - pad - arrow_w
-            ah = view_h // 2 - self._sc(4)
-            self._eip_up_rect = pygame.Rect(ax, top, arrow_w, ah)
-            self._eip_down_rect = pygame.Rect(ax, top + ah + self._sc(8), arrow_w, ah)
-            for r2, tri, on in ((self._eip_up_rect, "▲", self._eip_scroll > 0),
-                               (self._eip_down_rect, "▼",
-                                self._eip_scroll < self._eip_scroll_max)):
-                pygame.draw.rect(surface, (226, 238, 250) if on else (238, 240, 244),
-                                 r2, border_radius=8)
-                pygame.draw.rect(surface, (150, 175, 210), r2, 1, border_radius=8)
-                g = self.fnt["sym26"].render(tri, True,
-                                             (45, 90, 150) if on else (188, 196, 206))
-                surface.blit(g, g.get_rect(center=r2.center))
-        else:
-            self._eip_up_rect = self._eip_down_rect = pygame.Rect(0, 0, 1, 1)
+        self._eip_up_rect = self._eip_down_rect = pygame.Rect(0, 0, 1, 1)
 
         done_w = self._sc(160)
         self._eip_done_rect = pygame.Rect(pr.centerx - done_w // 2,

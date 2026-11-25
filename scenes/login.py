@@ -1537,7 +1537,10 @@ class LoginScene:
         elif event.key == pygame.K_TAB:
             self.sq_active_slot = (self.sq_active_slot + 1) % 3
         elif event.key == pygame.K_RETURN:
-            self.sq_active_slot = None
+            if self.sq_active_slot < 2:
+                self.sq_active_slot += 1
+            else:
+                return self._sq_submit()
         elif event.unicode:
             sf["a_value"]    += event.unicode
             self.sq_error_msg = ""

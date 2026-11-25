@@ -37,6 +37,8 @@ import urllib.request
 
 from recovr.shared import protocol
 from recovr import monitors
+import backup_recovery
+import database
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -212,6 +214,34 @@ def main():
         _shutdown()
         sys.exit(1)
     print("[launch] broker is up.")
+
+    # Database integrity check + crash/power-loss recovery -- run exactly
+    # ONCE, here, before either the therapist or patient process opens the
+    # database for real use. This is the only point in the whole startup
+    # sequence with that guarantee: the broker above never touches SQLite
+    # (its SessionStore is pure in-memory), so doing it here instead of in
+    # either UI process means there is no race between two processes each
+    # trying to recover the same file at once.
+    result = backup_recovery.check_and_recover_startup()
+    if result == "corrupt_no_backup":
+        print("[launch] WARNING: recovr.db failed its integrity check and no "
+              "valid backup was found. The corrupt file was left in place "
+              "(not deleted) for manual inspection -- see "
+              f"{backup_recovery.BACKUP_DIR}\\backup_log.txt. Proceeding "
+              "anyway; expect database errors until this is resolved.")
+    elif result == "recovered":
+        print("[launch] recovr.db failed its integrity check -- restored "
+              "from the most recent valid backup. Any changes made after "
+              "that backup are lost; see backup_log.txt for details.")
+    try:
+        _recovered = database.Database()
+        n = _recovered.recover_interrupted_checkpoints()
+        _recovered.close()
+        if n:
+            print(f"[launch] recovered {n} session(s) left unfinished by a "
+                  "previous crash/power loss -- recorded as 'interrupted'.")
+    except Exception as e:
+        print(f"[launch] WARNING: could not check for interrupted sessions: {e}")
 
     # monitor assignment
     single = os.environ.get("RECOVR_SINGLE_MONITOR") == "1"

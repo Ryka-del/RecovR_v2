@@ -280,6 +280,32 @@ class Database:
         except Exception:
             pass
 
+        # Live-session checkpoints -- NOT full game-state resume, just
+        # enough (patient/therapist/game/difficulty + the latest periodic
+        # score/duration snapshot) to recognize on the NEXT startup that a
+        # session began and never reached save_session() (sudden power
+        # loss / crash), so it can be recorded as "interrupted" instead of
+        # silently vanishing with no trace. See start_checkpoint() /
+        # update_checkpoint() / resolve_checkpoint() /
+        # recover_interrupted_checkpoints() below.
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS session_checkpoints (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                patient_id   INTEGER,
+                therapist_id INTEGER,
+                game         TEXT    NOT NULL,
+                difficulty   TEXT,
+                session_mode TEXT    NOT NULL DEFAULT 'target',
+                goal         INTEGER,
+                configured_duration_seconds INTEGER,
+                started_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                score        INTEGER NOT NULL DEFAULT 0,
+                duration_sec INTEGER NOT NULL DEFAULT 0,
+                completed_reps INTEGER
+            )
+        """)
+
         self.conn.commit()
 
     # ── CALIBRATION RECORDS ───────────────────────────────────────────
@@ -358,6 +384,69 @@ class Database:
         """, (patient_id, therapist_id, game, score, duration_sec, difficulty,
               goal, completed_reps, status, session_mode, configured_duration_seconds))
         self.conn.commit()
+
+    # ── LIVE-SESSION CHECKPOINTS (crash/power-loss recovery) ───────────
+    # NOT full game-state resume -- see the session_checkpoints table
+    # comment in _create_tables(). start_checkpoint() is called once when
+    # a game session begins, update_checkpoint() periodically while it
+    # runs, resolve_checkpoint() once it reaches save_session() normally.
+
+    def start_checkpoint(self, patient_id, therapist_id, game, difficulty,
+                          session_mode="target", goal=None,
+                          configured_duration_seconds=None):
+        cur = self.conn.execute("""
+            INSERT INTO session_checkpoints
+                (patient_id, therapist_id, game, difficulty, session_mode,
+                 goal, configured_duration_seconds)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (patient_id, therapist_id, game, difficulty, session_mode,
+              goal, configured_duration_seconds))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def update_checkpoint(self, checkpoint_id, score, duration_sec, completed_reps=None):
+        self.conn.execute("""
+            UPDATE session_checkpoints
+            SET score = ?, duration_sec = ?, completed_reps = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (score, duration_sec, completed_reps, checkpoint_id))
+        self.conn.commit()
+
+    def resolve_checkpoint(self, checkpoint_id):
+        """The session reached save_session() normally -- the checkpoint
+        has served its purpose; delete it so startup recovery never sees
+        it again (also prevents ever double-recording the same session)."""
+        self.conn.execute("DELETE FROM session_checkpoints WHERE id = ?",
+                           (checkpoint_id,))
+        self.conn.commit()
+
+    def recover_interrupted_checkpoints(self):
+        """Called ONCE at application startup, before either the therapist
+        or patient process starts touching the database (see
+        recovr/launch_production.py). Any row still here means its session
+        never reached resolve_checkpoint() -- the app was terminated
+        (power loss, crash) before the session finished normally. Each is
+        converted into a permanent `sessions` row marked status=
+        "interrupted" (never silently dropped, never misrecorded as
+        "completed") using whatever the last periodic update captured,
+        then deleted so it can never be converted twice. Returns the
+        number of sessions recovered this way."""
+        rows = self.conn.execute("SELECT * FROM session_checkpoints").fetchall()
+        for r in rows:
+            self.conn.execute("""
+                INSERT INTO sessions (patient_id, therapist_id, game, score,
+                                       duration_sec, difficulty, goal,
+                                       completed_reps, status, session_mode,
+                                       configured_duration_seconds)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'interrupted', ?, ?)
+            """, (r["patient_id"], r["therapist_id"], r["game"], r["score"],
+                  r["duration_sec"], r["difficulty"], r["goal"],
+                  r["completed_reps"], r["session_mode"],
+                  r["configured_duration_seconds"]))
+            self.conn.execute("DELETE FROM session_checkpoints WHERE id = ?", (r["id"],))
+        self.conn.commit()
+        return len(rows)
 
     def get_sessions(self, therapist_id, patient_id=None):
         if patient_id is not None:

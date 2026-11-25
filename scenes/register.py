@@ -449,8 +449,6 @@ class RegisterScene:
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             pos = event.pos
-            if self._touch_ui and self._handle_touch_scroll_click(pos):
-                return None
 
             if self.role_open:
                 for opt in self.role_opts:
@@ -496,8 +494,6 @@ class RegisterScene:
 
         if event.type == pygame.FINGERDOWN:
             touch = (int(event.x * self.WIDTH), int(event.y * self.HEIGHT))
-            if self._touch_ui and self._handle_touch_scroll_click(touch):
-                return None
             if self._back_rect().collidepoint(touch):
                 play_click()
                 return self._try_leave_registration()
@@ -559,19 +555,6 @@ class RegisterScene:
             self.launch_triggered = True
             return "login"
         return None
-
-    def _handle_touch_scroll_click(self, pos):
-        """Up/down scroll-arrow taps. Returns True if the tap was consumed."""
-        if self._form_up_rect.collidepoint(pos):
-            play_click()
-            self._form_scroll = max(0, self._form_scroll - int(160 * self._fs))
-            return True
-        if self._form_down_rect.collidepoint(pos):
-            play_click()
-            self._form_scroll = min(self._form_scroll_max,
-                                    self._form_scroll + int(160 * self._fs))
-            return True
-        return False
 
     def _handle_key(self, event):
         f = self.fields[self.active_field]
@@ -905,22 +888,7 @@ class RegisterScene:
             y += row_h
         surface.set_clip(prev_clip)
 
-        if self._form_scroll_max > 0:
-            ax = x0 + fw - arrow_w
-            ah = view_h // 2 - self._sc(4)
-            self._form_up_rect = pygame.Rect(ax, top, arrow_w, ah)
-            self._form_down_rect = pygame.Rect(ax, top + ah + self._sc(8), arrow_w, ah)
-            for r, tri, on in ((self._form_up_rect, "▲", self._form_scroll > 0),
-                              (self._form_down_rect, "▼",
-                               self._form_scroll < self._form_scroll_max)):
-                pygame.draw.rect(surface, (226, 238, 250) if on else (238, 240, 244),
-                                 r, border_radius=8)
-                pygame.draw.rect(surface, (150, 175, 210), r, 1, border_radius=8)
-                g = self.font_sym.render(tri, True,
-                                         (45, 90, 150) if on else (188, 196, 206))
-                surface.blit(g, g.get_rect(center=r.center))
-        else:
-            self._form_up_rect = self._form_down_rect = pygame.Rect(0, 0, 1, 1)
+        self._form_up_rect = self._form_down_rect = pygame.Rect(0, 0, 1, 1)
 
         # Open Role dropdown, drawn on top and unclipped.
         if open_overlay is not None:
@@ -1103,16 +1071,6 @@ class RegisterScene:
         return None
 
     def _sq_handle_click(self, pos):
-        if self._touch_ui:
-            if self._sq_up_rect.collidepoint(pos):
-                play_click()
-                self._sq_scroll = max(0, self._sq_scroll - int(160 * self._fs))
-                return None
-            if self._sq_down_rect.collidepoint(pos):
-                play_click()
-                self._sq_scroll = min(self._sq_scroll_max, self._sq_scroll + int(160 * self._fs))
-                return None
-
         # Close any open dropdown if click is outside it
         for i, sf in enumerate(self.sq_fields):
             if sf["q_open"]:
@@ -1170,7 +1128,10 @@ class RegisterScene:
         elif event.key == pygame.K_TAB:
             self.sq_active_slot = (self.sq_active_slot + 1) % 3
         elif event.key == pygame.K_RETURN:
-            self.sq_active_slot = None
+            if self.sq_active_slot < 2:
+                self.sq_active_slot += 1
+            else:
+                return self._sq_submit()
         elif event.unicode:
             sf["a_value"]     += event.unicode
             self.sq_error_msg  = ""
@@ -1331,21 +1292,7 @@ class RegisterScene:
             y += slot_h
         surface.set_clip(prev_clip)
 
-        if self._sq_scroll_max > 0:
-            ax = x0 + w - arrow_w
-            ah = view_h // 2 - self._sc(4)
-            self._sq_up_rect = pygame.Rect(ax, top, arrow_w, ah)
-            self._sq_down_rect = pygame.Rect(ax, top + ah + self._sc(8), arrow_w, ah)
-            for r, tri, on in ((self._sq_up_rect, "▲", self._sq_scroll > 0),
-                              (self._sq_down_rect, "▼", self._sq_scroll < self._sq_scroll_max)):
-                pygame.draw.rect(surface, (226, 238, 250) if on else (238, 240, 244),
-                                 r, border_radius=8)
-                pygame.draw.rect(surface, (150, 175, 210), r, 1, border_radius=8)
-                g = self.font_sym.render(tri, True,
-                                         (45, 90, 150) if on else (188, 196, 206))
-                surface.blit(g, g.get_rect(center=r.center))
-        else:
-            self._sq_up_rect = self._sq_down_rect = pygame.Rect(0, 0, 1, 1)
+        self._sq_up_rect = self._sq_down_rect = pygame.Rect(0, 0, 1, 1)
 
         if self.sq_error_msg:
             es = self.font_error.render(self.sq_error_msg, True, (210, 50, 50))

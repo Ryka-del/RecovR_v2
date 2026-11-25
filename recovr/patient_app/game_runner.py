@@ -106,6 +106,26 @@ class GameRunner:
         self._led = LedFeedback()
         self._last_score = getattr(self.game, "score", 0)
 
+        # Live-session checkpoint (crash/power-loss recovery -- see
+        # database.py's session_checkpoints table). NOT started here: a
+        # GameRunner exists through the How-to-Play screen too, and a
+        # therapist backing out before the game actually begins must not
+        # leave an orphan checkpoint that would be wrongly reported as
+        # "interrupted" on the next startup. Started instead in start()/
+        # force_begin(), the same place self._started already flips True.
+        self._checkpoint_id = None
+        self._checkpoint_accum = 0.0
+        self._checkpoint_patient_id = (config.get("patient") or {}).get("id")
+        self._checkpoint_therapist_id = config.get("account_id")
+        self._checkpoint_game = config.get("game_name") or ""
+        self._checkpoint_difficulty = config.get("difficulty")
+        self._checkpoint_session_mode = config.get("session_mode", "target")
+        self._checkpoint_goal = (config.get("target_reps")
+                                  if self._checkpoint_session_mode == "target" else None)
+        self._checkpoint_configured_duration = (
+            config.get("duration_sec")
+            if self._checkpoint_session_mode == "timed" else None)
+
         self.paused = False
         self.stopped = False
         self.finished = False
@@ -140,11 +160,73 @@ class GameRunner:
                 except Exception:
                     self._sensor_update = None
 
+    def _start_checkpoint(self):
+        """Idempotent -- safe to call from both start() and force_begin()."""
+        if self._checkpoint_id is not None:
+            return
+        try:
+            from database import Database
+            db = Database()
+            try:
+                self._checkpoint_id = db.start_checkpoint(
+                    patient_id=self._checkpoint_patient_id,
+                    therapist_id=self._checkpoint_therapist_id,
+                    game=self._checkpoint_game,
+                    difficulty=self._checkpoint_difficulty,
+                    session_mode=self._checkpoint_session_mode,
+                    goal=self._checkpoint_goal,
+                    configured_duration_seconds=self._checkpoint_configured_duration)
+            finally:
+                db.close()
+        except Exception:
+            self._checkpoint_id = None
+
+    # Periodic checkpoint writes are deliberately NOT every frame (that
+    # would add a SQL write to the 60fps game loop) -- every 15s bounds
+    # the worst-case lost progress on a sudden power cut to "the last 15
+    # seconds of play" without noticeably loading the SD card.
+    _CHECKPOINT_INTERVAL_SEC = 15.0
+
+    def _update_checkpoint(self):
+        if self._checkpoint_id is None:
+            return
+        try:
+            from database import Database
+            db = Database()
+            try:
+                db.update_checkpoint(
+                    self._checkpoint_id,
+                    score=getattr(self.game, "score", 0),
+                    duration_sec=int(getattr(self.game, "elapsed", 0.0) or 0.0),
+                    completed_reps=getattr(self.game, "reps", None))
+            finally:
+                db.close()
+        except Exception:
+            pass
+
+    def _resolve_checkpoint(self):
+        """Called once the session reaches save_session() for real (both
+        the 'completed' and 'stopped' paths -- see update()/stop() below).
+        Safe to call more than once or when no checkpoint was ever started."""
+        if self._checkpoint_id is None:
+            return
+        try:
+            from database import Database
+            db = Database()
+            try:
+                db.resolve_checkpoint(self._checkpoint_id)
+            finally:
+                db.close()
+        except Exception:
+            pass
+        self._checkpoint_id = None
+
     # -- external control (therapist authority) ----------------------
     def start(self):
         """Unpause the game. Production keeps the game's own How-to-Play screen
         up (begin() is a no-op there); prototype dismisses it (3-2-1 owns it)."""
         self._started = True
+        self._start_checkpoint()
         self.set_paused(False)
         begin = getattr(self.game, "begin", None)
         if callable(begin):
@@ -156,6 +238,7 @@ class GameRunner:
         game starts on its own -- the therapist's START is the only trigger."""
         self.counting_down = False
         self._started = True
+        self._start_checkpoint()
         self.set_paused(False)
         fn = getattr(self.game, "force_begin", None)
         if callable(fn):
@@ -226,6 +309,11 @@ class GameRunner:
         hook = getattr(self.game, "external_stop", None)
         if callable(hook):
             hook()
+        # external_stop() above calls the SAME self._save_session("stopped")
+        # the completed path uses (see generic_adapter.py), synchronously,
+        # before returning -- so by this point the real sessions row (if
+        # any was due) already exists.
+        self._resolve_checkpoint()
 
     # -- per-frame ---------------------------------------------------
     def handle_event(self, event):
@@ -289,6 +377,18 @@ class GameRunner:
         next_scene, _ = self.game.manager.get_next()
         if next_scene is not None:
             self.finished = True
+
+        if self.finished:
+            # The completed path's own self.game.update(dt) call above has
+            # already run _end_game() -> _save_session("completed")
+            # synchronously by this point (that's what set game_over True),
+            # so the real sessions row already exists.
+            self._resolve_checkpoint()
+        else:
+            self._checkpoint_accum += dt
+            if self._checkpoint_accum >= self._CHECKPOINT_INTERVAL_SEC:
+                self._checkpoint_accum = 0.0
+                self._update_checkpoint()
 
         self._tele_accum += dt
 

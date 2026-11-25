@@ -39,7 +39,7 @@ from games.game_header import draw_game_header, HEADER_BOTTOM
 from games.hud import (draw_target_pill, TARGET_POS, draw_tutorial_badge, draw_feedback_banner,
                         draw_controls_panel, controls_panel_rect)
 from games.tutorial_hints import TutorialHints, TutorialStep
-from games.round_complete import draw_round_complete_overlay
+from games.round_complete import draw_round_complete_overlay, get_mono_font
 from i18n import tr
 
 # -- Difficulty configuration (per-difficulty, never a single hardcoded
@@ -813,7 +813,7 @@ class LemonadeGame(SessionModeMixin, FatigueMixin, BaseScreen):
             surface, card_prefix="lemonade", duration_sec=self.game_over_duration,
             score_text=self._session_count_text(), load_fit=_load_fit)
 
-        f_btn = pygame.font.SysFont("monospace", 28, bold=True)
+        f_btn = get_mono_font(28)
 
         mp = pygame.mouse.get_pos()
         bw, bh = 220, 52

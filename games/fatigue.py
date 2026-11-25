@@ -13,6 +13,25 @@ from constants import get_theme, GAME_W, GAME_H
 FATIGUE_TIMEOUT = 60.0   # seconds of inactivity before rest prompt
 ACTIVITY_THRESH = 0.05   # minimum grip/tilt change to count as "active"
 
+# _draw_pause() is called every frame for as long as the pause menu is up
+# (a common, often long-lived state). Building 2 SysFont objects and a full
+# GAME_W x GAME_H SRCALPHA surface fresh each call was pure repeated work --
+# none of this depends on anything that changes frame-to-frame, so build it
+# once and reuse it.
+_pause_font    = None
+_pause_font_sm = None
+_pause_overlay = None
+
+
+def _get_pause_assets():
+    global _pause_font, _pause_font_sm, _pause_overlay
+    if _pause_font is None:
+        _pause_font    = pygame.font.SysFont("monospace", 48, bold=True)
+        _pause_font_sm = pygame.font.SysFont("monospace", 28)
+        _pause_overlay = pygame.Surface((GAME_W, GAME_H), pygame.SRCALPHA)
+        _pause_overlay.fill((0, 0, 0, 180))
+    return _pause_font, _pause_font_sm, _pause_overlay
+
 
 class FatigueMixin:
     def _init_fatigue(self):
@@ -57,11 +76,8 @@ class FatigueMixin:
             pass
 
     def _draw_pause(self, surface):
-        T       = get_theme()
-        font    = pygame.font.SysFont("monospace", 48, bold=True)
-        font_sm = pygame.font.SysFont("monospace", 28)
-        ov = pygame.Surface((GAME_W, GAME_H), pygame.SRCALPHA)
-        ov.fill((0, 0, 0, 180))
+        T = get_theme()
+        font, font_sm, ov = _get_pause_assets()
         surface.blit(ov, (0, 0))
         panel = pygame.Rect(GAME_W // 2 - 260, GAME_H // 2 - 200, 520, 420)
         pygame.draw.rect(surface, T["PANEL"], panel, border_radius=16)

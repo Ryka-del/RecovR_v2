@@ -334,6 +334,17 @@ _game_scene_names   = {"basketball", "steady_aim", "piano_tiles",
                         "feed_the_cat", "plant_the_garden"}
 current_scene = TherapistWelcomeScene(screen, WIDTH, HEIGHT)
 
+# --- AUTOMATIC DATABASE BACKUPS ---
+# Owned here (the therapist process) rather than the launcher or the
+# patient process -- see backup_recovery.BackupScheduler's own docstring
+# for why exactly one owner matters. Started once per process lifetime;
+# the daemon thread it owns is torn down automatically on process exit.
+try:
+    from backup_recovery import BackupScheduler
+    BackupScheduler().start()
+except Exception as _exc:
+    print(f"[recovr] WARNING: automatic backups could not be started: {_exc}")
+
 # --- MAIN LOOP ---
 clock = pygame.time.Clock()
 

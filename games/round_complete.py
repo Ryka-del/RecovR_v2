@@ -17,6 +17,36 @@ import pygame
 
 from constants import GAME_W, GAME_H, is_dark_mode
 
+# This overlay draws every frame for as long as the results screen is up.
+# The dim layer is always the same GAME_W x GAME_H fill, and the number
+# font only ever takes a handful of distinct sizes (one per card aspect
+# ratio) -- cache both instead of rebuilding them every frame.
+_dim_overlay = None
+_mono_font_cache: dict = {}
+
+
+def _get_dim_overlay():
+    global _dim_overlay
+    if _dim_overlay is None:
+        _dim_overlay = pygame.Surface((GAME_W, GAME_H), pygame.SRCALPHA)
+        _dim_overlay.fill((0, 0, 0, 185))
+    return _dim_overlay
+
+
+def get_mono_font(size):
+    """Cached bold monospace font, shared by this overlay's own number
+    labels AND every game's Again/Exit results buttons (all 10 built an
+    identical SysFont("monospace", 28, bold=True) fresh every frame the
+    results screen was up -- one cache, keyed by size, instead)."""
+    f = _mono_font_cache.get(size)
+    if f is None:
+        f = pygame.font.SysFont("monospace", size, bold=True)
+        _mono_font_cache[size] = f
+    return f
+
+
+_get_num_font = get_mono_font   # internal alias used below
+
 
 def draw_round_complete_overlay(surface, *, card_prefix, duration_sec, score_text,
                                  load_fit, dim=True):
@@ -34,9 +64,7 @@ def draw_round_complete_overlay(surface, *, card_prefix, duration_sec, score_tex
     button-row layout below the card is unaffected either way.
     """
     if dim:
-        ov = pygame.Surface((GAME_W, GAME_H), pygame.SRCALPHA)
-        ov.fill((0, 0, 0, 185))
-        surface.blit(ov, (0, 0))
+        surface.blit(_get_dim_overlay(), (0, 0))
 
     card_name = f"{card_prefix}_round_complete_{'dark' if is_dark_mode() else 'light'}.png"
     top_margin, bottom_reserved = int(GAME_H * 0.05), int(GAME_H * 0.17)
@@ -55,7 +83,7 @@ def draw_round_complete_overlay(surface, *, card_prefix, duration_sec, score_tex
     # recap line this overlay replaces (that line is gone entirely -- its
     # content now lives here, as the two headline numbers the reference
     # design calls for, not a small caption underneath them).
-    f_num = pygame.font.SysFont("monospace", max(18, int(cr.height * 0.10)), bold=True)
+    f_num = _get_num_font(max(18, int(cr.height * 0.10)))
 
     mins, secs = divmod(max(0, int(duration_sec)), 60)
     time_s = f_num.render(f"{mins:02d}:{secs:02d}", True, num_col)

@@ -681,6 +681,12 @@ class PatientApp:
         self._unavailable_game = None
         runner_cfg = {
             "session_id": self.session_id,
+            # The exact display-name string each game's own _save_session()
+            # hardcodes into sessions.game (e.g. "Basketball") -- NOT the
+            # adapter's GAME_NAME (a class name like "BasketballGame") --
+            # so a recovered "interrupted" checkpoint row matches the same
+            # game names real completed/stopped rows use.
+            "game_name": name,
             "patient_name": config.get("patient_name", ""),
             "difficulty": config.get("difficulty", "Easy"),
             "session_mode": config.get("session_mode", "target"),

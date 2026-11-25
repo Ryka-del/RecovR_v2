@@ -17,6 +17,12 @@ import pygame
 _FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "font")
 
 _font_cache: dict = {}
+# draw_state_card() runs every frame for as long as a break/pause/stopped
+# overlay is up (often a long, indefinite hold) -- these two surfaces are
+# pure functions of their own size, so build each size once and reuse it
+# instead of allocating+filling a fresh SRCALPHA surface every frame.
+_overlay_cache: dict = {}
+_shadow_cache: dict = {}
 
 BREAK_ACCENT = (74, 163, 230)    # blue -- informational / resting
 PAUSE_ACCENT = (240, 180, 41)    # amber -- held, awaiting the therapist
@@ -58,6 +64,26 @@ def _wrap(text: str, font: pygame.font.Font, max_w: int):
     return lines
 
 
+def _get_dim_overlay(w, h):
+    key = (w, h)
+    ov = _overlay_cache.get(key)
+    if ov is None:
+        ov = pygame.Surface((w, h), pygame.SRCALPHA)
+        ov.fill((6, 10, 18, 175))
+        _overlay_cache[key] = ov
+    return ov
+
+
+def _get_shadow(w, h, radius):
+    key = (w, h, radius)
+    sh = _shadow_cache.get(key)
+    if sh is None:
+        sh = pygame.Surface((w, h), pygame.SRCALPHA)
+        pygame.draw.rect(sh, (0, 0, 0, 90), sh.get_rect(), border_radius=radius)
+        _shadow_cache[key] = sh
+    return sh
+
+
 def _draw_icon(surface, center, r, kind, accent, white=(255, 255, 255)):
     pygame.draw.circle(surface, accent, center, r)
     cx, cy = center
@@ -75,9 +101,13 @@ def _draw_icon(surface, center, r, kind, accent, white=(255, 255, 255)):
         box.center = center
         pygame.draw.rect(surface, white, box, border_radius=max(2, int(r * 0.14)))
     else:   # "break" -- a simple resting "Zzz" glyph
-        f1 = pygame.font.SysFont("arial", int(r * 0.86), bold=True)
-        f2 = pygame.font.SysFont("arial", int(r * 0.56), bold=True)
-        f3 = pygame.font.SysFont("arial", int(r * 0.36), bold=True)
+        # _font() falls back to a cached SysFont("arial", ..., bold=True)
+        # for any name it can't load as a Poppins .ttf -- same fonts as
+        # before, just going through the shared cache instead of building
+        # 3 brand-new Font objects every single frame this overlay is up.
+        f1 = _font("arial", int(r * 0.86))
+        f2 = _font("arial", int(r * 0.56))
+        f3 = _font("arial", int(r * 0.36))
         z1 = f1.render("Z", True, white)
         z2 = f2.render("Z", True, white)
         z3 = f3.render("Z", True, white)
@@ -105,9 +135,7 @@ def draw_state_card(surface, *, title, subtitle, accent, kind="break", dim=True,
     W, H = surface.get_size()
 
     if dim:
-        ov = pygame.Surface((W, H), pygame.SRCALPHA)
-        ov.fill((6, 10, 18, 175))
-        surface.blit(ov, (0, 0))
+        surface.blit(_get_dim_overlay(W, H), (0, 0))
 
     # Was far too wide relative to its own height (card_w up to 1.15x
     # card_h) -- a wide-short shape like that reads as cramped top-to-bottom
@@ -164,8 +192,7 @@ def draw_state_card(surface, *, title, subtitle, accent, kind="break", dim=True,
     card = pygame.Rect(0, 0, card_w, card_h)
     card.center = (W // 2, H // 2)
 
-    shadow = pygame.Surface((card.width + 24, card.height + 24), pygame.SRCALPHA)
-    pygame.draw.rect(shadow, (0, 0, 0, 90), shadow.get_rect(), border_radius=int(ref_h * 0.12))
+    shadow = _get_shadow(card.width + 24, card.height + 24, int(ref_h * 0.12))
     surface.blit(shadow, (card.x - 12, card.y - 4))
 
     radius = int(ref_h * 0.11)

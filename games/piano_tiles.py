@@ -34,7 +34,7 @@ from games.game_header import draw_game_header, HEADER_BOTTOM
 from games.hud import (draw_target_pill, TARGET_POS, draw_tutorial_badge,
                         draw_controls_panel, controls_panel_rect)
 from games.tutorial_hints import TutorialHints, TutorialStep
-from games.round_complete import draw_round_complete_overlay
+from games.round_complete import draw_round_complete_overlay, get_mono_font
 from i18n import tr
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -803,7 +803,7 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
         surface.blit(bg, (px, py))
         pygame.draw.rect(surface, T["RED"], pygame.Rect(px, py, pw, ph), 2, border_radius=16)
 
-        f_t = pygame.font.SysFont("monospace", 28, bold=True)
+        f_t = get_mono_font(28)
         f_b = pygame.font.SysFont("monospace", 19)
         title = f_t.render("Five-Finger Hardware Not Yet Available", True, T["RED"])
         surface.blit(title, title.get_rect(centerx=GAME_W // 2, top=py + 26))
