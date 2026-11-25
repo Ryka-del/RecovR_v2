@@ -15,6 +15,11 @@ recovr.db-journal
 recovr.db-wal
 recovr.db-shm
 
+# Automatic DB backup snapshots (backup_recovery.py) -- same per-machine
+# patient-data concern as recovr.db itself above, just under a different
+# path.
+backups/
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db
