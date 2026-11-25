@@ -47,14 +47,14 @@ GPIO_PIN = 17          # BCM numbering -- confirmed unused elsewhere in this cod
 # Slow and continuous, not a attention-grabbing animation (this plays
 # whenever the device is simply powered on with no game running, which can
 # be most of the time).
-FADE_PERIOD_SEC = 3.0
+FADE_PERIOD_SEC = 6.0
 
 # Scoring-event blink burst -- snappier than the idle fade so it reads as a
 # distinct, immediate "you scored" cue rather than a continuation of the
 # slow breathing. Tune these two if the real hardware still looks too slow;
 # they're independent of FADE_PERIOD_SEC above.
-BLINK_ON_TIME_SEC  = 0.10
-BLINK_OFF_TIME_SEC = 0.10
+BLINK_ON_TIME_SEC  = 0.08
+BLINK_OFF_TIME_SEC = 0.08
 BLINKS_PER_SEQUENCE = 3
 
 try:
