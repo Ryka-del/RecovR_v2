@@ -79,3 +79,70 @@ To stop autostarting without uninstalling anything: `sudo systemctl disable reco
   `StartLimitIntervalSec=60` — after that, systemd gives up and the unit
   just stays stopped until someone looks at it).
 - Does not touch calibration code, assets, or the database schema.
+
+## Date/time accuracy (occasional wrong date/time reported in the field)
+
+**Investigated, not fixed in code — this is an OS/hardware issue, not an
+application bug.** A full search of this codebase found zero lines that set,
+adjust, or override the system clock: every `datetime.now()` call anywhere
+in `database.py`, `scenes/login.py`, `scenes/therapist_dashboard.py`, and
+`recovr/patient_app/scenes/patient_dashboard.py` only *reads* the OS clock
+(PIN-lockout timers, "now" displays) — none of them ever write to it.
+`database.py`'s own stored timestamps (`played_at`, `calibrated_at`, etc.)
+come from SQLite's `CURRENT_TIMESTAMP` (always UTC) and are converted to the
+OS's configured local timezone only for display (`_utc_to_local()`,
+`database.py`); that conversion is correct by construction regardless of
+what the OS's timezone is actually set to — which is exactly why a
+misconfigured OS timezone would make every displayed timestamp look "wrong"
+even though nothing in the app is broken. Nothing in this repo's deploy
+scripts (`recovr.service`, `recovr-shutdown`, this README) or
+`requirements.md` sets up NTP, a timezone, or an RTC either — that step has
+apparently never been done on this project's Pi image.
+
+**This could not be verified against the actual deployed Raspberry Pi from
+this Windows development machine** — the two checks below need to be run
+directly on the Pi.
+
+1. **Check the configured timezone and NTP state:**
+   ```bash
+   timedatectl status
+   ```
+   If "Time zone" is not `Asia/Manila`, every timestamp this app displays
+   will be off by the UTC+8 offset — this alone would look exactly like
+   "the date/time is wrong," even though storage is correct UTC. Fix with:
+   ```bash
+   sudo timedatectl set-timezone Asia/Manila
+   sudo timedatectl set-ntp true
+   ```
+
+2. **Check whether a hardware RTC is present and recognized:**
+   ```bash
+   timedatectl status | grep "RTC time"
+   ls /dev/rtc*
+   ```
+   The **Raspberry Pi 4 Model B has no onboard battery-backed RTC** — this
+   is a hardware characteristic of the board itself, not a configuration
+   that can be turned on. Without external RTC hardware added, the Pi can
+   only know the correct time by: (a) syncing over NTP when it has
+   internet access, or (b) `fake-hwclock` (enabled by default on Raspberry
+   Pi OS), which saves the clock to disk on shutdown and restores it on
+   the next boot — this is an **approximation that only prevents the clock
+   from resetting to an absurd default**, not genuine timekeeping across a
+   power-off period: if the Pi is unplugged for 3 days with no network,
+   it will boot up still believing no time passed, until NTP can correct
+   it.
+   - If `/dev/rtc0` (or similar) already exists, an RTC module (or an SoC
+     with one built in) is present and the OS is already using it —
+     nothing further to investigate.
+   - If it does **not** exist, genuine offline timekeeping across a full
+     power loss requires adding an external I2C RTC module (e.g. a ~$3-5
+     DS3231 board) and enabling it via `/boot/config.txt`
+     (`dtoverlay=i2c-rtc,ds3231`) plus removing `fake-hwclock` per the
+     module's own setup instructions. **This is a hardware addition, not a
+     software fix** — do not expect accurate time across days of power loss
+     without it.
+
+Everything else asked for in this item is already satisfied by the existing
+design once the two checks above are corrected: no application code
+overrides the OS clock, and all stored timestamps are internally consistent
+(always UTC in the database, converted once for display).

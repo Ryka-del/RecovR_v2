@@ -812,6 +812,51 @@ class CalibrationWindow:
         toggle + Close button)."""
         return self._fit_text(self._title_font_path, self._sc(44), text, max_w, color, min_size)
 
+    # Same (stage -> label, dot_color) source and labels as
+    # scenes/therapist_dashboard.py's own `_CTRL_LOOK` sidebar controller
+    # monitor -- a small, deliberate copy (not an import, which would be
+    # circular: that file imports THIS one) so calibration shows the exact
+    # same controller vocabulary rather than inventing a new one. Omits
+    # that file's dual-monitor BLE-handoff-specific stages
+    # (handed_off/handed_off_lost/handoff_stuck) -- those only apply to its
+    # own Session-in-Progress panel, which calibration never reaches.
+    _CTRL_LOOK = {
+        "connected":     ("Controller connected", (40, 190, 90)),
+        "stalled":       ("Signal stalled",       (230, 165, 30)),
+        "connecting":    ("Connecting…",          (230, 165, 30)),
+        "scanning":      ("Searching…",           (230, 165, 30)),
+        "idle":          ("Controller idle",      (172, 184, 198)),
+        "disabled":      ("Controller off",       (172, 184, 198)),
+        "not_found":     ("Not found",            (215, 60, 55)),
+        "old_firmware":  ("Old firmware",         (215, 60, 55)),
+        "bluetooth_off": ("Bluetooth is off",     (215, 60, 55)),
+        "no_bleak":      ("bleak not installed",  (215, 60, 55)),
+        "no_permission": ("No BLE permission",    (215, 60, 55)),
+        "error":         ("Controller error",     (215, 60, 55)),
+    }
+
+    def _draw_controller_status(self, surface, right_x, cy, max_w, C):
+        """Compact dot+label controller-status indicator for the
+        calibration header, right-aligned to `right_x`. Reads the same
+        ble_receiver singleton therapist_dashboard.py's own controller
+        monitor reads -- this is "read the same thing," not a second
+        connection-monitoring mechanism."""
+        try:
+            from sensors.ble_receiver import ble_receiver
+            stage = (ble_receiver.status() or {}).get("stage", "error")
+        except Exception:
+            stage = "error"
+        label, dot_col = self._CTRL_LOOK.get(stage, self._CTRL_LOOK["error"])
+
+        dot_r = max(4, self._sc(6))
+        txt_s = self._fit_text(self._bold_font_path, self._sc(17), label,
+                                max(self._scw(20), max_w - dot_r * 2 - self._scw(8)),
+                                C["text"], self._sc(11))
+        total_w = dot_r * 2 + self._scw(8) + txt_s.get_width()
+        x0 = right_x - total_w
+        pygame.draw.circle(surface, dot_col, (x0 + dot_r, cy), dot_r)
+        surface.blit(txt_s, (x0 + dot_r * 2 + self._scw(8), cy - txt_s.get_height() // 2))
+
     # ── event handling ────────────────────────────────────────────────────────
 
     def handle_event(self, event):
@@ -1613,6 +1658,16 @@ class CalibrationWindow:
             toggle_right = W - pad_r
         controls_left_x = toggle_right - tog_w
 
+        # Controller (BLE) status -- same source/labels as
+        # therapist_dashboard.py's sidebar controller monitor, just a
+        # compact dot+label sized for this 68px header bar instead of a
+        # full sidebar card. Reserved here (before the title is sized)
+        # exactly like the toggle/close geometry above, so a long sensor
+        # name shrinks around it instead of running underneath it.
+        ctrl_w = self._scw(150)
+        ctrl_right_x = controls_left_x - gap
+        title_avail_right = ctrl_right_x - ctrl_w - gap
+
         if self.phase == "advanced":
             # Advanced Settings is its own screen (spec 2) -- its own header:
             # Back arrow, "Advanced Settings", selected game name. No X here
@@ -1636,11 +1691,11 @@ class CalibrationWindow:
             self._cancel_rect = pygame.Rect(0, 0, 1, 1)
 
             title_s = self._fit_title("Advanced Settings",
-                                       controls_left_x - back_r.right - self._scw(24), C["text"])
+                                       title_avail_right - back_r.right - self._scw(24), C["text"])
             surface.blit(title_s, (back_r.right + self._scw(16),
                                     top_h // 2 - title_s.get_height() // 2))
             if self.game_name:
-                gn_avail = controls_left_x - (back_r.right + self._scw(16) + title_s.get_width()
+                gn_avail = title_avail_right - (back_r.right + self._scw(16) + title_s.get_width()
                                                + self._scw(14)) - self._scw(10)
                 if gn_avail > self._scw(40):
                     # Width-aware fit, not just a show/hide gate -- the toggle
@@ -1670,7 +1725,7 @@ class CalibrationWindow:
                 title_txt = f"Sensor Calibration — {sensor_label}"
                 if len(self.game_types) > 1:
                     title_txt += f"  ({self.sensor_idx + 1} of {len(self.game_types)})"
-            title_s = self._fit_title(title_txt, controls_left_x - self._scw(32) - self._scw(16), C["text"])
+            title_s = self._fit_title(title_txt, title_avail_right - self._scw(32) - self._scw(16), C["text"])
             surface.blit(title_s, (self._scw(32),
                                     top_h // 2 - title_s.get_height() // 2))
 
@@ -1707,6 +1762,8 @@ class CalibrationWindow:
         else:
             pygame.draw.circle(surface, (255, 255, 255), (knob_cx, tr.centery), knob_d // 2)
         self._toggle_rect = tr
+
+        self._draw_controller_status(surface, ctrl_right_x, top_h // 2, ctrl_w, C)
 
         # ── content ───────────────────────────────────────────────────
         content = pygame.Rect(0, top_h + self._sc(14),

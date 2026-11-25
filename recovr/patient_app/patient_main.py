@@ -150,6 +150,16 @@ class PatientApp:
         self.comms = PatientCommsClient()
         self.comms.start()
 
+        # LED scoring/state feedback -- owned here (once per process), not
+        # per-GameRunner, since its idle "breathing" state has to keep
+        # animating even between sessions, when self.runner is None. Ticked
+        # every frame in run() below regardless of mode; set_active() is
+        # toggled from _set_mode(); GameRunner only ever calls
+        # request_blink() on it (handed in when constructed -- see
+        # _begin_session below).
+        from hardware.led_feedback import LedFeedback
+        self._led = LedFeedback()
+
         # Enables this receiver's independent lease watchdog (see
         # sensors/ble_receiver.py) -- a receiver with no role never polls
         # the broker at all, so this is the one line that turns that
@@ -197,6 +207,10 @@ class PatientApp:
         while running:
             dt = self.clock.tick(60) / 1000.0
             self.mode_t += dt
+            # Unconditional, every frame, regardless of mode -- see
+            # hardware/led_feedback.py's own docstring for why this can't
+            # be scoped to only while a game is running.
+            self._led.tick(dt)
 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -643,6 +657,11 @@ class PatientApp:
         self.mode_t = 0.0
         if mode == INSTRUCTIONS:
             self.instr_elapsed = 0.0
+        # Steady LED while a session is being played (countdown included --
+        # the game itself is already frozen during that, but the session is
+        # clearly "active" from the patient's point of view), slow idle
+        # fade everywhere else (Waiting/Dashboard/How-to-Play/Calibrating).
+        self._led.set_active(mode == PLAYING)
         # BLE controller ownership (prototype/single-process path only --
         # DUAL mode reconciles this every poll in _reconcile_dual() against
         # the broker's ble_owner field instead, independent of mode, so a
@@ -716,7 +735,7 @@ class PatientApp:
                 "calibration": config.get("calibration") or {},
                 "dark_mode": bool(config.get("dark_mode", False)),
             })
-        self.runner = GameRunner(spec, runner_cfg)
+        self.runner = GameRunner(spec, runner_cfg, led=self._led)
         # Not paused: the game is frozen simply because runner.update() is not
         # called while on the How-to-Play / Instructions screen. (Pausing here
         # would make GameRunner draw its "held by therapist" overlay over it.)
@@ -731,7 +750,7 @@ class PatientApp:
             except Exception:
                 pass
             try:
-                self.runner.teardown()      # releases the LED feedback's GPIO pin
+                self.runner.teardown()      # no-op now -- see GameRunner.teardown()
             except Exception:
                 pass
         self.runner = None
@@ -772,13 +791,15 @@ def main():
     finally:
         # Hardware fail-safe: force the LED off and release GPIO17 on every
         # exit path (normal QUIT/ESC, Ctrl+C/SIGINT, or the launcher's
-        # SIGTERM) -- not only the ones _teardown_runner() already covers
-        # mid-session. Idempotent and safe even if no runner is active.
-        if app.runner is not None:
-            try:
-                app.runner.teardown()
-            except Exception:
-                pass
+        # SIGTERM). Idempotent and safe to call even if it's already clean
+        # (LedFeedback.cleanup() is safe to call more than once) -- this is
+        # on top of LedFeedback's own atexit registration, not a
+        # replacement for it, for exactly the SIGTERM-skips-atexit reason
+        # explained above.
+        try:
+            app._led.cleanup()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

@@ -42,7 +42,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import Database, validate_username, username_char_allowed, MAX_USERNAME_LEN
 from scenes.icon_renderer import draw_icon, ICONS
 from scenes.calibration_window import (CalibrationWindow, GAME_PARAM_SCHEMA, SENSOR_CFG,
-                                       BASELINE_DURATION, _FINGER_FLEX_KEYS)
+                                       BASELINE_DURATION, RECORD_DURATION, _FINGER_FLEX_KEYS)
 from audio import (play_confirm_alert, play_start_session, play_click,
                     start_lobby_music, stop_lobby_music)
 from sensors.input_handler import input_handler, anatomical_finger_name
@@ -1613,7 +1613,15 @@ class TherapistDashboardScene:
             # _sync_dur_from_cal); there is no pre-calibration difficulty UI
             # any more (the old Step 3 was removed).
             "difficulty": "Medium",
-            "session_mode": "target",       # "target" (set goal) or "timed" (set duration)
+            # None = not yet explicitly chosen (Step 2 of Game Configuration
+            # draws neither mode card as pre-selected in that case -- see
+            # _draw_gc_step_mode). Every OTHER reader of this key already
+            # falls back to "target" on a missing/falsy value (e.g.
+            # `self.gc.get("session_mode", "target")`), so None here only
+            # changes what the "Game Configured" readiness check sees --
+            # nothing downstream breaks if the therapist proceeds without
+            # tapping a card.
+            "session_mode": None,           # "target" (set goal) or "timed" (set duration)
             "target_reps": None,            # Target Mode: None = use the calibration-time preset/override
             "duration_sec": None,           # Timed Mode: None = use the calibration-time preset
             "speed": "Normal",              # Game speed (Slow/Normal/Fast)
@@ -2989,6 +2997,7 @@ class TherapistDashboardScene:
             return {}
         live_frac = None
         countdown_seconds = None
+        record_seconds_left = None
         if phase == "baseline":
             live_frac = round(min(1.0, win.baseline_t / BASELINE_DURATION), 3) if BASELINE_DURATION else 0.0
             # Discrete 5-4-3-2-1 shown on the patient screen too (see
@@ -2996,8 +3005,20 @@ class TherapistDashboardScene:
             # off the same win.baseline_t that gates sample collection, so
             # the patient's countdown can never drift from the therapist's.
             countdown_seconds = max(1, int(BASELINE_DURATION) - int(min(win.baseline_t, BASELINE_DURATION - 1e-3)))
+        elif phase == "countdown":
+            # The "Starts in Ns" pre-trial beat -- win.countdown is the
+            # exact same int CalibrationWindow._draw_countdown's own
+            # "Starts in {self.countdown}s" text renders, so the patient
+            # screen can never show a different number.
+            countdown_seconds = win.countdown
         elif phase == "recording":
             live_frac = round(win.live_value, 3)
+            # Time remaining in this trial's hold -- same formula
+            # CalibrationWindow's own live-monitor progress bar uses
+            # (RECORD_DURATION - win.record_t). Kept separate from
+            # live_frac, which already means "current live sensor reading"
+            # during this phase and feeds the patient screen's feedback bar.
+            record_seconds_left = round(max(0.0, RECORD_DURATION - win.record_t), 2)
         elif phase == "trial_done":
             live_frac = round(win.peak_value, 3)
         if getattr(win, "_finger_group_active", False) and set(win.game_types) == set(_FINGER_FLEX_KEYS):
@@ -3031,6 +3052,8 @@ class TherapistDashboardScene:
         }
         if countdown_seconds is not None:
             payload["countdown_seconds"] = countdown_seconds
+        if record_seconds_left is not None:
+            payload["record_seconds_left"] = record_seconds_left
         return payload
 
     def _session_ready(self):
@@ -7174,6 +7197,26 @@ class TherapistDashboardScene:
             tx += tab_w + gap
 
         sel_r = pygame.Rect(pa.right - sel_w, pa.y, sel_w, strip_h)
+        if not is_sel:
+            # Slow, gentle pulsing glow -- draws attention to "Select this
+            # Patient" without being distracting. Same sine-oscillator
+            # formula _draw_alert_indicator already uses for its pulsing
+            # dot (reads pygame.time.get_ticks() directly, no dt/state of
+            # its own needed), just applied to a rounded-rect halo behind
+            # this image-based button instead of a small dot. Only shown
+            # for "Select" (not "Deselect") and only while this profile
+            # screen is actually on-screen to draw it -- nothing persists
+            # between frames, so it starts/stops with the screen itself.
+            t = pygame.time.get_ticks()
+            pulse = (math.sin(t / 650.0) + 1) / 2   # ~4s period, smooth 0..1
+            glow_pad = self._sc(3) + int(self._sc(9) * pulse)
+            glow_alpha = int(55 + 85 * pulse)
+            glow_rect = pygame.Rect(0, 0, sel_r.width + glow_pad * 2, sel_r.height + glow_pad * 2)
+            glow_rect.center = sel_r.center
+            glow_surf = pygame.Surface(glow_rect.size, pygame.SRCALPHA)
+            pygame.draw.rect(glow_surf, (40, 150, 220, glow_alpha), glow_surf.get_rect(),
+                             border_radius=glow_rect.height // 2)
+            surface.blit(glow_surf, glow_rect.topleft)
         sel_img = _img_fit("deselect_patient.png" if is_sel else "select_patient.png",
                            sel_r.width, sel_r.height)
         if sel_img is not None:
@@ -8457,7 +8500,11 @@ class TherapistDashboardScene:
                 ], max(1, self._sc(2)))
 
             if sel and gc["selected_game"]:
-                cap_txt = self.fnt["small"].render(gc["selected_game"][0], True, (255, 255, 255))
+                # "eyebrow" (19pt), considerably smaller than the category
+                # title (27pt) and sensor subtitle (25pt) above it, so the
+                # category/subcategory/game-name hierarchy reads clearly
+                # top-to-bottom.
+                cap_txt = self.fnt["eyebrow"].render(gc["selected_game"][0], True, (255, 255, 255))
                 cap_r = pygame.Rect(0, 0, cap_txt.get_width() + self._sc(14), cap_txt.get_height() + self._sc(6))
                 cap_r.midbottom = (tr.centerx, tr.bottom - self._sc(12))
                 cap_bg = pygame.Surface(cap_r.size, pygame.SRCALPHA)
@@ -8626,7 +8673,18 @@ class TherapistDashboardScene:
             surface.blit(icon_im, icon_im.get_rect(center=chip.center))
         tx = chip.right + self._sc(12)
         name_s = self.fnt["body_b"].render(game_name, True, (38, 52, 78))
-        sub_s  = self.fnt["small"].render(sub, True, (110, 125, 150))
+        # Considerably smaller than the game name (27pt) for clear visual
+        # hierarchy, and width-clamped with an ellipsis -- this line had no
+        # wrap/truncation at all before, so a long category+hardware+goal
+        # string could run past the card's right edge.
+        f_sub = self.fnt["eyebrow"]
+        sub_max_w = gcard.right - self._sc(10) - tx
+        fit_sub = sub
+        if f_sub.size(fit_sub)[0] > sub_max_w:
+            while fit_sub and f_sub.size(fit_sub + "…")[0] > sub_max_w:
+                fit_sub = fit_sub[:-1]
+            fit_sub = (fit_sub + "…") if fit_sub else "…"
+        sub_s  = f_sub.render(fit_sub, True, (110, 125, 150))
         gty = gcard.centery - (name_s.get_height() + self._sc(2) + sub_s.get_height()) // 2
         surface.blit(name_s, (tx, gty))
         surface.blit(sub_s, (tx, gty + name_s.get_height() + self._sc(2)))
@@ -8646,7 +8704,9 @@ class TherapistDashboardScene:
         pname = pt.get("full_name") or "No patient selected"
         pid   = pt.get("patient_id_str") or "—"
         pname_s = self.fnt["body_b"].render(pname, True, (38, 52, 78))
-        pid_s   = self.fnt["small"].render(pid, True, (110, 125, 150))
+        # "eyebrow" (19pt) -- same de-emphasized size/role already used for
+        # the patient ID in the Session in Progress header (_sm_draw_info_header).
+        pid_s   = self.fnt["eyebrow"].render(pid, True, (110, 125, 150))
         pty = pcard.centery - (pname_s.get_height() + self._sc(2) + pid_s.get_height()) // 2
         surface.blit(pname_s, (ptx, pty))
         surface.blit(pid_s, (ptx, pty + pname_s.get_height() + self._sc(2)))
@@ -8658,14 +8718,19 @@ class TherapistDashboardScene:
         # leaving the 4 rows scattered across a mostly-empty card on a
         # roomy desktop window. Any leftover room just becomes blank
         # margin before the button instead.
-        # "Game Configured" -- true once the session's settings have actually
-        # been confirmed through the calibration flow's results screen
-        # (self.calibration_result["params"], populated whichever way the
-        # therapist finished it: the Recommended preset left as-is, or
-        # Advanced Settings customized -- both end in the same _accept()
-        # that fills "params"), not merely once a game has been picked.
-        game_configured = bool(
-            (self.calibration_result or {}).get("params"))
+        # "Game Configured" -- true only once ALL THREE of: (1) a game
+        # category, (2) a specific game under that category, and (3) a
+        # session mode have been explicitly chosen. Category+game are
+        # selected together as one tuple (gc["selected_game"] = (game_name,
+        # category) -- see _gc_handle_click), so checking it covers both
+        # (1) and (2) at once; `session_mode` defaults to None (not
+        # "target") specifically so (3) can be verified as a REAL explicit
+        # choice rather than always trivially true -- see its own comment
+        # in _init_game_config_state. Calibration completion is its own,
+        # separately-tracked requirement below ("Sensor Calibrated") and is
+        # deliberately NOT part of this condition.
+        game_configured = (gc["selected_game"] is not None
+                            and gc.get("session_mode") is not None)
         # "Patient Selected" / "Game Selected" are still REQUIRED for the
         # session to be ready -- the game-config flow already can't reach
         # this screen without both -- but are no longer shown as rows in the
@@ -8698,8 +8763,12 @@ class TherapistDashboardScene:
         # header zone reserves enough room for both regardless of the
         # title's own (usually smaller) height.
         chip_gap = self._sc(6)
-        tutorial_lbl = "TUTORIAL ON" if self._tutorial_enabled else "Tutorial"
-        tutorial_s = self.fnt["tag"].render(tutorial_lbl, True, (255, 255, 255))
+        tutorial_lbl = "TUTORIAL ON" if self._tutorial_enabled else "Tutorial Mode"
+        # Smaller than the "tag" size the Language chip still uses --
+        # "Tutorial Mode" is longer than "Tutorial" was, so this keeps the
+        # label comfortably inside the chip instead of widening the whole
+        # chip stack to match the old font size.
+        tutorial_s = self.fnt["eyebrow"].render(tutorial_lbl, True, (255, 255, 255))
         chip_h = max(self._sc(22), tutorial_s.get_height() + self._sc(8))
         # The chip STACK lives entirely on the right (anchored off
         # checklist_r.y below); the rows live entirely on the left (dot +
@@ -8972,7 +9041,7 @@ class TherapistDashboardScene:
         icon_sz  = item_h - self._sc(16)
 
         ts = self.fnt["modal_lbl"].render(f"Select a Game  —  {skill}", True, (38, 52, 78))
-        row_w_needed = (max((self.fnt["body_b"].size(g)[0] for g in games), default=0)
+        row_w_needed = (max((self.fnt["small"].size(g)[0] for g in games), default=0)
                         + icon_sz + self._sc(44))
         mw = min(max(ts.get_width() + pad * 2, row_w_needed + pad * 2, self._sc(360)), int(W * 0.9))
         mh = min(header_h + len(games) * (item_h + item_gap) + footer_h, int(H * 0.92))
@@ -9046,7 +9115,10 @@ class TherapistDashboardScene:
             if icon_im is not None:
                 surface.blit(icon_im, icon_im.get_rect(center=chip_r.center))
 
-            gs = self.fnt["body_b"].render(game_name, True, (40, 55, 80))
+            # Smaller than the modal's own header (27pt, same as this used
+            # to be) -- readable but visually secondary, consistent with
+            # the category hierarchy used in Step 1's own tiles.
+            gs = self.fnt["small"].render(game_name, True, (40, 55, 80))
             surface.blit(gs, gs.get_rect(midleft=(chip_r.right + self._sc(12), gr.centery)))
 
             if is_cur:

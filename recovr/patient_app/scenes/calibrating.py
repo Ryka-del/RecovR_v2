@@ -421,6 +421,31 @@ class CalibratingScreen:
                 count_s = count_font.render(str(int(secs)), True, bar_fill)
                 surface.blit(count_s, count_s.get_rect(center=(W // 2, illu_top + illu_max_h // 2)))
 
+        # -- pre-trial "Starts in Ns" countdown -- same big-digit style as
+        # the baseline countdown above, same source pattern: whatever
+        # win.countdown the therapist side last pushed, never a timer of
+        # this screen's own (see CalibrationWindow._draw_countdown's
+        # identical "Starts in {self.countdown}s" text).
+        elif phase == "countdown":
+            secs = progress.get("countdown_seconds")
+            if secs:
+                count_font = _font(int(H * HEAD_SIZE_FRAC * 1.6), "ExtraBold")
+                count_s = count_font.render(str(int(secs)), True, bar_fill)
+                surface.blit(count_s, count_s.get_rect(center=(W // 2, illu_top + illu_max_h // 2)))
+
+        # -- recording hold countdown -- a smaller readout than the two
+        # digits above (the live feedback bar below is the primary focus
+        # during this phase); same remaining-time formula as
+        # CalibrationWindow's own live-monitor progress bar
+        # (RECORD_DURATION - win.record_t), just rendered from whatever
+        # record_seconds_left the therapist side last pushed.
+        elif phase == "recording":
+            remaining = progress.get("record_seconds_left")
+            if remaining is not None:
+                rec_font = _font(int(H * HEAD_SIZE_FRAC * 0.9), "ExtraBold")
+                rec_s = rec_font.render(f"{max(0.0, float(remaining)):.1f}s", True, bar_fill)
+                surface.blit(rec_s, rec_s.get_rect(center=(W // 2, illu_top + illu_max_h // 2)))
+
         # -- feedback container ------------------------------------------
         card = pygame.Rect(0, card_top, int(W * CARD_W_FRAC), card_h)
         card.centerx = W // 2

@@ -88,22 +88,27 @@ def resolve_game(name: str) -> GameSpec:
 
 class GameRunner:
 
-    def __init__(self, spec: GameSpec, config: dict, *, sensor_update=None):
+    def __init__(self, spec: GameSpec, config: dict, *, sensor_update=None, led=None):
         self.spec = spec
         self.surface = pygame.Surface((GAME_W, GAME_H))
         self.game = spec.cls()
         self.game.on_enter(dict(config))
 
-        # LED scoring feedback -- GameRunner is only ever constructed in the
-        # patient process (see recovr/patient_app/patient_main.py), which is
-        # the one place every real game's update() actually runs, so this
-        # is the single, naturally-exclusive owner of the GPIO pin -- see
-        # hardware/led_feedback.py's own docstring for why no lock/thread
-        # is needed. self._last_score is the baseline a later increase is
+        # LED scoring feedback -- the LED is now owned ONCE per patient
+        # PROCESS (see recovr/patient_app/patient_main.py's PatientApp),
+        # not per session, since its idle "breathing" state has to keep
+        # animating even between sessions, when no GameRunner exists at
+        # all. `led` is that shared instance, handed in by whoever
+        # constructs this runner; a GameRunner used outside that process
+        # (tests, etc.) gets its own standalone instance instead of
+        # crashing. self._last_score is the baseline a later increase is
         # compared against; starts at whatever on_enter() already left
         # self.game.score at (normally 0, but never assumed to be).
-        from hardware.led_feedback import LedFeedback
-        self._led = LedFeedback()
+        if led is not None:
+            self._led = led
+        else:
+            from hardware.led_feedback import LedFeedback
+            self._led = LedFeedback()
         self._last_score = getattr(self.game, "score", 0)
 
         # Live-session checkpoint (crash/power-loss recovery -- see
@@ -287,14 +292,14 @@ class GameRunner:
             hook()
 
     def teardown(self):
-        """Release this runner's hardware resources (currently just the LED
-        feedback's GPIO pin). Call exactly once, when this runner is being
-        permanently discarded -- see patient_main.py's _teardown_runner() --
-        so the NEXT GameRunner's own LedFeedback can claim GPIO17 again
-        (gpiozero ties one pin to one live device at a time within a
-        process; GameRunner instances are recreated every session, not
-        just once per process, so this can't wait for atexit)."""
-        self._led.cleanup()
+        """No hardware resources of its own to release any more -- the LED
+        is now owned by the patient process itself (see __init__'s own
+        comment), not per-GameRunner, so there's nothing left for THIS
+        method to clean up. Kept as a no-op (rather than removed outright)
+        since patient_main.py's _teardown_runner() always calls it
+        unconditionally; removing the method would be a bigger, riskier
+        change than leaving a harmless no-op in place."""
+        pass
 
     def stop(self):
         self.stopped = True
@@ -322,11 +327,13 @@ class GameRunner:
         self.game.handle_event(event)
 
     def update(self, dt: float):
-        # Ticked unconditionally, before any of this method's own early
-        # returns below -- an already-started blink sequence must keep
-        # progressing in real time even if the game itself is paused/
-        # fading/counting down for a while, rather than freezing mid-blink.
-        self._led.tick(dt)
+        # The LED is no longer ticked here -- it's owned by the patient
+        # process itself now and ticked once per frame from its own main
+        # loop (see patient_main.py's run()), regardless of whether a
+        # GameRunner exists at all (the idle fade has to keep animating
+        # between sessions too). Ticking it again here would double-tick
+        # it (this update() and the process's own loop both running every
+        # frame while a game is active), corrupting the blink timing.
 
         if self._fading:
             self._fade_t += dt
