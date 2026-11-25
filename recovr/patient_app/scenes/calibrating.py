@@ -421,15 +421,18 @@ class CalibratingScreen:
                 count_s = count_font.render(str(int(secs)), True, bar_fill)
                 surface.blit(count_s, count_s.get_rect(center=(W // 2, illu_top + illu_max_h // 2)))
 
-        # -- pre-trial "Starts in Ns" countdown -- same big-digit style as
-        # the baseline countdown above, same source pattern: whatever
-        # win.countdown the therapist side last pushed, never a timer of
-        # this screen's own (see CalibrationWindow._draw_countdown's
-        # identical "Starts in {self.countdown}s" text).
+        # -- pre-trial "Starts in Ns" countdown -- same source pattern as
+        # the baseline countdown above (whatever win.countdown the
+        # therapist side last pushed, never a timer of this screen's own --
+        # see CalibrationWindow._draw_countdown's identical "Starts in
+        # {self.countdown}s" text), but sized to fill most of the
+        # illustration area instead of matching the baseline digit's size --
+        # this is the single most important number the patient sees all
+        # calibration, so it should dominate the screen.
         elif phase == "countdown":
             secs = progress.get("countdown_seconds")
             if secs:
-                count_font = _font(int(H * HEAD_SIZE_FRAC * 1.6), "ExtraBold")
+                count_font = _font(int(illu_max_h * 0.95), "ExtraBold")
                 count_s = count_font.render(str(int(secs)), True, bar_fill)
                 surface.blit(count_s, count_s.get_rect(center=(W // 2, illu_top + illu_max_h // 2)))
 

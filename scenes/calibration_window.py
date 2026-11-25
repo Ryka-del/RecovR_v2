@@ -1657,16 +1657,7 @@ class CalibrationWindow:
             close_r = None
             toggle_right = W - pad_r
         controls_left_x = toggle_right - tog_w
-
-        # Controller (BLE) status -- same source/labels as
-        # therapist_dashboard.py's sidebar controller monitor, just a
-        # compact dot+label sized for this 68px header bar instead of a
-        # full sidebar card. Reserved here (before the title is sized)
-        # exactly like the toggle/close geometry above, so a long sensor
-        # name shrinks around it instead of running underneath it.
-        ctrl_w = self._scw(150)
-        ctrl_right_x = controls_left_x - gap
-        title_avail_right = ctrl_right_x - ctrl_w - gap
+        title_avail_right = controls_left_x - gap
 
         if self.phase == "advanced":
             # Advanced Settings is its own screen (spec 2) -- its own header:
@@ -1763,8 +1754,6 @@ class CalibrationWindow:
             pygame.draw.circle(surface, (255, 255, 255), (knob_cx, tr.centery), knob_d // 2)
         self._toggle_rect = tr
 
-        self._draw_controller_status(surface, ctrl_right_x, top_h // 2, ctrl_w, C)
-
         # ── content ───────────────────────────────────────────────────
         content = pygame.Rect(0, top_h + self._sc(14),
                               W, H - top_h - self._sc(14))
@@ -1782,6 +1771,15 @@ class CalibrationWindow:
             "results":      self._draw_results,
             "advanced":     self._draw_advanced_settings,
         }.get(self.phase, lambda s, a, c: None)(surface, content, C)
+
+        # Controller (BLE) status -- same source/labels/size/design as
+        # before, just relocated from the header to the lower-right corner
+        # of the screen (per request) instead of being reserved space next
+        # to the title. Drawn after the phase content (not inside the top
+        # bar) so it stays on top of whatever that phase renders, same as
+        # the close-confirmation overlay below.
+        ctrl_w = self._scw(150)
+        self._draw_controller_status(surface, W - self._scw(20), H - self._sc(24), ctrl_w, C)
 
         # ── Close confirmation overlay -- drawn last so it covers everything
         # above, including whichever phase screen is currently showing. ────
@@ -2178,20 +2176,6 @@ class CalibrationWindow:
             surface.blit(self.fnt["bold"].render(
                 "Trial saved", True, C["green"]), (lx, cy))
         cy += row3_h + self._sc(5)
-
-        # row 4 -- real controller status only. The Simulation Mode
-        # instructional hint (the "[ Hold SPACE to simulate grip ]"-style
-        # text) is UI narration, not calibration data -- removed per the
-        # instructional-cleanup request. Test Mode / the keyboard fallback
-        # itself is untouched (sensors/input_handler's own simulated-input
-        # path keeps working exactly as before); this row simply has nothing
-        # to show while it's active, so its space is reclaimed instead of
-        # being spent on a row stating the obvious.
-        if input_handler.connected:
-            ctrl_s = self._fit_text(self._small_font_path, self._sc(21),
-                                    "Controller Connected", rw, C["green"], self._sc(14))
-            surface.blit(ctrl_s, (lx, cy))
-            cy += ctrl_s.get_height() + self._sc(5)
 
         # row 5 -- trial indicators (completed / active / pending)
         dot_r = self._sc(10)   # must match _draw_trial_dots' own internal dot_r

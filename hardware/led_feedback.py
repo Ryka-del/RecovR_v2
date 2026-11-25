@@ -36,12 +36,36 @@ tracked). Uses PWMLED (not the plain digital LED class) so the idle fade
 can vary brightness smoothly -- same GPIO17 pin, gpiozero software-PWMs it
 at its own default frequency, which is a normal, supported way to dim an
 LED through a MOSFET gate.
+
+PWM BACKEND -- IMPORTANT for a flicker-free fade: by default gpiozero times
+its software PWM from *inside this same Python process*, sharing the CPU
+(and the GIL) with the patient app's own pygame main loop (per-frame game
+logic, BLE polling, rendering). Under that load the PWM pulse timing gets
+starved and jittery, which shows up as visible flicker riding on top of the
+fade -- not a bug in the brightness curve itself (that part was verified
+smooth, step-by-step, in isolation). The fix is to hand PWM generation to
+`pigpiod`, a separate always-running system daemon immune to this
+process's load, instead of timing it in-process -- see the pin-factory
+setup below. Requires, once, on the Pi:
+    sudo apt install pigpio python3-pigpio
+    sudo systemctl enable pigpiod --now
+Falls back to gpiozero's own default (in-process, potentially jittery under
+load) factory if pigpiod isn't installed/running -- including on this
+Windows dev machine, where there's no GPIO at all.
 """
 
 import atexit
 import math
 
 GPIO_PIN = 17          # BCM numbering -- confirmed unused elsewhere in this codebase
+
+try:
+    from gpiozero import Device
+    from gpiozero.pins.pigpio import PiGPIOFactory
+    Device.pin_factory = PiGPIOFactory()
+except Exception:
+    pass  # pigpiod not installed/running (or not on a Pi at all) -- gpiozero
+          # falls back to its own default pin factory further down
 
 # Idle "breathing" fade -- one full dim(0) -> bright(1) -> dim(0) cycle.
 # Slow and continuous, not a attention-grabbing animation (this plays

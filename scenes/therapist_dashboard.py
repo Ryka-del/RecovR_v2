@@ -7207,15 +7207,34 @@ class TherapistDashboardScene:
             # for "Select" (not "Deselect") and only while this profile
             # screen is actually on-screen to draw it -- nothing persists
             # between frames, so it starts/stops with the screen itself.
+            #
+            # Drawn as several nested rounded rects (outermost = largest +
+            # faintest, innermost = smallest + strongest) instead of one
+            # flat-filled pill, so it reads as a soft diffuse halo rather
+            # than a hard-edged rectangle flashing behind the button. The
+            # corner radius matches select_patient.png's own modest rounding
+            # (~16% of height) instead of height//2 (a full stadium shape),
+            # since a pill-shaped halo visibly mismatched this rectangular
+            # button's corners.
             t = pygame.time.get_ticks()
             pulse = (math.sin(t / 650.0) + 1) / 2   # ~4s period, smooth 0..1
-            glow_pad = self._sc(3) + int(self._sc(9) * pulse)
-            glow_alpha = int(55 + 85 * pulse)
-            glow_rect = pygame.Rect(0, 0, sel_r.width + glow_pad * 2, sel_r.height + glow_pad * 2)
+            corner_r   = int(sel_r.height * 0.16)
+            outer_pad  = self._sc(6) + int(self._sc(10) * pulse)
+            max_alpha  = int(50 + 40 * pulse)
+            glow_color = (130, 215, 235)
+            glow_rect = pygame.Rect(0, 0, sel_r.width + outer_pad * 2, sel_r.height + outer_pad * 2)
             glow_rect.center = sel_r.center
             glow_surf = pygame.Surface(glow_rect.size, pygame.SRCALPHA)
-            pygame.draw.rect(glow_surf, (40, 150, 220, glow_alpha), glow_surf.get_rect(),
-                             border_radius=glow_rect.height // 2)
+            gcx, gcy = glow_surf.get_width() // 2, glow_surf.get_height() // 2
+            layers = 5
+            for i in range(layers):
+                frac  = (layers - i) / layers          # 1.0 (outermost) .. 0.2 (innermost)
+                pad   = int(outer_pad * frac)
+                alpha = int(max_alpha * (i + 1) / layers)
+                layer_r = pygame.Rect(0, 0, sel_r.width + pad * 2, sel_r.height + pad * 2)
+                layer_r.center = (gcx, gcy)
+                pygame.draw.rect(glow_surf, (*glow_color, alpha), layer_r,
+                                 border_radius=corner_r + pad // 2)
             surface.blit(glow_surf, glow_rect.topleft)
         sel_img = _img_fit("deselect_patient.png" if is_sel else "select_patient.png",
                            sel_r.width, sel_r.height)
