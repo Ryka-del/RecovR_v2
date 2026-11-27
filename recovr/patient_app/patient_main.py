@@ -97,9 +97,9 @@ def _create_display(size, flags):
 
     RECOVR_PATIENT_DISPLAY (int) selects the SDL display index so the patient
     window opens on a chosen monitor -- no hard-coded coordinates. Missing /
-    invalid / out-of-range / headless falls back to the current behaviour
-    (default display). All other window behaviour -- RECOVR_PATIENT_SIZE,
-    RECOVR_FULLSCREEN, RECOVR_PATIENT_POS, and the render scaling -- is unchanged.
+    invalid / out-of-range / headless falls back to the default display.
+    Independent of RECOVR_PATIENT_SIZE, RECOVR_FULLSCREEN, RECOVR_PATIENT_POS,
+    and the render scaling.
     """
     raw = os.environ.get("RECOVR_PATIENT_DISPLAY", "").strip()
     if raw:
@@ -297,18 +297,16 @@ class PatientApp:
         booting = bool(snap.get("session_booting", False))
 
         # BLE controller ownership: two-phase, acknowledged handoff. The
-        # single source of truth is the broker's `ble_owner`/
-        # `ble_handoff_target` fields -- ble_handoff_target is requested
-        # ONLY by the therapist process on its own navigation (entering/
-        # leaving the Session in Progress screen -- see
-        # scenes/therapist_dashboard.py's BLE-ownership block), never by
-        # game/session status, so completing or stopping a game, or
-        # returning to the session interface, can never move ownership. This
+        # broker's `ble_owner`/`ble_handoff_target` fields are the single
+        # source of truth -- ble_handoff_target is requested ONLY by the
+        # therapist process on its own navigation (entering/leaving the
+        # Session in Progress screen -- see scenes/therapist_dashboard.py's
+        # BLE-ownership block), never by game/session status, so completing
+        # or stopping a game can never move ownership on its own. This
         # process must NEVER decide on its own that it owns the controller,
-        # and must NEVER enable before confirming the handoff is actually
-        # meant for it -- see recovr/shared/session_state.py's ble_owner
-        # docstring for the full protocol. Checked every poll, unconditional
-        # on mode/status, same reasoning as the therapist side.
+        # and must NEVER enable before confirming the handoff is meant for
+        # it -- see recovr/shared/session_state.py's ble_owner docstring for
+        # the full protocol. Checked every poll, unconditional on mode/status.
         ble_owner  = snap.get("ble_owner", "therapist")
         ble_target = snap.get("ble_handoff_target", "")
         # Enabled iff we are the CONFIRMED owner and not actively handing
@@ -396,8 +394,7 @@ class PatientApp:
         #    ACTIVELY being measured -- never as a bare "please wait" state.
         #    That means staying on (or returning to) the Patient Dashboard:
         #      - the instant CALIBRATE fires, until the first real sensor/
-        #        step is actually pushed (closes the gap the old "Getting
-        #        Ready to Calibrate" screen used to fill);
+        #        step is actually pushed (no intermediate "please wait" screen);
         #      - while the therapist is reviewing/adjusting results
         #        (calibration_progress.phase in results/advanced) -- the
         #        window is still open, but nothing is being measured;
@@ -767,12 +764,11 @@ def _raise_keyboard_interrupt(*_a):
 
 
 def main():
-    # Python's default SIGTERM disposition terminates the process
-    # immediately -- atexit handlers (see hardware/led_feedback.py's
-    # LedFeedback.__init__) do NOT run on an untrapped SIGTERM, only on a
-    # normal interpreter exit. recovr/launch_production.py's supervisor
+    # An untrapped SIGTERM terminates the process immediately -- atexit
+    # handlers (see hardware/led_feedback.py's LedFeedback.__init__) only run
+    # on a normal interpreter exit. recovr/launch_production.py's supervisor
     # stops this process with exactly that signal (proc.terminate()), so
-    # without this, the LED fail-safe cleanup could be skipped on every
+    # without this, the LED fail-safe cleanup would be skipped on every
     # ordinary app shutdown, not just a crash. Mirrors
     # recovr/launch_production.py's own _raise_keyboard_interrupt pattern.
     for sig_name in ("SIGTERM", "SIGINT"):
@@ -791,11 +787,10 @@ def main():
     finally:
         # Hardware fail-safe: force the LED off and release GPIO17 on every
         # exit path (normal QUIT/ESC, Ctrl+C/SIGINT, or the launcher's
-        # SIGTERM). Idempotent and safe to call even if it's already clean
-        # (LedFeedback.cleanup() is safe to call more than once) -- this is
-        # on top of LedFeedback's own atexit registration, not a
-        # replacement for it, for exactly the SIGTERM-skips-atexit reason
-        # explained above.
+        # SIGTERM). Idempotent (LedFeedback.cleanup() is safe to call more
+        # than once) -- this is on top of LedFeedback's own atexit
+        # registration, not a replacement for it, for the SIGTERM-skips-
+        # atexit reason explained above.
         try:
             app._led.cleanup()
         except Exception:

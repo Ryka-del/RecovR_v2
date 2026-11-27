@@ -84,11 +84,11 @@ _GAME_METRIC_LABELS = {
 }
 
 # Real icon assets for the Rehabilitation Progress sub-metric rows and the
-# Rehabilitation Summary rows -- replaces the hand-drawn _draw_icon()
-# vector glyphs for these specific rows only (their card-title icons, e.g.
-# Next Session's "calendar" glyph, are untouched). Falls back to the vector
-# glyph if an asset is ever missing, same graceful-degradation pattern used
-# everywhere else image assets are loaded in this app.
+# Rehabilitation Summary rows only (card-title icons, e.g. Next Session's
+# "calendar" glyph, still use the hand-drawn _draw_icon() vector glyphs).
+# Falls back to the vector glyph if an asset is ever missing, same
+# graceful-degradation pattern used everywhere else image assets are loaded
+# in this app.
 _PROGRESS_ICON_ASSETS = {
     "hand":   "hand_mobility.png",
     "finger": "finger_control.png",
@@ -99,12 +99,11 @@ _SUMMARY_ICON_ASSETS = {
     "controller": "games_played.png",
     "target":     "goals_completed.png",
 }
-# Rehabilitation Summary row -> icon KIND (not asset name) -- swapped per
-# spec: the Total Sessions row now shows the icon that used to mean "Games
-# Played" (controller/games_played.png), and the new Time Elapsed row (which
-# replaces Games Played) shows the icon that used to mean "Total Sessions"
-# (calendar/total_sessions.png). Goals Completed keeps its own icon. The
-# asset filenames above are untouched -- only which row uses which key.
+# Rehabilitation Summary row -> icon KIND (not asset name): Total Sessions
+# uses the controller icon (controller/games_played.png), Time Elapsed uses
+# the calendar icon (calendar/total_sessions.png), and Goals Completed uses
+# its own target icon. The asset filenames above are keyed by icon kind, not
+# by row name.
 _SUMMARY_ROW_ICON_KIND = {
     "total_sessions": "controller",
     "time_elapsed":   "calendar",
@@ -339,9 +338,9 @@ class PatientDashboardScreen:
         ring_rect.center = ring_c
         _alpha_circle(surface, C["track"], ring_c, ring_r - ring_w // 2, ring_w)
 
-        # Overall = the average of whichever categories have real calibration
-        # history (skip the rest) -- stays the original "—"/"Not tracked yet"
-        # only when NONE of the 3 have any data at all yet.
+        # Overall is the average of whichever categories have real
+        # calibration history (skip the rest); shows "—"/"Not tracked yet"
+        # only when none of the 3 have any data at all yet.
         avail_pcts = [v["current_pct"] for v in progress.values() if "current_pct" in v]
         overall = round(sum(avail_pcts) / len(avail_pcts)) if avail_pcts else None
 
@@ -655,7 +654,7 @@ class PatientDashboardScreen:
         logo_right = margin + logo_box_w
 
         # Time/date -- right-aligned block at the far right, time prominent
-        # above the smaller date, same live-clock formatting as before.
+        # above the smaller date, formatted as a live clock.
         now_dt = datetime.datetime.now()
         f_time = _font("Bold", int(header_h * 0.36))
         f_date = _font("Regular", int(header_h * 0.17))
@@ -668,8 +667,8 @@ class PatientDashboardScreen:
         td_left = td_right - max(time_s.get_width(), date_s.get_width())
 
         # Welcome card -- centred in the space between the logo and the
-        # time/date block, with a significantly larger profile icon and
-        # patient-name type than before (it's the header's focal point now).
+        # time/date block; profile icon and patient-name type are large
+        # since it's the header's focal point.
         side_gap = int(W * 0.02)
         mid_left = logo_right + side_gap
         mid_right = td_left - side_gap

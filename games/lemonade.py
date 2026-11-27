@@ -258,13 +258,12 @@ def _draw_pitcher(surface, cx, bottom_y, pitcher_h, fill_frac, color_dark, color
     """Draw the glass, then the juice -- clipped to the glass's own interior
     silhouette, rising from the base -- fully opaque ON TOP of it.
     pitcher_lemonade.png's body is a near-opaque (~91% alpha) pale overlay
-    baked in for its own glossy-glass look; drawing the liquid underneath it
-    (as an earlier version of this did) left any fill colour almost
-    completely washed out to a pale cream regardless of how saturated it
-    was -- math some colour simply cannot survive a 91%-opacity near-white
-    layer on top. Painting the liquid afterward keeps it clearly, brightly
-    visible while the glass's handle and outer rim contour (both outside
-    the interior silhouette the liquid is clipped to) still read normally.
+    baked in for its own glossy-glass look, which would wash any liquid
+    colour drawn underneath it out to a pale cream -- no colour can survive
+    a 91%-opacity near-white layer on top of it. Painting the liquid
+    afterward keeps it clearly, brightly visible while the glass's handle
+    and outer rim contour (both outside the interior silhouette the liquid
+    is clipped to) still read normally.
     Returns the glass's on-screen rect (used to aim the juice-drip
     animation)."""
     img = _load_raw_scaled("pitcher_lemonade.png", pitcher_h)
@@ -618,12 +617,10 @@ class LemonadeGame(SessionModeMixin, FatigueMixin, BaseScreen):
             self._tutorial_hints.update(self, dt)
 
         # Checked LAST, after this frame's own squeeze/pitcher logic has
-        # already run -- Timed Mode's duration expiring on the exact same
-        # frame as a completed lemon must never preempt it (the old
-        # position, before that logic, could do exactly that and silently
-        # drop the final point). time_left is floored at 0 by
-        # _session_tick() itself, so this still ends the session on every
-        # subsequent frame.
+        # already run, so Timed Mode's duration expiring on the same frame
+        # as a completed lemon never preempts it and drops the final point.
+        # time_left is floored at 0 by _session_tick() itself, so this
+        # still ends the session on every subsequent frame.
         if self._session_tick(dt):
             self._end_game()
 
@@ -671,9 +668,9 @@ class LemonadeGame(SessionModeMixin, FatigueMixin, BaseScreen):
         during the squeeze/hold (the live _temp_fill preview) IS the fill
         animation -- release just locks that same value in, so there is no
         second visual "pour" of the same 10%. The ~1s "pouring" pitcher-state
-        that follows is now a pure timer kept in sync with the pour_juice
-        sound (and, for a pitcher's 10th lemon, the lead-in to the
-        replacement sequence) -- it no longer changes the fill level."""
+        that follows is a pure timer kept in sync with the pour_juice sound
+        (and, for a pitcher's 10th lemon, the lead-in to the replacement
+        sequence); it does not itself change the fill level."""
         self.completed  += 1
         self.score       += 1
         self.reps          = self.completed

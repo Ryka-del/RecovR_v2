@@ -5,7 +5,7 @@ Two call paths:
 
   * Prototype (not DUAL): `draw(surface, frac, message)` -- a short generic
     progress bar while patient_main self-acks a stub result after a few
-    seconds. Unchanged from before this file's redesign.
+    seconds.
 
   * Production dual-monitor: the real CalibrationWindow runs on the
     therapist monitor (scenes/calibration_window.py); `draw_live(surface,
@@ -159,10 +159,9 @@ _COMPLETE_CONTENT = {
 # sound effect in this project -- see audio.py's own _get_sound), so a
 # screen with no audio asset yet still works, just silently.
 #
-# Every sensor's "trial 1" clip is named "..._first.wav" -- a naming
-# leftover from when a one-time multi-sensor preamble made a first-trial
-# clip differ from a later one; there is now only ever one clip per sensor
-# for this moment, always used regardless of which sensor/step it is.
+# Every sensor's "trial 1" clip is named "..._first.wav", but only one clip
+# per sensor is ever used for this moment, regardless of which sensor/step
+# it is.
 _AUDIO_DIR = os.path.abspath(os.path.join(
     os.path.dirname(__file__), "..", "..", "..", "assets", "audio"))
 _sound_cache: dict = {}

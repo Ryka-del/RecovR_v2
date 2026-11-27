@@ -62,9 +62,9 @@ except Exception:
 # ── difficulty-scaled parameters ────────────────────────────────────────────
 GOALS            = {"Easy": 80,  "Medium": 120, "Hard": 160}   # Target Mode: points to reach
 DURATION         = {"Easy": 300, "Medium": 420, "Hard": 600}   # Timed Mode: session length in seconds (5/7/10 min)
-# Aim Tolerance (the HOLD-trigger radius) is now a frozen constant, the same
-# for every difficulty -- Required Wrist Rotation (below) is this game's one
-# difficulty-scaled aiming parameter instead. Kept at the old Medium value.
+# Aim Tolerance (the HOLD-trigger radius) is a frozen constant, identical
+# across difficulties -- Required Wrist Rotation (below) is this game's
+# only difficulty-scaled aiming parameter.
 AIM_TOLERANCE_R  = 80
 CURSOR_SPD       = {"Easy": 900, "Medium": 1000, "Hard": 1100}
 ARROWS_ALLOWANCE = {"Easy": 20,  "Medium": 16,  "Hard": 14}  # arrows in the basket this session
@@ -73,8 +73,7 @@ HOLD_TIME_DEFAULT = 3.0   # seconds -- uniform across difficulty per spec, overr
 # Required Wrist Rotation -- the patient's raw wrist-tilt magnitude (shared
 # calibration for both axes -- see _normalize_tilt) must reach this % of
 # their own calibrated resting->peak range before the cursor responds to
-# that axis at all; replaces the old flat 0.05 deadzone. See on_enter()'s
-# self._wrist_rotation_min.
+# that axis at all. See on_enter()'s self._wrist_rotation_min.
 WRIST_REQUIREMENT = {"Easy": 0.30, "Medium": 0.70, "Hard": 0.90}
 
 FIRE_DURATION    = 0.35   # seconds the arrow takes to travel to its locked impact point
@@ -256,7 +255,7 @@ class SteadyAimGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # the dual-monitor production flow -- see
         # recovr/patient_app/games/generic_adapter.py's handle_event()).
         self._instructions_min_t = 2.5
-        self.aim_tolerance_r  = AIM_TOLERANCE_R   # frozen constant -- no longer difficulty/Advanced-Settings-scaled
+        self.aim_tolerance_r  = AIM_TOLERANCE_R   # frozen constant -- not difficulty/Advanced-Settings-scaled
         self.cursor_spd       = cal_params.get("sa_cursor_spd", CURSOR_SPD[self.difficulty])
         self.hold_time        = cal_params.get("sa_hold_time", HOLD_TIME_DEFAULT)
         self.arrows_allowance = int(cal_params.get("sa_arrows", ARROWS_ALLOWANCE[self.difficulty]))
@@ -501,9 +500,9 @@ class SteadyAimGame(SessionModeMixin, FatigueMixin, BaseScreen):
         tx, ty = self._tilt_x_smooth, self._tilt_y_smooth
 
         if self.phase == "aim":
-            # Required Wrist Rotation replaces the old flat 0.05 deadzone --
-            # the cursor only responds to an axis once its magnitude clears
-            # this patient's own calibration-relative requirement.
+            # The cursor only responds to an axis once its magnitude clears
+            # this patient's own calibration-relative Required Wrist
+            # Rotation.
             if abs(tx) > self._wrist_rotation_min:
                 self.cursor_x += self.cursor_spd * dt * tx
             if abs(ty) > self._wrist_rotation_min:
@@ -540,11 +539,10 @@ class SteadyAimGame(SessionModeMixin, FatigueMixin, BaseScreen):
             self._tutorial_hints.update(self, dt)
 
         # Checked LAST, after this frame's own aim/fire logic has already
-        # run -- Timed Mode's duration expiring on the exact same frame as
-        # a shot must never preempt it (the old position, before that
-        # logic, could do exactly that and silently drop the final rep).
-        # time_left is floored at 0 by _session_tick() itself, so this
-        # still ends the session on every subsequent frame.
+        # run, so Timed Mode's duration expiring on the same frame as a
+        # shot never preempts it and drops the final rep. time_left is
+        # floored at 0 by _session_tick() itself, so this still ends the
+        # session on every subsequent frame.
         if self._session_tick(dt):
             self._end_game("completed")
 
@@ -836,11 +834,11 @@ class SteadyAimGame(SessionModeMixin, FatigueMixin, BaseScreen):
         surface.blit(ov, (0, 0))
 
         # Fully designed "How To Play" card art (title, numbered steps, tip
-        # banner all baked in) -- replaces the hand-drawn panel. Per-theme,
-        # cropped to its own opaque content then fit preserving aspect
-        # ratio. Same outer card box (position + max size) as _draw_results'
-        # Round Complete card -- the two screens read as stages of one
-        # interface rather than two differently-proportioned popups.
+        # banner all baked in), per-theme, cropped to its own opaque content
+        # then fit preserving aspect ratio. Same outer card box (position +
+        # max size) as _draw_results' Round Complete card -- the two screens
+        # read as stages of one interface rather than two differently-
+        # proportioned popups.
         card_name = (f"steady_aim_how_to_play_{'dark' if is_dark_mode() else 'light'}"
                      f"{'_fil' if self.language == 'fil' else ''}.png")
         top_margin, bottom_reserved = int(GAME_H * 0.05), int(GAME_H * 0.17)

@@ -498,9 +498,10 @@ class SessionStore:
     # -- reset --------------------------------------------------------
     def reset(self) -> dict:
         """Clear config / telemetry / result back to IDLE, but KEEP the
-        monotonic counters. game_seq/command_seq must only ever increase so the
-        patient reliably detects the next START as a fresh activity -- zeroing
-        them is what caused 'second game does not appear'.
+        monotonic counters. game_seq/command_seq must only ever increase: the
+        patient detects a fresh activity by watching for these to advance, so
+        resetting them to 0 could repeat a value it already saw and the next
+        game would never register as new.
         """
         with self._lock:
             dark = self._state.dark_mode

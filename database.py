@@ -59,8 +59,7 @@ def username_char_allowed(ch: str) -> bool:
 def validate_username(username: str):
     """Returns (ok: bool, error_message: str). Rejects empty/whitespace-only
     usernames and anything outside username_char_allowed(), but otherwise
-    allows letters, numbers, and common symbol characters (not letters-only
-    any more)."""
+    allows letters, numbers, and common symbol characters."""
     u = (username or "").strip()
     if not u:
         return False, "Username is required."
@@ -209,13 +208,12 @@ class Database:
         except Exception:
             pass
 
-        # Goal-based sessions (replacing fixed-duration sessions): every
-        # existing row predates this and gets the DEFAULT values below, which
-        # read as "a completed, pre-goal-tracking session" -- no historical
-        # data is lost or reinterpreted. `duration_sec` keeps its name and
-        # column but now holds ELAPSED active-gameplay time, not a configured
-        # countdown; goal/completed_reps are NULL for rows that predate
-        # per-game goals (the UI should just omit progress for those).
+        # Goal-based sessions replaced fixed-duration sessions. Rows that
+        # predate this get the DEFAULT values below, read as "a completed,
+        # pre-goal-tracking session" -- no historical data is lost or
+        # reinterpreted. `duration_sec` holds ELAPSED active-gameplay time,
+        # not a configured countdown; goal/completed_reps are NULL for rows
+        # that predate per-game goals (the UI omits progress for those).
         try:
             self.conn.execute(
                 "ALTER TABLE sessions ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'")
@@ -233,13 +231,12 @@ class Database:
         except Exception:
             pass
 
-        # Target Mode / Timed Mode: every existing row predates this and is a
-        # Target Mode session (it already has a `goal`, if any, from the
-        # goal-based-only era) -- the DEFAULT below is the correct retroactive
-        # read, not a reinterpretation. `configured_duration_seconds` is only
-        # ever set for Timed Mode rows (the therapist-set session length);
-        # `duration_sec` keeps meaning ACTUAL elapsed active-gameplay time for
-        # both modes.
+        # Target Mode / Timed Mode: rows that predate this column are Target
+        # Mode sessions (each already has a `goal`, if any) -- the DEFAULT
+        # below is the correct retroactive read, not a reinterpretation.
+        # `configured_duration_seconds` is only ever set for Timed Mode rows
+        # (the therapist-set session length); `duration_sec` means ACTUAL
+        # elapsed active-gameplay time for both modes.
         try:
             self.conn.execute(
                 "ALTER TABLE sessions ADD COLUMN session_mode TEXT NOT NULL DEFAULT 'target'")
@@ -253,14 +250,12 @@ class Database:
         except Exception:
             pass
 
-        # The three individual trial readings behind every calibration's
-        # average/threshold -- previously computed in memory
-        # (CalibrationWindow.calibration_result["trials"]) but discarded
-        # before saving, so the Calibration Record Details screen had no
-        # historical trial data to show, only the derived average. Every
-        # row that predates this migration gets NULL here (the UI shows
-        # "Not recorded" for those, never a fabricated reading); every
-        # calibration saved from now on populates them for real.
+        # The three individual trial readings behind each calibration's
+        # average/threshold; previously discarded after computing the
+        # average, so older calibrations have none. Rows that predate this
+        # migration get NULL here (the UI shows "Not recorded", never a
+        # fabricated reading); calibrations saved from now on populate
+        # them for real.
         for col in ("trial1", "trial2", "trial3"):
             try:
                 self.conn.execute(f"ALTER TABLE calibrations ADD COLUMN {col} REAL")
@@ -268,11 +263,11 @@ class Database:
             except Exception:
                 pass
 
-        # Timestamp of the most recent incorrect PIN attempt -- needed to
-        # decay the attempt counter after ATTEMPT_RESET_HOURS of inactivity,
+        # Timestamp of the most recent incorrect PIN attempt -- used to decay
+        # the attempt counter after ATTEMPT_RESET_HOURS of inactivity,
         # independent of locked_until (which only exists once a lock has
-        # actually triggered). Existing rows get NULL, which _expire_stale_
-        # attempts() treats as "nothing to expire" rather than as due.
+        # actually triggered). Rows without it get NULL, which
+        # _expire_stale_attempts() treats as "nothing to expire".
         try:
             self.conn.execute(
                 "ALTER TABLE account_locks ADD COLUMN last_attempt_at DATETIME")
@@ -280,14 +275,13 @@ class Database:
         except Exception:
             pass
 
-        # Live-session checkpoints -- NOT full game-state resume, just
-        # enough (patient/therapist/game/difficulty + the latest periodic
+        # Live-session checkpoints -- NOT full game-state resume, just enough
+        # (patient/therapist/game/difficulty + the latest periodic
         # score/duration snapshot) to recognize on the NEXT startup that a
-        # session began and never reached save_session() (sudden power
-        # loss / crash), so it can be recorded as "interrupted" instead of
-        # silently vanishing with no trace. See start_checkpoint() /
-        # update_checkpoint() / resolve_checkpoint() /
-        # recover_interrupted_checkpoints() below.
+        # session began and never reached save_session() (sudden power loss
+        # or crash), so it is recorded as "interrupted" instead of silently
+        # vanishing with no trace. See start_checkpoint() / update_checkpoint()
+        # / resolve_checkpoint() / recover_interrupted_checkpoints() below.
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS session_checkpoints (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -890,8 +884,8 @@ class Database:
         is given, the write is refused (returns False, no-op) unless that
         therapist currently OWNS the patient. A shared (non-owner) therapist
         must never be able to edit patient information, even by calling this
-        directly. Existing callers that don't pass acting_therapist_id keep the
-        old unrestricted behaviour."""
+        directly. Callers that don't pass acting_therapist_id keep the
+        unrestricted behaviour."""
         if acting_therapist_id is not None and not self.is_patient_owner(patient_id, acting_therapist_id):
             return False
         self.conn.execute("""

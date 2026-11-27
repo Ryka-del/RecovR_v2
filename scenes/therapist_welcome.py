@@ -68,8 +68,8 @@ class TherapistWelcomeScene:
         # Outline thickness scales with the title so it never looks pasted on.
         self._outline    = max(2, int(title_h * 0.035))
 
-        # Button is anchored to the BOTTOM of the viewport, not stacked under
-        # the text -- that is what removes the dead space at the foot of the page.
+        # Button is anchored to the BOTTOM of the viewport (not stacked under
+        # the text), so there's no dead space at the foot of the page.
         btn_h    = int(height * BTN_H_FRAC)
         btn_w    = int(width  * BTN_W_FRAC)
         button_y = height - int(height * BOT_FRAC) - btn_h
@@ -246,8 +246,8 @@ class TherapistWelcomeScene:
             self.color_hover_shadow  = (15,  90,  135)
             self.color_text          = (255, 255, 255)
 
-            # Round play-button artwork replaces the old pill + "Start" text.
-            # rect/hit_rect (tap area) are unchanged -- only the visual is new.
+            # Round play-button artwork is the button's visual; rect/hit_rect
+            # (tap area) match its bounds regardless of what's drawn inside.
             self.icon_d     = int(self.height * 0.92)
             self.icon_img   = _dash_img("welcome_start.png", self.icon_d)
             self.text_surf  = font_button.render("Start", True, self.color_text)  # fallback only
@@ -270,7 +270,7 @@ class TherapistWelcomeScene:
                 surface.blit(shadow, (icon_rect.x, icon_rect.y + self.shadow_depth))
                 surface.blit(self.icon_img, icon_rect)
             else:
-                # fallback if the asset is ever missing -- the original pill button
+                # fallback if the asset is missing: a plain pill button
                 main_col   = self.color_hover        if self.is_hovered else self.color_normal
                 shadow_col = self.color_hover_shadow if self.is_hovered else self.color_normal_shadow
                 shadow_rect = pygame.Rect(
@@ -286,9 +286,9 @@ class TherapistWelcomeScene:
                 if self.hit_rect.collidepoint(event.pos):
                     return True
             if event.type == pygame.FINGERDOWN:
-                # FINGERDOWN carries normalised 0-1 coords -- convert and hit-test.
-                # (Previously this returned True for a tap ANYWHERE on the panel,
-                #  so the capacitive screen started a session on any stray touch.)
+                # FINGERDOWN carries normalised 0-1 coords -- convert and hit-test
+                # against hit_rect so a stray touch anywhere on the panel can't
+                # start a session.
                 pos = (int(event.x * self.SCREEN_W), int(event.y * self.SCREEN_H))
                 if self.hit_rect.collidepoint(pos):
                     return True

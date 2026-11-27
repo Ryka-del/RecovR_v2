@@ -2,20 +2,12 @@
 # scenes/therapist_dashboard.py
 # =============================================================================
 #
-# CHANGES vs previous version:
-#   1. Table column widths widened across Patients / Session History / Calibration
-#       so longer Patient Names, IDs (10 chars), Severity, and Therapist all fit;
-#       row heights and inter-row spacing increased to match the bigger font.
-#   2. Register Patient row_gap increased (58→72px) and fh increased (36→40px)
-#      to prevent field overlap
-#   3. Register Patient dropdowns now draw in a second pass so they always
-#      appear on top of all other fields (z-order fix)
-#   4. (removed -- dev-only calibration bypass toggle no longer exists)
-#   5. Patients are now private per therapist — get_all_patients filters by
-#      therapist_id so each therapist only sees their own patients plus those
-#      explicitly shared with them
-#   6. Share Patient modal — therapists can share a patient with another therapist
-#      by searching their username; stored in patient_shares junction table
+# Patients are private per therapist: get_all_patients filters by
+# therapist_id, so each therapist sees only their own patients plus any
+# explicitly shared with them via the Share Patient modal (therapists search
+# by username; the share is stored in the patient_shares junction table).
+# Register Patient's dropdowns draw in a second pass so they always render
+# on top of the other fields.
 #
 # FLOW:
 #   Home (4 cards) → Patient List → [select patient] → Game Configuration
@@ -80,18 +72,18 @@ if _DUAL_MONITOR:
 
 # How long the therapist waits, after requesting a patient->therapist
 # handoff, before showing it as stuck in the controller-monitor UI -- see
-# the BLE-ownership block in update(). This NO LONGER forces ownership past
-# an unconfirmed handoff (a logical ble_owner flip here would not mean the
-# patient's physical BLE connection was actually released) -- it only
-# surfaces a visible warning. Generous enough to absorb normal broker-poll
-# latency (~150ms) plus the patient's own disable/disconnect time (and, if
-# its main thread is frozen, however long its own lease watchdog's
-# _LEASE_TIMEOUT_SEC takes to fail closed), but short enough to tell the
-# therapist promptly that something needs attention. The only thing that
-# may ever force past a stuck handoff is recovr/launch_production.py's
-# supervisor, and only by shutting the whole app down after independently
-# confirming (via OS process exit) that the previous owner actually
-# terminated -- never by granting ownership on a bare timeout.
+# the BLE-ownership block in update(). A timeout here only surfaces a
+# visible warning; it never forces ownership past an unconfirmed handoff (a
+# logical ble_owner flip here would not mean the patient's physical BLE
+# connection was actually released). Generous enough to absorb normal
+# broker-poll latency (~150ms) plus the patient's own disable/disconnect
+# time (and, if its main thread is frozen, however long its own lease
+# watchdog's _LEASE_TIMEOUT_SEC takes to fail closed), but short enough to
+# tell the therapist promptly that something needs attention. The only
+# thing that can force past a stuck handoff is recovr/launch_production.py's
+# supervisor, which shuts the whole app down after independently confirming
+# (via OS process exit) that the previous owner actually terminated -- never
+# by granting ownership on a bare timeout.
 _BLE_HANDOFF_TIMEOUT_MS = 5000
 
 # ─────────────────────────────────────────────────────────────────────
@@ -136,11 +128,10 @@ PANEL_COLORS = {
     8: (150, 130, 220),
 }
 
-# Sidebar navigation is now EMPTY. The Patient List is the Therapist Dashboard
-# itself (panel 0, shown on load); Session History / Analytics / Calibration
-# Records moved into the Patient Preview panel. Panels 0-3 draw methods are
-# unchanged and still reachable code. Navigation back to the Patient List is via
-# the standard Back buttons on each sub-panel.
+# Sidebar navigation is empty -- the Patient List is the Therapist
+# Dashboard itself (panel 0, shown on load); Session History, Analytics and
+# Calibration Records live inside the Patient Preview panel instead of the
+# sidebar. Back buttons on each sub-panel return to the Patient List.
 SIDEBAR_NAV = []
 
 ROLES = [
@@ -165,8 +156,7 @@ INTEGRATED_GAMES = [
 ALL_GAMES = SINGLE_SKILL_GAMES + INTEGRATED_GAMES
 
 # Game Configuration tile artwork -- each is a wide pill-shaped button with
-# its label already baked into the image (assets/images/), replacing the
-# old plain-color tile + drawn text label.
+# its label already baked into the image (assets/images/).
 GAME_TILE_ASSETS = {
     "Grip Strength":  "gripstrength.png",
     "Finger Flexion": "fingerflexion.png",
@@ -230,8 +220,8 @@ GAME_ICON_ASSET = {
 # fixed by spec (deliberately NOT derived from SINGLE_SKILL_GAMES /
 # INTEGRATED_GAMES above, which is Game Configuration's own game-picker --
 # a different screen with its own, differently-grouped categorization that
-# this doesn't touch). Every game name matches _GAME_SCENE_MAP exactly; no
-# Gravity Catch (removed from the game roster already).
+# this doesn't touch). Every game name matches _GAME_SCENE_MAP exactly; the
+# roster doesn't include Gravity Catch.
 METRICS_TREE = [
     ("Single Skill", [
         ("Grip Strength",  ["Basketball", "Lemonade"]),
@@ -280,23 +270,21 @@ SENSOR_ORDER = ["Grip Strength", "Finger Flexion", "Wrist Rotation"]
 # Flex -> MPU6050), since CalibrationWindow walks this list in the order
 # given.
 #
-# Purrfect Feast is "Dual Skill" in SKILL_GAMES/GAME_SENSOR_SPEC (grip + wrist
-# telemetry) but, before this entry existed, was never actually calibrated
-# for both: "Dual Skill" isn't a SENSOR_CFG key, so CalibrationWindow
-# silently fell back to a single Grip-Strength-only pass and the MPU6050
-# pass never ran. Listing it here is a real-logic fix, not a cosmetic one --
-# its gameplay wrist threshold was previously left at CalibrationWindow's
-# unset default.
+# Purrfect Feast is "Dual Skill" in SKILL_GAMES/GAME_SENSOR_SPEC (grip +
+# wrist telemetry), so it must be listed here to get both sensors
+# calibrated: "Dual Skill" isn't a SENSOR_CFG key, so without this entry
+# CalibrationWindow would silently fall back to a single Grip-Strength-only
+# pass, the MPU6050 pass would never run, and its gameplay wrist threshold
+# would be left at CalibrationWindow's unset default.
 MULTI_SENSOR_CALIBRATION = {
-    # Garden Wonders now calibrates its 5 flex sensors independently (one
-    # combined pass, same _FINGER_FLEX_KEYS/_finish_finger_group mechanism
-    # Whack-a-Mole/Tile Rush already use below -- captures all 5 fingers'
-    # peaks simultaneously within the SAME 3 trials, not 5 separate passes,
-    # so total patient trials are unchanged: Grip + Fingers + Wrist = 3
-    # passes / 9 trials, same as before this). Steady Aim still uses the
-    # single shared "Finger Flexion" pass (SENSOR_CFG["Finger Flexion"]),
-    # unaffected by this list -- it isn't in MULTI_SENSOR_CALIBRATION at
-    # all (single-sensor game).
+    # Garden Wonders calibrates its 5 flex sensors independently in one
+    # combined pass (same _FINGER_FLEX_KEYS/_finish_finger_group mechanism
+    # Whack-a-Mole/Tile Rush use below), capturing all 5 fingers' peaks
+    # simultaneously within the same 3 trials rather than 5 separate passes
+    # -- total patient trials: Grip + Fingers + Wrist = 3 passes / 9 trials.
+    # Steady Aim uses the single shared "Finger Flexion" pass
+    # (SENSOR_CFG["Finger Flexion"]) and isn't in MULTI_SENSOR_CALIBRATION
+    # at all (single-sensor game).
     "Garden Wonders": ["Grip Strength", "Thumb Flexion", "Index Flexion",
                        "Middle Flexion", "Ring Flexion", "Pinky Flexion",
                        "Wrist Rotation"],
@@ -487,9 +475,9 @@ def _btn(surface, rect, label, font, col_normal, col_hover, hovered, radius=10):
 
 def _img_btn(surface, rect, asset, enabled, hovered, fallback_label, font,
              col_normal=(40, 160, 80), col_disabled=(175, 188, 202), radius=10):
-    """A button drawn from a pill-shaped asset (assets/images/), replacing
-    the old colored-rect + text _btn() for these specific buttons. Falls
-    back to the original _btn() look if the asset is ever missing."""
+    """A button drawn from a pill-shaped asset (assets/images/) instead of
+    a plain colored-rect + text. Falls back to the plain _btn() look if the
+    asset is ever missing."""
     img = _img_fit(asset, rect.width, rect.height)
     if img is not None:
         if not enabled:
@@ -896,14 +884,10 @@ def draw_confirm_dialog(surface, W, H, *, tt, sc, fonts, icon, accent,
             ty += body_line_h
 
     def _draw_btn_content(rect, label):
-        # Text-only, centered -- these dialog buttons used to prefix a
-        # check/X glyph from a "segoeuisymbol" SysFont, which is a
-        # Windows-only font name; on the Raspberry Pi it silently falls
-        # back to a font with no such glyph, so the icon simply never
-        # rendered there (confirmed from the production LCD screenshots).
-        # Dropping the glyph removes that platform dependency entirely
-        # instead of hunting for a symbol font that's guaranteed present
-        # on the Pi.
+        # Text-only, centered -- no check/X glyph prefix, since that would
+        # need a "segoeuisymbol"-style SysFont, which is Windows-only; on
+        # the Raspberry Pi it falls back to a font with no such glyph, so
+        # the icon would never render there.
         if not label:
             return
         ls = f_btn.render(label, True, (255, 255, 255))
@@ -1062,12 +1046,10 @@ class TherapistDashboardScene:
             height: screen height in pixels
             account: therapist account dict (optional, will load from DB if not provided)
         """
-        # Store screen and display dimensions
         self.screen = screen
         self.WIDTH  = width
         self.HEIGHT = height
 
-        # Initialize database connection for patient/therapist data
         self.db     = Database()
 
         # ── Account loading priority ──────────────────────────────────
@@ -1112,15 +1094,12 @@ class TherapistDashboardScene:
                            "assets", "font")
         self._fd = _fd   # kept for building one-off font sizes later (e.g. _sm_wrap_fit)
         def _F(name): return os.path.join(_fd, name)
-        # Professional/clinical text system is Poppins throughout (uploaded
-        # specifically to replace Lexend/FjallaOne in this role): SemiBold
-        # for page titles, section headings and important values; Medium for
+        # Poppins is the clinical text system throughout: SemiBold for page
+        # titles, section headings and important values; Medium for
         # buttons, tabs, names and interface labels; Regular for body text
-        # and secondary info. The small secondary Sora identity (Home tile
-        # labels, greeting text, empty-state illustrations) and the symbol/
-        # logo fonts are a deliberately different, narrow role untouched by
-        # this -- see the font-consistency pass earlier in this file's
-        # history for why those specific uses stay as they are.
+        # and secondary info. Sora is reserved for the smaller secondary
+        # identity (Home tile labels, greeting text, empty-state
+        # illustrations); symbol/logo fonts are their own separate role.
         self.fnt = {
             "logo":        pygame.font.SysFont("arialblack",                 int((36 if self._touch_ui else 51)*_fs)),
             "nav":         pygame.font.Font(_F("Poppins-Medium.ttf"),        int(27*_fs)),
@@ -1162,18 +1141,19 @@ class TherapistDashboardScene:
         self._pl_down_rect  = pygame.Rect(0, 0, 1, 1)
         self._pl_drag_y     = None
 
-        # Session History (panel 1) scroll -- was a silent truncation before.
+        # Session History (panel 1) scroll.
         self._sh_scroll     = 0
         self._sh_scroll_max = 0
         self._sh_up_rect    = pygame.Rect(0, 0, 1, 1)
         self._sh_down_rect  = pygame.Rect(0, 0, 1, 1)
         self._sh_drag_y     = None
         self._sh_row_rects  = []     # [(rect, session_record), ...] -- tap a row to open it
-        # Short-lived cache for get_sessions(): Session History and Analytics
-        # both draw() every frame while open and used to re-run the same
+        # Short-lived cache for get_sessions(): avoids re-running the same
         # multi-join SQL query (plus per-row datetime conversion) 60x/sec
-        # for as long as either screen stayed open. Shared between both
-        # panels since they query the exact same (therapist, patient) rows.
+        # for as long as either screen stays open, since Session History
+        # and Analytics both draw() every frame while open. Shared between
+        # both panels since they query the exact same (therapist, patient)
+        # rows.
         self._sessions_cache_key  = None
         self._sessions_cache_at   = 0.0
         self._sessions_cache_data = []
@@ -1206,7 +1186,7 @@ class TherapistDashboardScene:
         self._metrics_expanded  = set()
         self._metrics_row_rects = []   # [(rect, path), ...] -- tap any row to toggle it
 
-        # Calibration Records (panel 3) scroll -- was truncated via max_rows.
+        # Calibration Records (panel 3) scroll.
         self._cr_scroll     = 0
         self._cr_scroll_max = 0
         self._cr_up_rect    = pygame.Rect(0, 0, 1, 1)
@@ -1238,12 +1218,12 @@ class TherapistDashboardScene:
         self._modal_confirm_rect = pygame.Rect(0, 0, 1, 1)
         self._modal_cancel_rect  = pygame.Rect(0, 0, 1, 1)
 
-        # pd_bg.png background image; falls back to the old procedural
-        # gradient if the asset is ever missing.
+        # pd_bg.png background image; falls back to a procedural gradient
+        # if the asset is ever missing.
         self.background_surface = _img_cover("pd_bg.png", width, height) \
             or self._gradient(width, height)
-        # Sidebar width: 20% desktop; narrower on the 7-inch panel (the nav list
-        # was removed, so it only carries the profile + logout now).
+        # Sidebar width: 20% desktop; narrower on the 7-inch panel (there is
+        # no nav list, so it only carries the profile + logout).
         self.sidebar_w = int(width * (0.23 if self._touch_ui else 0.20))
 
         # ── Panel state tracking ──
@@ -1423,9 +1403,7 @@ class TherapistDashboardScene:
         self._transfer_ok_hov    = False
         self._transfer_success_msg = ""
         # "patient_update_success" dismiss -- same draw_confirm_dialog pattern
-        # as register_success/transfer_success above, replacing the inline
-        # "Patient updated successfully." text that used to sit above the
-        # Save/Cancel buttons in the Edit Patient modal.
+        # as register_success/transfer_success above.
         self._ep_update_ok_rect = pygame.Rect(0, 0, 1, 1)
         self._ep_update_ok_hov  = False
 
@@ -1473,8 +1451,8 @@ class TherapistDashboardScene:
 
         # ── Edit profile modal state ──
         # Dedicated icon-picker popup (opened from the big preview / "Change
-        # Icon" prompt inside Edit Profile) -- large, scrollable grid of all
-        # 10 icons instead of the old cramped always-visible rail.
+        # Icon" prompt inside Edit Profile) -- large, scrollable grid of
+        # all 10 icons.
         self.edit_icon_picker_open = False
         self._eip_scroll     = 0
         self._eip_scroll_max = 0
@@ -1615,8 +1593,7 @@ class TherapistDashboardScene:
             "selected_game": None,          # Tuple of (game_name, game_type) or None if not selected
             # Placeholder until calibration finishes -- the real value comes
             # from CalibrationWindow's Results-screen preset picker (see
-            # _sync_dur_from_cal); there is no pre-calibration difficulty UI
-            # any more (the old Step 3 was removed).
+            # _sync_dur_from_cal); there is no pre-calibration difficulty UI.
             "difficulty": "Medium",
             # None = not yet explicitly chosen (Step 2 of Game Configuration
             # draws neither mode card as pre-selected in that case -- see
@@ -1643,11 +1620,10 @@ class TherapistDashboardScene:
 
         # Step-by-step Game Configuration workflow (800x480-friendly): panel
         # 4 has 2 internal steps -- "game" (category + game picker) and
-        # "mode" (Target/Timed). A 3rd "settings" step (difficulty + target
-        # reps/duration) used to follow; that's gone now -- difficulty and
-        # the Target-score/Timed-duration goal are chosen AFTER calibration
-        # instead, on CalibrationWindow's own Results/Advanced Settings
-        # screens (reached via panel 5, unchanged).
+        # "mode" (Target/Timed). There is no 3rd "settings" step: difficulty
+        # and the Target-score/Timed-duration goal are chosen AFTER
+        # calibration instead, on CalibrationWindow's own Results/Advanced
+        # Settings screens (reached via panel 5).
         self._gc_step = "game"              # "game" | "mode"
         self._gc_mode_rects = {}            # {"target"/"timed": Rect}
         self._gc_back_rect  = pygame.Rect(0, 0, 1, 1)
@@ -1661,14 +1637,9 @@ class TherapistDashboardScene:
         Calculate clickable rectangles for sidebar navigation items.
         Called once during __init__ to set up static nav button positions.
         """
-        # Position nav items starting at 40% down the sidebar
         nav_top = int(self.HEIGHT * 0.40)
-        # Each nav button height (scales with screen height)
         nav_h   = int(60 * (self.HEIGHT / 1080))
-        # Vertical gap between nav buttons
         gap     = int(8  * (self.HEIGHT / 1080))
-        # Build list of rectangles: one for each sidebar nav item
-        # x=0 (left edge), y=nav_top + row*spacing, width=full sidebar width, height=nav_h
         self.nav_rects = [
             pygame.Rect(0, nav_top + i*(nav_h+gap), self.sidebar_w, nav_h)
             for i in range(len(SIDEBAR_NAV))
@@ -1679,23 +1650,15 @@ class TherapistDashboardScene:
         Calculate positions for 4 home screen cards in 2x2 grid.
         Called once during __init__ to set up static card positions.
         """
-        # Left margin (sidebar width + padding)
         mx     = self.sidebar_w + int(24*(self.WIDTH/1920))
-        # Top margin (below logo/header area)
         my     = int(self.HEIGHT * 0.22)
-        # Available width for cards (screen - margins)
         mw     = self.WIDTH - mx - int(24*(self.WIDTH/1920))
-        # Available height for cards (screen - margins)
         mh     = self.HEIGHT - my - int(20*(self.HEIGHT/1080))
-        # Horizontal gap between card columns
         gap    = int(20*(self.WIDTH/1920))
-        # Calculate individual card width (half available width minus gap)
         card_w = (mw - gap) // 2
-        # Calculate individual card height (half available height minus gap)
         card_h = (mh - gap) // 2
-        # Build 2x2 grid of rectangles:
-        # [0] Top-left    [1] Top-right
-        # [2] Bottom-left [3] Bottom-right
+        # 2x2 grid: [0] Top-left    [1] Top-right
+        #           [2] Bottom-left [3] Bottom-right
         self.card_rects = [
             pygame.Rect(mx,            my,            card_w, card_h),  # Top-left
             pygame.Rect(mx+card_w+gap, my,            card_w, card_h),  # Top-right
@@ -1708,31 +1671,27 @@ class TherapistDashboardScene:
         Get the main content area rectangle for panels (excluding sidebar and header).
         Returns a pygame.Rect defining the clickable/drawable panel area.
         """
-        # Left edge: sidebar + padding
         mx = self.sidebar_w + int(24*(self.WIDTH/1920))
-        # Top edge: below the header band (breadcrumb + Back live here).
-        # On touch, the breadcrumb floats ABOVE this by (hdr_h + gap), so it
-        # must clear the top-right clock/theme bar too, not just this rect.
+        # Below the header band (breadcrumb + Back live here). On touch, the
+        # breadcrumb floats ABOVE this by (hdr_h + gap), so it must clear
+        # the top-right clock/theme bar too, not just this rect.
         if self._touch_ui:
             bar_bottom = self._bar_top() + self._bar_height()
             hdr_h = max(int(50*(self.HEIGHT/1080)), self._tt(46))
             my = bar_bottom + self._sc(8) + hdr_h + int(10*self.HEIGHT/1080)
         else:
             my = int(self.HEIGHT * 0.15)
-        # Width: full screen - sidebar - margins
         mw = self.WIDTH - mx - int(24*(self.WIDTH/1920))
-        # Height: screen - top - bottom margins
         mh = self.HEIGHT - my - int(16*(self.HEIGHT/1080))
         return pygame.Rect(mx, my, mw, mh)
 
     def _bar_top(self):
         """Y where the top-right clock/theme/close bar (and, on touch,
-        Patient List's own header row) starts. The close (X) button used to
-        float above this row at a fixed screen position, so this returned
-        room to clear it; now main.py reads the close button's rect FROM
-        this bar (see _draw_top_right_bar), so it's just a plain top margin.
-        Single source of truth so the bar, Patient List's header and
-        _panel_area()'s margin can't drift apart from one another."""
+        Patient List's own header row) starts -- a plain top margin.
+        main.py reads the close button's rect FROM this bar (see
+        _draw_top_right_bar). Single source of truth so the bar, Patient
+        List's header and _panel_area()'s margin can't drift apart from
+        one another."""
         return self._sc(12)
 
     def _bar_height(self):
@@ -1929,9 +1888,7 @@ class TherapistDashboardScene:
         #    this modal opens on top of panel 0 (Patient List is still the
         #    active_panel underneath it), so without this priority every
         #    wheel event would scroll the hidden patient list instead of
-        #    the picker on top of it (the picker's mouse-wheel scroll was
-        #    unreachable code until this was moved up from below the
-        #    Patient List check). ──────────────────────────────────────
+        #    the picker on top of it. ──────────────────────────────────
         if self.modal == "edit_profile" and self.edit_icon_picker_open:
             if event.type == pygame.MOUSEWHEEL:
                 self._eip_scroll = max(0, min(
@@ -1968,10 +1925,9 @@ class TherapistDashboardScene:
 
         # ── Session Details scrolling (wheel + touch drag) ────────────
         # Metrics/Calibration Records/Session History are TABS inside panel 8
-        # (self._pv_tab), not separate panels -- "active_panel == 1/2/3" below
-        # can never be true (those panel numbers are unused), which silently
-        # disabled wheel + touch-drag scrolling on all three tabs; only their
-        # click-to-scroll arrow buttons worked. Gated on the real state now.
+        # (self._pv_tab), not separate panels, so this gates on the tab state
+        # directly rather than "active_panel == 1/2/3" (those panel numbers
+        # are unused and can never be true here).
         if self.active_panel == 8 and self._pv_tab == "history" and self._sh_detail_record is not None:
             if event.type == pygame.MOUSEWHEEL:
                 self._shd_scroll = max(0, min(self._shd_scroll - event.y * int(60 * self._fs),
@@ -2315,13 +2271,11 @@ class TherapistDashboardScene:
 
         # ── "Select a Game" skill picker modal ──────────────────────────
         # Checked here (ahead of Sidebar/Back/breadcrumbs/panel dispatch
-        # below) so none of those can fire while it's open -- previously
-        # only _gc_handle_click (reached far later, deep in the panel-4
-        # dispatch) checked _gc_skill_modal_open, so Logout, the theme
-        # toggle, panel nav, Back and breadcrumbs all still click-through
-        # behind the modal. The app's top-right Close button is blocked
-        # separately, in main.py, the same way the Share/Transfer popups
-        # already block it (see _gc_skill_modal_open there).
+        # below) so none of those -- Logout, the theme toggle, panel nav,
+        # Back, breadcrumbs -- can click through behind the modal. The
+        # app's top-right Close button is blocked separately, in main.py,
+        # the same way the Share/Transfer popups already block it (see
+        # _gc_skill_modal_open there).
         if self._gc_skill_modal_open:
             self._gc_handle_skill_modal_click(pos)
             return None
@@ -2582,9 +2536,8 @@ class TherapistDashboardScene:
 
         # ── Session History / Analytics / Calibration Records: scroll-arrow
         # clicks. These are TABS inside panel 8 (self._pv_tab), not separate
-        # panels -- gating this on "active_panel == 1/2/3" (unused panel
-        # numbers) meant the arrow buttons were drawn but never actually
-        # clickable on any of the three tabs. Gated on the real state now.
+        # panels, so this gates on the tab state directly rather than
+        # "active_panel == 1/2/3" (unused panel numbers).
         if self.active_panel == 8 and self._pv_tab == "history" and self._sh_detail_record is not None:
             # Session Details (full page, not a popup/modal) -- Back returns
             # to the list with its scroll position untouched (_sh_scroll was
@@ -2593,8 +2546,7 @@ class TherapistDashboardScene:
             # the content area, not the whole Patient Profile interface, so
             # a click that misses all three of these must fall through to
             # the top nav tabs / Select-Deselect Patient handling further
-            # down -- those were silently unclickable while a record was
-            # open because this block used to swallow every click here.
+            # down, which must stay clickable while a record is open.
             if self._shd_back_rect.collidepoint(pos):
                 play_click(); self._sh_detail_record = None; return None
 
@@ -2674,12 +2626,11 @@ class TherapistDashboardScene:
             self._rp_handle_click(pos)
 
         # ── Panel 4: Game Configuration -- 2 internal steps (see _gc_step).
-        # Difficulty and the Target-score/Timed-duration goal used to be a
-        # 3rd "settings" step here; both are now decided AFTER calibration
-        # instead (the calibration Results screen's Easy/Medium/Hard preset
-        # picker + its Advanced Settings screen -- see
-        # scenes/calibration_window.py), so that step was removed outright
-        # rather than duplicated. Strict step-by-step Back: Mode -> Game,
+        # There is no 3rd "settings" step: difficulty and the Target-score/
+        # Timed-duration goal are decided AFTER calibration instead (the
+        # calibration Results screen's Easy/Medium/Hard preset picker + its
+        # Advanced Settings screen -- see scenes/calibration_window.py).
+        # Strict step-by-step Back: Mode -> Game,
         # never further (Step 1/"game" has no Back button at all --
         # _gc_back_rect is a dead 1x1 rect there, see _draw_gc_progress --
         # and never jumps out to the Patient List or any other panel). ──
@@ -2994,11 +2945,10 @@ class TherapistDashboardScene:
         """Pull CalibrationWindow's Results-screen choices → Session Details,
         so they actually reach the launched game. Speed comes from the
         Advanced Settings screen's Speed row; difficulty comes from the
-        Results screen's Easy/Medium/Hard preset picker -- since the old
-        Game Configuration Step 3 difficulty pills are gone, this preset
-        pick (recommended from the patient's own calibration data, or
-        whichever the therapist chose instead) is now the ONLY place
-        gc["difficulty"] is ever set, and _launch_game/_game_goal_text both
+        Results screen's Easy/Medium/Hard preset picker (recommended from
+        the patient's own calibration data, or whichever the therapist
+        chose instead) -- this is the ONLY place gc["difficulty"] is ever
+        set, and _launch_game/_game_goal_text both
         read gc["difficulty"] directly for each game's own per-difficulty
         gameplay dicts (speed/size/duration/etc. not covered by a
         GAME_PARAM_SCHEMA override)."""
@@ -3125,7 +3075,7 @@ class TherapistDashboardScene:
         (self._calibrated_sensors), pause on the "Use Previous Calibration?"
         chooser instead of jumping straight into live trials -- see
         _draw_reuse_calibration_modal() / the "reuse_calibration_choice"
-        click handler. With nothing reusable, behaves exactly as before."""
+        click handler. With nothing reusable, this calibrates normally."""
         cal_types = MULTI_SENSOR_CALIBRATION.get(game_name, game_type)
         required  = _required_sensors_for_game(game_name, game_type)
         available = [s for s in required if s in self._calibrated_sensors]
@@ -3280,8 +3230,8 @@ class TherapistDashboardScene:
     # ══════════════════════════════════════════════════════════════════
 
     _SM_VOL_STEPS = [0.0, 0.25, 0.5, 0.75, 1.0]
-    # Session-in-Progress control button artwork -- icon-only now (captions
-    # removed); "start" also covers RESUME (same play-triangle asset).
+    # Session-in-Progress control button artwork is icon-only (no caption
+    # text); "start" also covers RESUME (same play-triangle asset).
     _SM_BTN_ASSETS = {
         "start":   "game_start.png",
         "pause":   "game_pause.png",
@@ -3699,9 +3649,9 @@ class TherapistDashboardScene:
         Target Mode: "Elapsed Time" (counts up) + "Progress" (reps/goal).
         Timed Mode:  "Time Remaining" (counts down) + "Reps" (plain count,
         no goal exists in this mode). `right_edge` stops short of the
-        right-side control strip (see _sm_draw_right_strip) -- narrower
-        than the old full-width row, which is why row_h is taller now to
-        compensate. Returns the y just below the row."""
+        right-side control strip (see _sm_draw_right_strip); row_h is
+        tall enough to compensate for that narrower width. Returns the y
+        just below the row."""
         row_w = right_edge - x0
         gap   = self._sc(14)
         is_timed = (session_mode == "timed")
@@ -3806,12 +3756,12 @@ class TherapistDashboardScene:
             Raw        37      42      51      28      33
             Calibrated Idle   Idle   Pressed  Idle    Idle
 
-        Replaces the old layout (2 fixed columns for Raw/Calibrated, one
-        row per sensor) which gave a 5-finger game barely any width per
-        value and forced the reading font to shrink small on an 800x480
-        panel -- this uses the screen's own wide-but-short aspect ratio
-        instead, so the value font can stay large regardless of sensor
-        count. Values still come straight from telemetry's "sensors" dict
+        One column per sensor (rather than one row per sensor, which would
+        give a 5-finger game barely any width per value and force the
+        reading font to shrink small on an 800x480 panel) uses the
+        screen's own wide-but-short aspect ratio instead, so the value
+        font can stay large regardless of sensor count. Values still come
+        straight from telemetry's "sensors" dict
         (posted by the patient-side adapter, computed by each game's OWN
         existing _normalize*/_normalize_tilt method) -- no second
         calibration calculation is performed here. `right_edge` stops
@@ -3852,10 +3802,8 @@ class TherapistDashboardScene:
 
         # Build every cell at natural size first, then shrink the whole
         # table vertically only if it doesn't fit the box this game's
-        # sensor spec was given -- same shrink-only philosophy as before,
-        # just applied to 3 fixed rows (header/Raw/Calibrated) instead of
-        # len(sensor_spec) rows, so height no longer grows with sensor
-        # count at all.
+        # sensor spec was given -- shrink-only, applied to 3 fixed rows
+        # (header/Raw/Calibrated), so height never grows with sensor count.
         hdr_cells, raw_cells, cal_cells = [], [], []
         for key, label, _hw, fmt in sensor_spec:
             entry = sensors_tel.get(key)
@@ -4028,7 +3976,8 @@ class TherapistDashboardScene:
                 self._sm_icon(surface, icon, r.centerx, r.centery, int(bs * 0.28), ic)
             if key == "primary" and primary_locked:
                 # BLE handoff countdown -- a numeric overlay, not a word
-                # caption, so it stays even with the labels removed.
+                # caption, so it stays visible even though these buttons
+                # have no text labels.
                 lock_s = str(lock_ms_left // 1000 + 1)
                 dim = pygame.Surface((bs, bs), pygame.SRCALPHA)
                 pygame.draw.circle(dim, (20, 26, 38, 150), (bs // 2, bs // 2), bs // 2)
@@ -4059,8 +4008,8 @@ class TherapistDashboardScene:
         y = self._sm_draw_info_header(surface, pa, x0, y, right_edge, cfg)
 
         # Elapsed Time / Score cards, then the adaptive Raw/Calibrated sensor
-        # monitor -- both come from the SAME telemetry the old single "Score"
-        # row already used (no second timer/scoring system); once the session
+        # monitor -- both come from the same telemetry the Score display
+        # uses (no second timer/scoring system); once the session
         # completes, Score falls back to the final recorded value so the
         # number doesn't disappear the moment the game ends.
         score_val = tel.get("score")
@@ -4093,12 +4042,12 @@ class TherapistDashboardScene:
 
         # Both the cards row and the sensor box are sized from their OWN
         # content (icon/text at natural size + fixed padding), never
-        # stretched to consume whatever vertical room happens to be left --
-        # that's what previously produced a mostly-empty container on a
-        # roomy screen. Leftover space (if any) is left as plain margin.
-        # Narrower now (bounded by right_edge, not the full panel width),
-        # so each is given more height to compensate -- a taller value font
-        # in the sensor box especially needs the room.
+        # stretched to consume whatever vertical room happens to be left
+        # (which would otherwise leave a mostly-empty container on a roomy
+        # screen). Leftover space (if any) is left as plain margin. Bounded
+        # by right_edge rather than the full panel width, so each is given
+        # more height to compensate -- a taller value font in the sensor
+        # box especially needs the room.
         gap_mid = self._sc(10)
         lbl_h, val_h, row_fh = (self.fnt["small"].get_height(),
                                 self.fnt["panel_title"].get_height(),
@@ -4107,10 +4056,9 @@ class TherapistDashboardScene:
         cards_h = max(self._sc(72), min(self._sc(120), cards_content_h + self._sc(22)))
 
         if sensor_spec:
-            # Horizontal table now (see _sm_draw_sensor_monitor): one
-            # column per sensor, 3 fixed rows (header/Raw/Calibrated) --
-            # height no longer grows with how many sensors this game uses,
-            # unlike the old row-per-sensor layout.
+            # Horizontal table (see _sm_draw_sensor_monitor): one column
+            # per sensor, 3 fixed rows (header/Raw/Calibrated) -- height
+            # stays fixed regardless of how many sensors this game uses.
             sensor_content_h = lbl_h + self._sc(6) + row_fh + self._sc(6) + row_fh
             sensor_h = sensor_content_h + self._sc(24)
         else:
@@ -4211,7 +4159,8 @@ class TherapistDashboardScene:
 
     def _open_ep_modal(self, patient, section=None):
         """Open the edit-patient modal. `section` limits it to one Info group
-        ("info" / "stroke" / "notes"); None edits every field (legacy path).
+        ("info" / "stroke" / "notes"); None (or any other value) falls back
+        to "info" -- see _ep_fields().
 
         Refuses outright for a non-owner -- a shared patient is read-only."""
         if not self._is_owner(patient):
@@ -4245,11 +4194,10 @@ class TherapistDashboardScene:
             "notes_pain":      ("Pain Level",           "text", None),
             "notes_therapist": ("Therapist Comments",   "text", None),
         }
-        # A single "edit everything at once" view is no longer part of this
-        # UI (it's 3 section-scoped edits now) and its 11 fields do not fit
-        # the 800x480 modal budget. An invalid/missing section defaults to
-        # "info" -- the smallest, always-present section -- rather than
-        # silently falling back to the old all-fields layout.
+        # Editing is scoped to one of 3 sections at a time -- there is no
+        # single "edit everything at once" view, and its 11 fields would
+        # not fit the 800x480 modal budget anyway. An invalid/missing
+        # section defaults to "info", the smallest, always-present section.
         sec = getattr(self, "_ep_section", None)
         if sec not in self._PV_SECTIONS:
             sec = "info"
@@ -4386,14 +4334,12 @@ class TherapistDashboardScene:
         # self.preview_patient (same object -- see _open_ep_modal), but
         # self.selected_patient can be a SEPARATE dict for the same patient
         # id (e.g. this page was opened via a Patient List row rather than
-        # the Active Patient box). Previously only "full_name" was patched
-        # onto self.selected_patient here, so the Patient Info / Clinical
-        # Notes page kept showing pre-edit field values (looking like the
-        # save hadn't "really" happened) until the therapist left and
-        # re-opened it -- even though database.update_patient's commit()
-        # above had already succeeded. Pulled from the just-refreshed
-        # self.patients (a correctly-typed DB row) rather than self._ep's
-        # own raw text-field strings, so e.g. "age" stays an int.
+        # the Active Patient box), so every field is patched onto it here
+        # too -- otherwise the Patient Info / Clinical Notes page would
+        # keep showing pre-edit values until the therapist left and
+        # re-opened it. Pulled from the just-refreshed self.patients (a
+        # correctly-typed DB row) rather than self._ep's own raw
+        # text-field strings, so e.g. "age" stays an int.
         fresh = next((p for p in self.patients if p.get("id") == self._ep_patient["id"]), None)
         if fresh is not None:
             for target in (self._ep_patient, self.selected_patient):
@@ -4402,11 +4348,9 @@ class TherapistDashboardScene:
         if self.selected_patient and self.selected_patient.get("id") == self._ep_patient["id"]:
             self._push_selected_patient()
         self._ep_error = ""
-        # Closes the Edit Patient modal and shows a proper confirmation
-        # dialog (same draw_confirm_dialog pattern as register_success/
-        # transfer_success) instead of the inline "Patient updated
-        # successfully." text that used to sit above the Save/Cancel
-        # buttons -- see _draw_patient_update_success_modal.
+        # Closes the Edit Patient modal and shows a confirmation dialog
+        # (same draw_confirm_dialog pattern as register_success/
+        # transfer_success) -- see _draw_patient_update_success_modal.
         self._ep_modal_open = False
         self.modal = "patient_update_success"
 
@@ -4425,8 +4369,7 @@ class TherapistDashboardScene:
 
     def _draw_edit_patient_modal(self, surface):
         """Section-scoped patient editor, sized from _fs/_tt so the controls stay
-        finger-sized on the 800x480 panel (the old layout computed everything
-        from H/1080 and produced 18px boxes here)."""
+        finger-sized on the 800x480 panel."""
         W, H = self.WIDTH, self.HEIGHT
         fields  = self._ep_fields()
         two_col = len(fields) > 3
@@ -5391,9 +5334,9 @@ class TherapistDashboardScene:
         hl.fill((255, 255, 255, 200)); surface.blit(hl, (0, 0))
         pygame.draw.line(surface, (200, 216, 236), (sw,0), (sw,H), 1)
 
-        # Logo centred in the rail -- the clock/date used to sit beside/under
-        # it (now moved to the top-right, alongside the theme toggle), which
-        # left the wordmark looking off-balance pinned to the left edge.
+        # Logo centred in the rail; the clock/date live in the top-right bar
+        # alongside the theme toggle instead, so the wordmark isn't pinned
+        # off-balance to the left edge.
         ly = int(H*0.05)
         s1 = self.fnt["logo"].render("Recov", True, (45,60,80))
         s2 = self.fnt["logo"].render("R",     True, (215,40,40))
@@ -5402,23 +5345,22 @@ class TherapistDashboardScene:
         surface.blit(s1, s1.get_rect(midleft=(lx, ly)))
         surface.blit(s2, s2.get_rect(midleft=(lx+s1.get_width(), ly)))
 
-        # "Hand Rehabilitation System" removed from under the wordmark -- the
-        # logo now flows straight into the profile card below it.
+        # The logo flows straight into the profile card below it (no
+        # subtitle beneath the wordmark).
         stack_y = ly + s1.get_height() // 2
 
         if self._touch_ui:
             # Big centered avatar + a small edit badge overlapping its
             # bottom-right corner, name centered below it -- sized here so
-            # the card height (pc_h) actually fits that vertical stack,
-            # rather than the old fixed-height row.
+            # the card height (pc_h) fits that vertical stack.
             pc_pad_c    = self._sc(10)
             pc_ir       = self._sc(30)
             pc_badge_r  = max(self._sc(11), int(pc_ir * 0.42))
             pc_name_gap = self._sc(6)
             pc_h = pc_pad_c + pc_ir * 2 + pc_name_gap + self.fnt["profile_nm"].get_height() + pc_pad_c
-            # Flow from the measured bottom of the clock/date block. The old
-            # fixed 0.205*H put the card at y=98 while the date ran to y=105,
-            # so the two overlapped on the 480px-tall panel.
+            # Flow from the measured bottom of the clock/date block, rather
+            # than a fixed fraction of H, so the card can never overlap the
+            # date block on the 480px-tall panel.
             pc_y = stack_y + self._sc(10)
         else:
             pc_y = int(H*0.11); pc_h = int(H*0.13)
@@ -5558,9 +5500,9 @@ class TherapistDashboardScene:
         stack_y = self._draw_controller_monitor(surface, sw, stack_y)
 
         lr = self._logout_rect()
-        # The old sidebar-bottom theme button is gone -- the icon-based
-        # toggle in _draw_top_right_bar (called from draw(), on every panel)
-        # is now the only theme control.
+        # Theme is toggled from the icon-based control in _draw_top_right_bar
+        # (called from draw(), on every panel); the sidebar has no theme
+        # control of its own.
 
         logout_img = _img_fit("logout_button.png", lr.width, lr.height)
         if logout_img is not None:
@@ -5603,9 +5545,8 @@ class TherapistDashboardScene:
         close_r = pygame.Rect(card_right - pad_r - row_h, top, row_h, row_h)
         self._close_btn_rect = close_r
 
-        # ── Light | Dark toggle -- icons only now, sized to just fit the
-        #    two knob positions ("shorten the toggle to fit just the
-        #    circles" instead of the old label-driven width) ──────────────
+        # ── Light | Dark toggle -- icon-only, sized to just fit the two
+        #    knob positions (not driven by label width) ──────────────────
         track_h = row_h
         if self.selected_patient:
             dark = self._applied_theme_dark
@@ -5702,12 +5643,11 @@ class TherapistDashboardScene:
         text_avail_w = avail_w - dot_r * 2 - gap_lbl
 
         # The description must NEVER disappear, on any screen width or
-        # patient-name length -- it previously fell back to dropping the
-        # text entirely once "Activity Change Detected" (the longest of the
-        # 3) didn't fit the room left after the circle. Instead, shrink
-        # only the label font, in 1px steps, down to a readable floor --
-        # same pattern CalibrationWindow._fit_text already uses -- so it
-        # always fits whatever room is actually available. At every
+        # patient-name length, even once "Activity Change Detected" (the
+        # longest of the 3) doesn't fit the room left after the circle:
+        # shrink only the label font, in 1px steps, down to a readable
+        # floor -- same pattern CalibrationWindow._fit_text already uses --
+        # so it always fits whatever room is actually available. At every
         # resolution this app targets (800x480 and up) this only ever
         # needs a few px of shrink, if any; it is a guarantee for extreme
         # cases, not the normal rendering size.
@@ -6002,8 +5942,7 @@ class TherapistDashboardScene:
         # "Selected" (the page you're actually on) = whichever non-clickable
         # crumb sits furthest right -- blue, no underline. Everything else
         # (clickable links to other pages, and any earlier non-clickable
-        # crumb) = gray. Replaces the old clickable=blue+underline /
-        # current=dark scheme per the requested redesign.
+        # crumb) = gray.
         last_noclick_idx = max((j for j, (_, t) in enumerate(crumbs) if t is None), default=-1)
         for j, (label, target) in enumerate(crumbs):
             clickable = target is not None          # any crumb with a target navigates
@@ -6033,9 +5972,9 @@ class TherapistDashboardScene:
         L_GC   = "Game Config" if t else "Game Configuration"
         L_SS   = "Start" if t else "Start Session"
         L_SIP  = "Session" if t else "Session in Progress"
-        # The leading "Patient List" crumb (beside the Back button) has been
-        # removed -- Back already returns there, so naming the page a second
-        # time was redundant. Every other crumb/level is unchanged.
+        # No leading "Patient List" crumb beside the Back button -- Back
+        # already returns there, so naming the page a second time would be
+        # redundant.
         if idx == 6:
             return [("Register" if t else "Register Patient", None)]
         if idx == 8:
@@ -6085,15 +6024,15 @@ class TherapistDashboardScene:
         # edge looked cramped.
         list_pad = pad + self._sc(20)
         head_y = self._bar_top() if touch else (pa.y + int(10*H/1080))
-        # Touch: cut the old 20px top gap down to a minimal 8px -- the 7-inch
-        # panel can't spare more than that above the header row.
+        # Touch: an 8px top gap -- the 7-inch panel can't spare more than
+        # that above the header row.
         title_top = (pa.y + self._sc(8)) if touch else head_y
 
         if touch:
             # ── 800x480 LCD: compact header (title + Register on one row),
             # no subtitle, no stat cards -- the patient list needs the
-            # vertical room those used to consume far more than this screen
-            # can afford (see git history: previously only ~1 row visible).
+            # vertical room a full header would otherwise consume on this
+            # screen.
             f_title = self.fnt["panel_title"]
             title_s = f_title.render("Patient Management", True, (38, 52, 78))
 
@@ -6219,9 +6158,9 @@ class TherapistDashboardScene:
             icon_pad_l   = self._sc(11)
             icon_txt_gap = self._sc(12)
             card_pad_r   = self._sc(16)
-            # Was fnt["empty_head"] (Sora) -- the matching stat-value font on the
-            # Analytics screen is Lexend; fnt["btn_lg"] (Lexend-Bold, previously
-            # unused) gives the same bold prominence in that same family instead.
+            # fnt["btn_lg"] (Lexend-Bold) matches the Analytics screen's
+            # Lexend stat-value font, giving the same bold prominence in
+            # that family.
             f_val, f_lbl = self.fnt["btn_lg"], self.fnt["label"]
             text_w = max(f_lbl.size("Total Patients")[0], f_lbl.size("Assigned to Me")[0],
                          f_val.size("99")[0])
@@ -6299,8 +6238,8 @@ class TherapistDashboardScene:
             top_y = stats_y + stat_h + self._sc(18)
 
             sb_h    = self._tt(60)
-            # Now spans most of the row -- the Register Patient button moved up
-            # into the stat-card row above, so it no longer has to share this one.
+            # Spans most of the row -- the Register Patient button lives in
+            # the stat-card row above instead of sharing this one.
             hint_w  = int(pa.width * 0.62)
             hint_r  = pygame.Rect(pa.x+pad, top_y, hint_w, sb_h)
             self._pt_search_rect = hint_r
@@ -6422,9 +6361,9 @@ class TherapistDashboardScene:
             right_x = shr_r.x - bgap
 
             # Patient name -- the primary tap target (opens the patient's
-            # page; does NOT select). The "SELECTED" pill is gone -- the
-            # currently-selected patient's name turns blue instead (readable
-            # in both themes; ownership/sharing no longer tints it at all).
+            # page; does NOT select). The currently-selected patient's name
+            # turns blue (readable in both themes); ownership/sharing
+            # doesn't tint it.
             name_val = pt.get("full_name", "—")
             name_r = pygame.Rect(pa.x + pad, ry, right_x - (pa.x + pad), row_h)
             # Clamp the hit area to the visible list band: a row scrolled
@@ -6441,9 +6380,8 @@ class TherapistDashboardScene:
                 n_col = tuple(min(255, c + 25) for c in n_col)
 
             # Small patient icon immediately before the name, vertically
-            # centered on the row -- same spot the name used to start at;
-            # the name itself now starts after it, with a little breathing
-            # room so the two don't crowd together.
+            # centered on the row, with a little breathing room so the two
+            # don't crowd together.
             icon_d   = min(row_h - self._sc(10), self._sc(42))
             icon_gap = self._sc(8)
             icon_x0  = (pa.x + list_pad) if touch else col_xs[0]
@@ -6457,8 +6395,8 @@ class TherapistDashboardScene:
             text_x0 = icon_x0 + icon_d + icon_gap
 
             if touch:
-                # Ellipsize before the Share button -- the Therapist column
-                # is gone, so the name now has the full row width to itself.
+                # Ellipsize before the Share button -- the name has the
+                # full row width to itself (no Therapist column).
                 name_x = text_x0
                 max_name_w = right_x - self._sc(10) - name_x
             else:
@@ -6505,8 +6443,8 @@ class TherapistDashboardScene:
                 self._patient_rows.append((shr_r, pt, "share"))
         surface.set_clip(prev_clip)
 
-        # ── scrollbar thumb (only when the list overflows) -- natural
-        # mouse-wheel/touch-drag scrolling replaces the old tap arrows ──
+        # ── scrollbar thumb (only when the list overflows); scrolling is
+        # via mouse-wheel/touch-drag, not tap arrows ──────────────────────
         if scrollable:
             ax = pa.right - pad - arrow_w
             tb_x = ax + int(4*W/1920)
@@ -6527,8 +6465,7 @@ class TherapistDashboardScene:
         confirmations, drawn via draw_confirm_dialog) share the same
         draw_dialog_chrome look as every other standardized RecovR
         confirmation popup in this file -- rounded card, dim overlay,
-        shadow, icon circle, Poppins type, theme-aware colors -- instead of
-        the old hand-rolled flat box this modal used to draw."""
+        shadow, icon circle, Poppins type, theme-aware colors."""
         if self._share_stage == "choice" and self._share_confirm_therapist:
             self._draw_share_select_modal(surface)
         elif self._share_stage == "confirm" and self._share_confirm_therapist:
@@ -7176,7 +7113,7 @@ class TherapistDashboardScene:
 
     _PV_TABS = ["info", "analytics", "calibration", "history"]
     # (clicked asset, not-clicked asset) -- each pair already bakes in its
-    # own icon + label, so the tab no longer draws any text of its own.
+    # own icon + label, so the tab draws no text of its own.
     _PV_TAB_ASSETS = {
         "info":        ("patient_info_clicked.png",        "patient_info_not_clicked.png"),
         "analytics":   ("metrics_clicked.png",              "metrics_not_clicked.png"),
@@ -7190,14 +7127,14 @@ class TherapistDashboardScene:
         is_sel = self._is_selected(self.preview_patient)
 
         # ── header row: tab strip (left) + Select/Deselect button (right) ──
-        # No Edit button here any more -- editing moved to a per-section Edit
-        # button on each Info group (Patient Information / Stroke & Therapy /
-        # Clinical Notes). Record stays read-only.
+        # No Edit button in this header -- editing is via a per-section
+        # Edit button on each Info group (Patient Information / Stroke &
+        # Therapy / Clinical Notes). Record stays read-only.
 
         strip_h = max(int(46 * H / 1080), self._tt(46))
-        # Width budget for the Select/Deselect button -- no longer drawn
-        # text, but kept as a stand-in gauge so the button's footprint (and
-        # the room it leaves the four tabs below) is unchanged.
+        # Width budget for the Select/Deselect button. sel_gauge is never
+        # drawn -- it's a stand-in label used only to measure the button's
+        # footprint, which fixes the room left for the four tabs below.
         sel_gauge = "DESELECT" if self._narrow else "DESELECT PATIENT"
         sel_w = self.fnt["label"].size(sel_gauge)[0] + self._sc(40)
         self._pv_tab_rects = {}
@@ -7468,9 +7405,9 @@ class TherapistDashboardScene:
         surface.set_clip(prev)
 
         self._pv_info_up_rect = self._pv_info_down_rect = pygame.Rect(0, 0, 1, 1)
-        # The bottom instructional hint ("Selected -- use DESELECT PATIENT
-        # above.") was removed -- selection state is already shown via the
-        # SELECT/DESELECT button itself and the sidebar's Active Patient card.
+        # Selection state is already shown via the SELECT/DESELECT button
+        # itself and the sidebar's Active Patient card, so no separate
+        # bottom instructional hint is drawn here.
 
     def _dialog_fonts(self):
         """The Poppins font set draw_confirm_dialog needs, at this scene's
@@ -7651,10 +7588,10 @@ class TherapistDashboardScene:
         content_right = pa.right - int(8*W/1920) - (arrow_w + self._sc(8))
 
         # Build each session's row values once, wrapping long cells onto
-        # multiple lines (touch only) instead of the old ellipsis, so a long
-        # game/therapist name is fully readable instead of cut off or
-        # overlapping the next column. Row height grows to fit whichever
-        # cell wrapped the most, same approach as Calibration Records.
+        # multiple lines (touch only), so a long game/therapist name is
+        # fully readable instead of cut off or overlapping the next column.
+        # Row height grows to fit whichever cell wrapped the most, same
+        # approach as Calibration Records.
         row_data = []   # (wrapped_cols, row_h, session)
         for s in sessions:
             date_str = str(s.get("played_at",""))[:10 if touch else 16]
@@ -7724,8 +7661,8 @@ class TherapistDashboardScene:
             ry += rh
         surface.set_clip(prev_clip)
 
-        # Scroll arrows removed -- mouse-wheel/touch-drag scrolling (above)
-        # already covers this list; rects stay dummy so nothing is clickable.
+        # No scroll arrows -- mouse-wheel/touch-drag scrolling (above)
+        # covers this list; rects stay dummy so nothing is clickable.
         self._sh_up_rect = self._sh_down_rect = pygame.Rect(0, 0, 1, 1)
 
     def _draw_session_detail(self, surface, pa):
@@ -8165,9 +8102,9 @@ class TherapistDashboardScene:
                       pa.x+int(560*W/1920), pa.x+int(900*W/1920)]
         for cx, c in zip(col_xs, cols):
             surface.blit(self.fnt["section"].render(c, True, (85,105,135)), (cx, table_y))
-        # Underline sits below the header's actual rendered height, same fix
-        # as Session History (the old raw H/1080 gap was shorter than the
-        # touch-scaled font, so the first record row overlapped the headers).
+        # Underline sits below the header's actual rendered height, same as
+        # Session History, so the touch-scaled font never overlaps the
+        # first record row.
         hdr_line_y = table_y + self.fnt["section"].get_height() + self._sc(6)
         pygame.draw.line(surface, (210,218,230),
                          (pa.x+int(16*W/1920), hdr_line_y),
@@ -8193,10 +8130,10 @@ class TherapistDashboardScene:
 
         # Build each record's row values once, wrapping long cells onto
         # multiple lines (touch only -- desktop's columns are wide enough
-        # that this was never needed there) instead of the old ellipsis,
-        # so e.g. a long game name is fully readable instead of cut to
-        # "Grip Stren…". Row height grows to fit whichever cell wrapped the
-        # most, matching the Patient Information tab's own approach.
+        # that wrapping isn't needed there), so e.g. a long game name is
+        # fully readable instead of cut to "Grip Stren…". Row height grows
+        # to fit whichever cell wrapped the most, matching the Patient
+        # Information tab's own approach.
         row_data = []   # (wrapped_cols, row_h, record)
         for rec in records:
             date_str  = str(rec.get("calibrated_at", ""))[:10]
@@ -8384,11 +8321,10 @@ class TherapistDashboardScene:
     def _draw_gc_progress(self, surface, pa, step_num, step_label):
         """Compact "Step N of 2 · <label>" indicator, plus a Back button on
         every step EXCEPT Step 1 (there is no earlier step to return to) --
-        shared by both Game Configuration steps (difficulty/goal selection
-        moved to after calibration -- see CalibrationWindow's Results/
-        Advanced Settings screens -- so the old 3rd "settings" step was
-        removed). Returns the y just below it, so each step's own content
-        starts underneath."""
+        shared by both Game Configuration steps (there is no 3rd "settings"
+        step; difficulty/goal selection happens after calibration -- see
+        CalibrationWindow's Results/Advanced Settings screens). Returns the
+        y just below it, so each step's own content starts underneath."""
         W, H = self.WIDTH, self.HEIGHT
         pad = int(16 * W / 1920)
         y = pa.y + self._sc(10)
@@ -8444,11 +8380,10 @@ class TherapistDashboardScene:
         content_y = self._draw_gc_progress(surface, pa, 1, "Choose Category & Game")
 
         # ── Single Skill Games / Integrated Games tab switch ───────────
-        # Replaces the old "Configuring for: <patient> / Patient ID: ..."
-        # banner (redundant with the sidebar's own Active Patient badge and
-        # controller-status block, both always visible) and the old
-        # always-both-visible stacked rows -- only one group's tiles show
-        # at a time now, Single Skill Games shown by default.
+        # The sidebar's own Active Patient badge and controller-status
+        # block (always visible) already show which patient is configuring,
+        # so no separate banner is drawn here. Only one group's tiles show
+        # at a time; Single Skill Games is shown by default.
         tab_h  = self._tt(44) if touch else int(40*H/1080)
         tab_gap = self._sc(10)
         f_tab  = self.fnt["body_b"] if touch else self.fnt["body"]
@@ -8470,14 +8405,12 @@ class TherapistDashboardScene:
 
         # ── Game tiles (whichever group is active) ──────────────────────
         # Plain selectable cards -- same recipe as Step 2's Session Mode
-        # cards (white/tinted fill, colored border, top-right checkmark when
-        # selected) instead of the old per-category sprite art, so every
-        # step of this wizard reads as one consistent design. Each card
-        # keeps its own accent color (same PANEL_COLORS this screen already
-        # used for the old sprite's selection glow) so the categories stay
-        # visually distinct without separate artwork. The "which specific
-        # game" caption pill is unchanged, just anchored to the card's
-        # bottom instead of sitting under the removed image.
+        # cards (white/tinted fill, colored border, top-right checkmark
+        # when selected), so every step of this wizard reads as one
+        # consistent design. Each card keeps its own accent color (PANEL_
+        # COLORS) so the categories stay visually distinct without
+        # separate artwork. The "which specific game" caption pill is
+        # anchored to the card's bottom.
         tg = int(14*W/1920)
         active_games = SINGLE_SKILL_GAMES if self._gc_active_tab == "single" else INTEGRATED_GAMES
         idx_offset = 0 if self._gc_active_tab == "single" else len(SINGLE_SKILL_GAMES)
@@ -8592,10 +8525,9 @@ class TherapistDashboardScene:
         content_y = self._draw_gc_progress(surface, pa, 2, "Session Mode")
         content_y += self._sc(6)
 
-        # The "How should this session end?" heading is gone -- the two
-        # mode cards move up into the space it used to occupy and grow to
-        # fill it, instead of sitting in a fixed-height box sized for the
-        # heading-present layout.
+        # No "How should this session end?" heading -- the two mode cards
+        # fill the space it would have occupied, rather than sitting in a
+        # fixed-height box sized for a heading-present layout.
         bw, bh = self.fnt["btn"].size("Next →")[0] + self._tt(40), self._tt(58)
         next_r = pygame.Rect(pa.right - pad - bw, pa.bottom - bh - int(8 * H / 1080), bw, bh)
 
@@ -8659,13 +8591,13 @@ class TherapistDashboardScene:
                 self.gc["session_mode"] = key
                 return
 
-    # Step 3 ("Session Settings": difficulty pills + Target-reps/Duration
-    # stepper) was removed -- difficulty and the Target-score/Timed-duration
-    # goal are now chosen AFTER calibration instead (CalibrationWindow's
+    # There is no "Session Settings" step (difficulty pills + Target-reps/
+    # Duration stepper) -- difficulty and the Target-score/Timed-duration
+    # goal are chosen AFTER calibration instead (CalibrationWindow's
     # Results screen's Easy/Medium/Hard preset picker + its Advanced
     # Settings screen already do this; see scenes/calibration_window.py).
     # gc["difficulty"]/gc["target_reps"]/gc["duration_sec"] are simply never
-    # set pre-calibration any more, so SessionModeMixin._session_init's
+    # set pre-calibration, so SessionModeMixin._session_init's
     # existing fallback chain (explicit value -> calibration params ->
     # per-difficulty preset) naturally defers to whatever the therapist
     # picked post-calibration -- no replacement UI needed here.
@@ -8788,7 +8720,7 @@ class TherapistDashboardScene:
                             and gc.get("session_mode") is not None)
         # "Patient Selected" / "Game Selected" are still REQUIRED for the
         # session to be ready -- the game-config flow already can't reach
-        # this screen without both -- but are no longer shown as rows in the
+        # this screen without both -- but aren't shown as rows in the
         # visible checklist (which only needs to surface the three steps the
         # therapist still has to actively do here). `steps` (hidden + shown)
         # is still what the readiness gate below is computed from; only
@@ -8819,10 +8751,10 @@ class TherapistDashboardScene:
         # title's own (usually smaller) height.
         chip_gap = self._sc(6)
         tutorial_lbl = "TUTORIAL ON" if self._tutorial_enabled else "Tutorial Mode"
-        # Smaller than the "tag" size the Language chip still uses --
-        # "Tutorial Mode" is longer than "Tutorial" was, so this keeps the
-        # label comfortably inside the chip instead of widening the whole
-        # chip stack to match the old font size.
+        # Smaller than the "tag" size the Language chip uses -- "Tutorial
+        # Mode" is longer than a single word, so the smaller font keeps
+        # the label comfortably inside the chip without widening the
+        # whole chip stack.
         tutorial_s = self.fnt["eyebrow"].render(tutorial_lbl, True, (255, 255, 255))
         chip_h = max(self._sc(22), tutorial_s.get_height() + self._sc(8))
         # The chip STACK lives entirely on the right (anchored off
@@ -8897,11 +8829,10 @@ class TherapistDashboardScene:
             hovered = self._calibrate_hov
         pygame.draw.rect(surface, (28, 150, 176) if hovered else (34, 170, 198),
                          btn_r, border_radius=self._sc(14))
-        # Text-only, centered -- this used to append a "→" rendered with a
-        # "segoeuisymbol" SysFont (Windows-only; on the Pi it silently
-        # falls back to a font without that glyph, so the arrow never
-        # rendered there, same root cause as the Confirm/Cancel dialog
-        # icons above).
+        # Text-only, centered -- no trailing "→" glyph, since that would
+        # need a "segoeuisymbol" SysFont (Windows-only; on the Pi it falls
+        # back to a font without that glyph, same reasoning as the
+        # Confirm/Cancel dialog icons above).
         lbl_s = self.fnt["btn"].render(label, True, (255, 255, 255))
         surface.blit(lbl_s, lbl_s.get_rect(center=btn_r.center))
 
@@ -8996,9 +8927,9 @@ class TherapistDashboardScene:
                     ly += line_h
 
     def _draw_icon_picker_popup(self, surface):
-        """Dedicated icon-selection popup: bigger than the old inline rail,
-        icons sized generously from the popup's own width (not shrunk to
-        force all 10 to fit at once), and scrollable when they don't."""
+        """Dedicated icon-selection popup: icons sized generously from the
+        popup's own width (not shrunk to force all 10 to fit at once), and
+        scrollable when they don't."""
         W, H = self.WIDTH, self.HEIGHT
         pad = self._sc(20)
         pw = min(int(W * 0.92), self._sc(560))
@@ -9023,9 +8954,8 @@ class TherapistDashboardScene:
         view_h = bottom - top
 
         # Icons sized from the popup's own width -- comfortably large and
-        # spaced, but pulled in a bit from the earlier oversized cap -- with
-        # however many rows that takes, scrolling if they don't all fit
-        # rather than shrinking them back down to the old cramped size.
+        # spaced -- with however many rows that takes; scrolls if they
+        # don't all fit instead of shrinking down to fit.
         cols = 3
         gap = self._sc(18)
         avail_w = pw - 2 * pad
@@ -9070,9 +9000,8 @@ class TherapistDashboardScene:
         surface.blit(ds, ds.get_rect(center=self._eip_done_rect.center))
 
     def _draw_skill_game_modal(self, surface):
-        # Sized from _sc/_tt so rows and the Close button stay finger-sized on
-        # the 800x480 panel -- the old H/1080-only math produced ~21px rows
-        # and a ~16px-tall Close button here.
+        # Sized from _sc/_tt so rows and the Close button stay finger-sized
+        # on the 800x480 panel.
         W, H = self.WIDTH, self.HEIGHT
 
         # Dim the background -- matches every other modal's visual language
@@ -9089,7 +9018,7 @@ class TherapistDashboardScene:
 
         pad      = self._sc(22)
         item_gap = self._sc(8)
-        item_h   = self._tt(60)   # a touch taller than before to fit each row's icon chip
+        item_h   = self._tt(60)   # tall enough to fit each row's icon chip
         btn_h    = self._tt(44)
         header_h = self.fnt["modal_lbl"].get_height() + self._sc(20)
         footer_h = self._sc(16) + btn_h + self._sc(16)
@@ -9142,8 +9071,7 @@ class TherapistDashboardScene:
         # Session "Game Information" card already uses for a per-game icon,
         # see GAME_ICON_ASSET there) + name, tinted/bordered in this
         # category's own accent color when selected, with a checkmark --
-        # the same selection language Step 1's category cards use, instead
-        # of the old flat-blue-regardless-of-category highlight.
+        # the same selection language Step 1's category cards use.
         self._gc_skill_modal_rects = []
         mp = pygame.mouse.get_pos()
         tint = tuple(int(c + (255 - c) * 0.85) for c in accent)

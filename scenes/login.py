@@ -1,7 +1,7 @@
 # =============================================================================
 # scenes/login.py
 # =============================================================================
-# Fixes:
+# Behavior:
 #   1. Correct account is passed to the dashboard via builtins.pending_account
 #   2. PIN lockout: 5 wrong attempts → locked for 1 hour, live countdown shown
 #   3. Forgot PIN: Interactive 4-digit reset workflow with strict validation match
@@ -270,10 +270,10 @@ class LoginScene:
             # they physically fit; only the overflow (typically just the
             # trailing Add Account icon) scrolls into view (see
             # handle_event's wheel/drag routing and _draw_circles' clip), no
-            # scrollbar shown. A previous version capped this at a flat
-            # 8-item budget regardless of row count, which could hide real
-            # accounts (e.g. 2 columns -> only 4 of 8 accounts shown) --
-            # fixed to size purely from the real available pixel height. ──
+            # scrollbar shown. Sized purely from the real available pixel
+            # height, not a flat item-count budget, so a narrower grid
+            # (fewer columns) still shows every row that fits rather than
+            # hiding real accounts. ──
             rows_n = (n_total + grid_cols - 1) // grid_cols
             heading_bottom = (int(self.HEIGHT * 0.13) + self.font_heading.get_linesize() // 2
                               + int(12 * self.HEIGHT / 1080))
@@ -431,10 +431,10 @@ class LoginScene:
         # scenes/calibration_window.py's results-viewport scroll. A tap that
         # resolves through here (not a drag) forwards to _hit_test, whose
         # return value (e.g. "register" from the Add Account icon) MUST be
-        # propagated back out -- it was previously discarded, so tapping Add
-        # Account set self.launch_triggered True (blocking all further input
-        # on this same Login screen, per the check above) without the scene
-        # switch that's supposed to go with it ever actually happening.
+        # propagated back out -- discarding it would still set
+        # self.launch_triggered True (blocking all further input on this
+        # same Login screen, per the check above) without the scene switch
+        # that's supposed to go with it ever actually happening.
         if self.selected is None and not self.show_forgot and not self._limit_modal and self._profile_scroll_max > 0:
             consumed, result = self._profile_scroll_handle_event(event)
             if consumed:
@@ -463,10 +463,10 @@ class LoginScene:
         handling); `result` is whatever _hit_test returned for a resolved
         tap (e.g. "register"/"therapist_welcome" -- a scene-transition key)
         or None otherwise. Must be propagated by the caller -- discarding it
-        previously meant tapping Add Account set self.launch_triggered True
-        without the matching scene switch ever happening, silently
-        stranding the app on this same Login screen with all further input
-        blocked by the self.launch_triggered check in handle_event."""
+        would still set self.launch_triggered True when tapping Add Account,
+        without the matching scene switch happening, silently stranding the
+        app on this same Login screen with all further input blocked by the
+        self.launch_triggered check in handle_event."""
         _dbg = os.environ.get("RECOVR_LOGIN_DEBUG") == "1"
 
         if event.type == pygame.MOUSEWHEEL:
@@ -515,10 +515,10 @@ class LoginScene:
         # instead of a tap. Scaled with the panel (not a flat raw-pixel
         # value) so it stays a sensible real-world distance on any screen
         # density; generous enough to absorb ordinary finger tremor on a
-        # touchscreen during a stationary tap, which a too-tight threshold
-        # was misreading as a scroll (every touch -- including an intended
-        # tap on an icon -- getting classified as a drag, so nothing could
-        # ever be selected even though scrolling itself worked fine).
+        # touchscreen during a stationary tap -- too tight a threshold
+        # would misclassify every touch (including an intended tap on an
+        # icon) as a drag, so nothing could ever be selected even though
+        # scrolling itself worked fine.
         _drag_threshold = self._sc(24)
 
         if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION):
@@ -830,12 +830,11 @@ class LoginScene:
     def update(self, mouse_pos, dt):
         # Recompute circle/viewport positions every frame -- they depend on
         # self._profile_scroll, which handle_event's drag/wheel scrolling
-        # changes continuously. _compute_layout() was previously only ever
-        # called once at construction, so the scroll VALUE was updating
-        # correctly (see _profile_scroll_handle_event) but nothing re-placed
-        # the icons at their new scrolled position -- they stayed frozen at
-        # their initial (scroll=0) spots, which looked like scrolling simply
-        # did nothing.
+        # changes continuously. Without recomputing here, the scroll VALUE
+        # updates correctly (see _profile_scroll_handle_event) but nothing
+        # re-places the icons at their new scrolled position -- they'd stay
+        # frozen at their initial (scroll=0) spots, making scrolling look
+        # like it does nothing.
         self._compute_layout()
         if self.setup_sq:
             self.sq_complete_hov = self.sq_complete_rect.collidepoint(mouse_pos)
@@ -1095,11 +1094,11 @@ class LoginScene:
                       ["",  "0", "del"]]
 
     def _draw_pin_panel_touch(self, surface):
-        """Landscape PIN panel, centred -- identity, then the PIN dots. The
-        on-screen keypad was removed (PIN digits now come from a physical
+        """Landscape PIN panel, centred -- identity, then the PIN dots. No
+        on-screen keypad is drawn; PIN digits come from a physical
         keypad/keyboard's KEYDOWN events, the same path _handle_key already
-        used for that); self._keypad_rects stays empty so _keypad_click()
-        harmlessly matches nothing instead of needing its own removal."""
+        handles. self._keypad_rects stays empty so _keypad_click()
+        harmlessly matches nothing."""
         W, H = self.WIDTH, self.HEIGHT
         acc  = self.selected
         panel = pygame.Surface((W, H), pygame.SRCALPHA)
@@ -1387,14 +1386,13 @@ class LoginScene:
     # ------------------------------------------------------------------
 
     def _sq_popup_scroll_handle_event(self, event):
-        """Touch-drag scroll for an OPEN dropdown's own option popup -- only
-        MOUSEWHEEL was ever handled for this popup before, so a touchscreen
-        had no way to scroll it at all. Takes priority over the generic tap
-        dispatch whenever a dropdown is open and the touch lands inside its
-        popup. The UP resolve also checks the net down->up displacement
-        directly (not just whatever a MOTION event already flagged), since
-        some touch drivers only report the down and up positions with no
-        motion samples in between -- same fix as the profile-grid scroll
+        """Touch-drag scroll for an OPEN dropdown's own option popup.
+        Takes priority over the generic tap dispatch whenever a dropdown
+        is open and the touch lands inside its popup. The UP resolve also
+        checks the net down->up displacement directly (not just whatever a
+        MOTION event already flagged), since some touch drivers only
+        report the down and up positions with no motion samples in between
+        -- same approach as the profile-grid scroll
         (see _profile_scroll_handle_event). Returns (consumed, result)."""
         sf = next((sf for sf in self.sq_fields if sf["q_open"]), None)
         if sf is None:
@@ -1739,12 +1737,10 @@ class LoginScene:
         surface.blit(ok_s, ok_s.get_rect(center=ok_r.center))
 
     def _draw_back_link(self, surface):
-        """Text-only Back button.
-
-        The old label was the literal string "<- Back" using U+2190, which
-        Lexend-Light has no glyph for -- it rendered as an empty tofu box next
-        to the word. There is no icon here at all now, and the button is drawn
-        as a real bordered pill matching the dashboard's Back control."""
+        """Text-only Back button -- Lexend-Light has no glyph for U+2190,
+        so an arrow character would render as an empty tofu box next to
+        the word. Drawn as a real bordered pill matching the dashboard's
+        Back control."""
         r = self._back_rect()
         hov = self.back_hovered
         pygame.draw.rect(surface, (255, 255, 255) if not hov else (236, 243, 252),
@@ -1760,8 +1756,8 @@ class LoginScene:
     # ------------------------------------------------------------------
 
     def _back_rect(self):
-        """Hit area == the drawn pill. (It used to start at x=0 while the text
-        was drawn at x=30, so the tappable area did not match what you saw.)"""
+        """Hit area == the drawn pill, so the tappable area always matches
+        what's on screen."""
         bw = max(self._tt(120), self.font_back.size("Back")[0] + self._sc(40))
         bh = self._tt(48)
         m  = self._sc(16)

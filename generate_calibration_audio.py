@@ -26,13 +26,10 @@ import pygame
 _AUDIO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "audio")
 
 _VOICES = {"en": "en-US-AvaMultilingualNeural", "fil": "fil-PH-BlessicaNeural"}
-# en-US-AvaMultilingualNeural: the newer "Multilingual" generation of Azure
-# neural voices reads noticeably less flat/robotic than the older
-# non-multilingual ones (e.g. the previous en-US-JennyNeural) -- fil-PH has
-# no Multilingual-tier voice yet, so BlessicaNeural (unchanged) is still the
-# most natural option there.
-# -15% rate = slower, less rushed pacing, requested after the first pass
-# still sounded a bit clipped/robotic at the default rate.
+# en-US-AvaMultilingualNeural: the "Multilingual" generation of Azure neural
+# voices reads less flat/robotic than non-multilingual ones; fil-PH has no
+# Multilingual-tier voice, so BlessicaNeural is the most natural option there.
+# -15% rate: slower, less rushed pacing than the default rate.
 _RATE = "-15%"
 
 # Each entry is the literal spoken script for that calibration stage -- the
@@ -40,7 +37,7 @@ _RATE = "-15%"
 # instruction pair 1:1 (see i18n.py's matching "calib.*" keys and
 # recovr/patient_app/scenes/calibrating.py's _PREP_CONTENT/_SENSOR_CONTENT/
 # _COMPLETE_CONTENT); countdown/between are each shared across all 3
-# sensors' "baseline"/"between trials" moments and were never 1:1 with one
+# sensors' "baseline"/"between trials" moments and are not 1:1 with one
 # specific displayed line.
 _CLIPS = {
     "calibration_prep": {

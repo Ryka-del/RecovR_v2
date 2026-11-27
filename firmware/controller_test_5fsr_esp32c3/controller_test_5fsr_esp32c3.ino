@@ -30,10 +30,8 @@
 //   C8  FSR 4
 //   C9  FSR 5
 //
-// (This mirrors the same C0-C4 flex assignment the main firmware's header
-// comment documents as "VERIFIED WIRING" -- if the scan sketch showed your
-// flex sensors actually land on different channel numbers, tell me and
-// I'll adjust these defines to match your real wiring instead of guessing.)
+// (Mirrors the C0-C4 flex assignment documented in the main firmware's
+// wiring header. If actual wiring differs, update these defines to match.)
 //
 // How to use:
 //   Upload, open Serial Monitor @ 115200 baud. Bend/press one sensor at a

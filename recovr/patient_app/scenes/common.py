@@ -230,12 +230,10 @@ def draw_glass_card(surface: pygame.Surface, rect: pygame.Rect, radius_frac: flo
     without either one copying the other's drawing code. Returns the corner
     radius used, in case a caller needs it for inner-content layout.
 
-    `glow_alpha` (0 by default, i.e. no change for existing callers) adds a
-    soft outward white halo -- several progressively larger, progressively
-    fainter rounded-rect outlines drawn before the shadow/fill, approximating
-    a blur with no blur filter available. Opt-in only: the patient Dashboard's
-    existing draw_glass_card() calls pass no glow and render exactly as
-    before."""
+    `glow_alpha` (0 by default) adds a soft outward white halo -- several
+    progressively larger, progressively fainter rounded-rect outlines drawn
+    before the shadow/fill, approximating a blur with no blur filter
+    available. Opt-in only: omitting it draws the plain card with no glow."""
     H = surface.get_height()
     rad = max(6, int(rect.height * radius_frac))
 
@@ -276,8 +274,7 @@ def sprite(name: str, size: int, crop: bool = False):
     `size x size` (never distorted). Shared by the Waiting Screen and the
     patient Dashboard so both draw the exact same asset-loading path.
 
-    `crop` (opt-in, False by default so the patient Dashboard's own sprite()
-    calls render exactly as before) first crops to the asset's own opaque
+    `crop` (opt-in, False by default) first crops to the asset's own opaque
     bounding box before scaling -- several of the waiting-screen illustrations
     ship with a lot of transparent canvas padding, which otherwise makes the
     actual artwork look much smaller than the requested `size` once scaled.
@@ -330,9 +327,7 @@ def carousel_frame(t: int, w: int, card_w: int, n: int = 1, *,
     and the incoming card (sliding fully off-screen-right -> centre) use the
     SAME progress `p` and the SAME ease-in-out curve, so they move at
     identical speed and stay a constant horizontal distance apart -- a clean
-    linked swap, never two independently-timed cards that can linger near
-    each other at once (that mismatch used to let a mostly-arrived incoming
-    card overlap an outgoing card that had barely started leaving).
+    linked swap, never two independently-timed cards that can overlap.
 
     Returns a list of (item_index, center_x, alpha) for the 1-2 card
     instances to draw "now" -- alpha is always 1.0 (no fade: a card is either

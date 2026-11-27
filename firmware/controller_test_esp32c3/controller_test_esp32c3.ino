@@ -74,7 +74,7 @@ void setup() {
     pinMode(MUX_S1, OUTPUT);
     pinMode(MUX_S2, OUTPUT);
     pinMode(MUX_S3, OUTPUT);
-    analogReadResolution(12);   // 12-bit ADC
+    analogReadResolution(12);
 
     Wire.begin(6, 7);   // SDA=GPIO6 (D4), SCL=GPIO7 (D5)
     mpuOK = mpu.begin();

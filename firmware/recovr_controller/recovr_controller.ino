@@ -27,14 +27,11 @@
 //     Right-hand glove (GLOVE_RIGHT_HAND 1): mirrored -- flex1 Thumb = C9 ...
 //       flex5 Pinky = C5 (channel number == 9 - (flex index - 1)).
 //   Used independently by Tile Rush and Whack-a-Mole (state["finger_flex"],
-//   5 separate channels). Plant the Garden instead uses only the Thumb
-//   channel (C5) as its single legacy "Finger Flexion" reading
-//   (state["tilt_y"]) -- same physical sensor, not a second one. Steady Aim
-//   and Purrfect Feast use NO flex sensor at all today (per
-//   scenes/therapist_dashboard.py's MULTI_SENSOR_CALIBRATION -- Steady Aim is
-//   Wrist Rotation only, Purrfect Feast is Grip + Wrist only). If Purrfect
-//   Feast is meant to need flex too, that's a game-logic change, not a
-//   wiring one -- flag it separately.
+//   5 separate channels). Plant the Garden uses only the Thumb channel (C5)
+//   as its legacy "Finger Flexion" reading (state["tilt_y"]) -- same
+//   physical sensor, not a second one. Steady Aim (Wrist Rotation only) and
+//   Purrfect Feast (Grip + Wrist only) use no flex sensor, per
+//   scenes/therapist_dashboard.py's MULTI_SENSOR_CALIBRATION.
 //
 // BLE Packet (19 bytes, little-endian, 50 Hz) -- must match
 // sensors/ble_receiver.py PACKET_FORMAT "<HHHHHHHBhh". Field NAMES/ORDER
@@ -84,15 +81,14 @@
 // -- MUX channels -------------------------------------------------------------
 #define CH_FSR          4   // C4  FSR402 (same channel for either glove)
 
-// Which physical glove THIS firmware image is being flashed for -- a
-// right-hand glove's flex1..flex5 wires land on the MUX channels in the
-// OPPOSITE order from a left-hand glove's (mirrored construction), so the
-// finger-to-channel mapping has to flip with it. Set to 1 when flashing a
-// controller paired with a right-hand glove; leave at 0 (left-hand, the
-// original/default wiring) otherwise. Everything downstream -- the BLE
-// packet layout, field names/order, Python, games -- is unaffected either
-// way: flex_thumb_raw etc. always means "the Thumb sensor's reading",
-// whichever physical channel it happened to come from.
+// Which physical glove this firmware image is flashed for -- a right-hand
+// glove's flex1..flex5 wires land on the MUX channels in the opposite order
+// from a left-hand glove's (mirrored construction), so the finger-to-channel
+// mapping flips with it. Set to 1 for a right-hand glove; leave at 0
+// (left-hand, default wiring) otherwise. The BLE packet layout, field
+// names/order, Python, and games are unaffected either way: flex_thumb_raw
+// etc. always means "the Thumb sensor's reading", whichever physical
+// channel it comes from.
 #define GLOVE_RIGHT_HAND 0
 
 #if GLOVE_RIGHT_HAND
@@ -180,7 +176,7 @@ void setup() {
     pinMode(MUX_S1, OUTPUT);
     pinMode(MUX_S2, OUTPUT);
     pinMode(MUX_S3, OUTPUT);
-    analogReadResolution(12);   // 12-bit ADC
+    analogReadResolution(12);
 
     // MPU6050 -- a missing IMU must NOT stop BLE, or grip/flex die with it.
     Wire.begin(6, 7);   // SDA=GPIO6, SCL=GPIO7
@@ -197,14 +193,11 @@ void setup() {
 
     // BLE
     BLEDevice::init(DEVICE_NAME);
-    // Lowest TX power -- genuinely reduces the radio's current draw (unlike
-    // disabling the brownout detector, which only hides a voltage dip
-    // instead of shrinking it) at the moment advertising starts, which is
-    // the exact instant this board has been browning out. Controller sits
-    // right next to the Pi/PC in normal use, so the shorter range this
-    // trades away doesn't matter here. If this alone isn't enough, the
-    // remaining fix is local 3.3V/GND decoupling capacitance on the board
-    // itself -- see the chat history for that diagnosis.
+    // Lowest TX power reduces radio current draw right as advertising
+    // starts, the point most likely to brown out the board. Controller sits
+    // next to the Pi/PC in normal use, so the reduced range doesn't matter.
+    // If brownouts persist, add local 3.3V/GND decoupling capacitance on
+    // the board.
     BLEDevice::setPower(ESP_PWR_LVL_N12);
     pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());

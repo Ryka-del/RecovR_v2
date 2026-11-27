@@ -3,10 +3,9 @@ RecovR MPU6050 Orientation Diagnostic
 ======================================
 Live accel_x / accel_y readout for physically determining which axis
 corresponds to which real-world wrist movement on THIS controller's actual
-mounting orientation. Written for Part A.4 of the calibration investigation
--- do NOT assume axis meaning from this script's output alone; this just
-shows you the numbers so a person can observe them during the physical
-test below and report back which axis moved for which motion.
+mounting orientation. Do NOT assume axis meaning from this script's output
+alone; it just shows you the numbers so a person can observe them during
+the physical test below and report back which axis moved for which motion.
 
 Usage:
     python3 tools/test_mpu_orientation.py
@@ -32,7 +31,7 @@ first, note the resting numbers, then):
 
 Report back, for each of the 4 motions: which axis (X or Y) moved, and in
 which direction (+ or -). That's what's needed to finalize the axis-to-
-movement mapping in A.4 -- this script does not decide or assume it.
+movement mapping -- this script does not decide or assume it.
 
 Press Ctrl+C to stop.
 """

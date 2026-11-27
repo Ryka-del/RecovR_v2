@@ -115,14 +115,10 @@ BOX_RIM_FRAC    = 0.22  # fraction of BOX_HEIGHT down from the box's own top
                          # (see _draw) so it reads as having gone IN the box,
                          # not just stopping on top of it
 
-# ── toy categories (final mapping -- confirmed explicitly: Bear/Bunny/
-# Robot/Dino -> Puzzles, Shape/Build/Circle/Square -> Plushies, do not
-# reverse) ───────────────────────────────────────────────────────────────────
-# The box label ART (plushie_box/puzzle_box_toy_factory.png) was edited to
-# match this mapping -- each box's embedded toy icons were swapped between
-# the two files (same cream label/dashed-border/rivets, just the icon
-# illustrations relocated to the box whose category they actually belong
-# to) so the printed label always agrees with what that box actually
+# ── toy categories (Bear/Bunny/Robot/Dino -> Puzzles, Shape/Build/Circle/
+# Square -> Plushies; do not reverse) ───────────────────────────────────────
+# The box label art (plushie_box/puzzle_box_toy_factory.png) matches this
+# mapping -- each box's printed icons are the toys that box actually
 # accepts.
 TOY_CATEGORY = {
     "bear": "puzzles", "bunny": "puzzles", "robot": "puzzles", "dino": "puzzles",
@@ -519,12 +515,10 @@ class ToyFactoryGame(SessionModeMixin, FatigueMixin, BaseScreen):
             return
 
         # self._state must hold this frame's LIVE input before _vertical_raw()
-        # runs -- its Test-Mode fallback reads self._state["tilt_y"] itself
-        # (there's no separate live keyboard value to pass in), so calling it
-        # before this assignment made it only ever see its own previous
-        # return value, never the keyboard's actual current tilt_y (same
-        # ordering games/steady_aim.py's _vertical_raw() call already gets
-        # right -- this file had it backwards).
+        # runs: its Test-Mode fallback reads self._state["tilt_y"] itself
+        # (there's no separate live keyboard value to pass in), so this must
+        # be set first for the keyboard's actual current tilt_y to be seen
+        # (same ordering as games/steady_aim.py's own _vertical_raw() call).
         self._state = dict(input_handler.get_state())
         ty_raw = self._vertical_raw()
         self._state["tilt_y"] = ty_raw   # real accel_y, visible to therapist telemetry too
@@ -583,12 +577,10 @@ class ToyFactoryGame(SessionModeMixin, FatigueMixin, BaseScreen):
             self._tutorial_hints.update(self, dt)
 
         # Checked LAST, after this frame's own grab/drop/sort logic has
-        # already run -- Timed Mode's duration expiring on the exact same
-        # frame as a successful sort must never preempt it (the old
-        # position, before that logic, could do exactly that and silently
-        # drop the final point). time_left is floored at 0 by
-        # _session_tick() itself, so this still ends the session on every
-        # subsequent frame.
+        # already run, so Timed Mode's duration expiring on the same frame
+        # as a successful sort never preempts it and drops the final point.
+        # time_left is floored at 0 by _session_tick() itself, so this
+        # still ends the session on every subsequent frame.
         if self._session_tick(dt):
             self._end_game()
 
@@ -778,14 +770,11 @@ class ToyFactoryGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
         # Drawn in explicit layers, NOT self.toys' plain list order (list
         # order is just spawn order, which has nothing to do with which toy
-        # should visually read as "in front" -- an earlier-spawned belt toy
-        # used to draw on top of a later-spawned toy the patient was actively
-        # carrying or returning, which looked like the hand/returning toy had
-        # passed BEHIND it). Stationary belt/entering toys first, then
-        # whichever toy is actively in motion off the belt (falling or
-        # tweening back to its conveyor slot), then the held toy last, right
-        # before the hand -- so the one thing the patient is actually
-        # interacting with is always the topmost toy on screen.
+        # should visually read as "in front"). Stationary belt/entering toys
+        # first, then whichever toy is actively in motion off the belt
+        # (falling or tweening back to its conveyor slot), then the held
+        # toy last, right before the hand -- so the one thing the patient is
+        # actually interacting with is always the topmost toy on screen.
         def _draw_toy_sprite(toy):
             img = self._toy_imgs.get(toy.key)
             if img is None:
@@ -885,11 +874,11 @@ class ToyFactoryGame(SessionModeMixin, FatigueMixin, BaseScreen):
         surface.blit(ov, (0, 0))
 
         # Fully designed "How To Play" card art (title, numbered steps, tip
-        # banner all baked in) -- replaces the hand-drawn panel. Per-theme,
-        # cropped to its own opaque content then fit preserving aspect
-        # ratio. Same outer card box (position + max size) as _draw_results'
-        # Round Complete card -- the two screens read as stages of one
-        # interface rather than two differently-proportioned popups.
+        # banner all baked in), per-theme, cropped to its own opaque content
+        # then fit preserving aspect ratio. Same outer card box (position +
+        # max size) as _draw_results' Round Complete card -- the two screens
+        # read as stages of one interface rather than two differently-
+        # proportioned popups.
         card_name = (f"toy_factory_how_to_play_{'dark' if is_dark_mode() else 'light'}"
                      f"{'_fil' if self.language == 'fil' else ''}.png")
         top_margin, bottom_reserved = int(GAME_H * 0.05), int(GAME_H * 0.17)
@@ -910,9 +899,9 @@ class ToyFactoryGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
     def _draw_results(self, surface):
         T = get_theme()
-        # Just the card, centered -- no extra text/descriptions (Wrong Box
-        # / Missed are no longer shown here; the HUD's own live counter
-        # during gameplay already covers progress).
+        # Just the card, centered -- no extra text/descriptions; the HUD's
+        # own live counter during gameplay already covers Wrong Box/Missed
+        # progress.
         _card, bottom_y = draw_round_complete_overlay(
             surface, card_prefix="toy_factory", duration_sec=self.game_over_duration,
             score_text=self._session_count_text(), load_fit=_load_image_fit)

@@ -95,7 +95,7 @@ def draw_game_header(surface, game_name, difficulty, time_left, score, game_w, g
     if bg is not None:
         surface.blit(bg, (side, top))
     else:
-        # fallback if the asset is ever missing -- a plain bar, old style
+        # fallback if the asset is ever missing -- a plain bar
         pygame.draw.rect(surface, (20, 140, 165), (side, top, header_w, header_h), border_radius=header_h // 2)
         pygame.draw.rect(surface, (255, 255, 255), (side, top, header_w, header_h), 1, border_radius=header_h // 2)
 
@@ -126,9 +126,8 @@ def draw_game_header(surface, game_name, difficulty, time_left, score, game_w, g
         if img is None:
             return 0
         val_w   = f_val.size(text)[0]
-        # More breathing room on the right than before -- the value used to
-        # sit almost flush against the badge's own right edge (0.06), read
-        # as cramped/too-close-to-the-edge on the real header.
+        # Right padding so the value gets breathing room instead of sitting
+        # flush against the badge's own right edge.
         right_pad = int(img.get_width() * 0.14)
         needed  = int(img.get_width() * label_frac) + val_w + right_pad
         return max(img.get_width(), needed)
@@ -143,8 +142,8 @@ def draw_game_header(surface, game_name, difficulty, time_left, score, game_w, g
     avail_start = side + pad
     avail_end   = side + header_w - pad
 
-    # Game title -- significantly larger than before, scaled down only if it
-    # would otherwise exceed the header's own height or crowd the badges.
+    # Game title -- scaled down only if it would otherwise exceed the
+    # header's own height or crowd the badges.
     f_title = _font("arialblack", int(header_h * 0.62))
     title_s = f_title.render(game_name, True, (255, 255, 255))
     max_title_h = int(header_h * 0.78)
@@ -156,9 +155,8 @@ def draw_game_header(surface, game_name, difficulty, time_left, score, game_w, g
         title_s = pygame.transform.smoothscale(title_s, (tw, th))
     surface.blit(title_s, title_s.get_rect(midleft=(avail_start, top + header_h // 2)))
 
-    # Difficulty / Time / Score now sit as one tight cluster pushed toward
-    # the right edge of the pill, instead of spread evenly across the
-    # leftover width -- closer together, and further right.
+    # Difficulty / Time / Score sit as one tight cluster pushed toward the
+    # right edge of the pill.
     x = max(avail_start + title_s.get_width() + title_gap, avail_end - group_w)
     if diff_img is not None:
         surface.blit(diff_img, (int(x), top + header_h // 2 - diff_img.get_height() // 2))
@@ -192,9 +190,8 @@ def draw_game_header(surface, game_name, difficulty, time_left, score, game_w, g
             surface.blit(ext, (int(x), y))
         surface.blit(img, (int(x), y))
         # the asset only bakes in the icon + label; the live value is drawn
-        # in the blank space to its right -- nudged slightly left of where
-        # the label art ends (instead of hugging the badge's right edge),
-        # matching the extra right_pad reserved above.
+        # in the blank space to its right, nudged slightly left of where the
+        # label art ends to match the right_pad reserved above.
         vs = f_val.render(text, True, (255, 255, 255))
         vx = int(x) + int(img.get_width() * label_frac) - int(img.get_width() * 0.02)
         surface.blit(vs, vs.get_rect(midleft=(vx, y + img.get_height() // 2)))

@@ -14,10 +14,9 @@ FATIGUE_TIMEOUT = 60.0   # seconds of inactivity before rest prompt
 ACTIVITY_THRESH = 0.05   # minimum grip/tilt change to count as "active"
 
 # _draw_pause() is called every frame for as long as the pause menu is up
-# (a common, often long-lived state). Building 2 SysFont objects and a full
-# GAME_W x GAME_H SRCALPHA surface fresh each call was pure repeated work --
-# none of this depends on anything that changes frame-to-frame, so build it
-# once and reuse it.
+# (a common, often long-lived state). Nothing here depends on frame-to-frame
+# state, so the 2 SysFont objects and the full GAME_W x GAME_H SRCALPHA
+# surface are built once and reused instead of rebuilt every call.
 _pause_font    = None
 _pause_font_sm = None
 _pause_overlay = None

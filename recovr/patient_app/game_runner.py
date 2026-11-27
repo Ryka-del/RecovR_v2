@@ -94,11 +94,11 @@ class GameRunner:
         self.game = spec.cls()
         self.game.on_enter(dict(config))
 
-        # LED scoring feedback -- the LED is now owned ONCE per patient
-        # PROCESS (see recovr/patient_app/patient_main.py's PatientApp),
-        # not per session, since its idle "breathing" state has to keep
-        # animating even between sessions, when no GameRunner exists at
-        # all. `led` is that shared instance, handed in by whoever
+        # LED scoring feedback -- owned ONCE per patient PROCESS (see
+        # recovr/patient_app/patient_main.py's PatientApp), not per session,
+        # since its idle "breathing" state has to keep animating even
+        # between sessions, when no GameRunner exists at all. `led` is that
+        # shared instance, handed in by whoever
         # constructs this runner; a GameRunner used outside that process
         # (tests, etc.) gets its own standalone instance instead of
         # crashing. self._last_score is the baseline a later increase is
@@ -292,13 +292,11 @@ class GameRunner:
             hook()
 
     def teardown(self):
-        """No hardware resources of its own to release any more -- the LED
-        is now owned by the patient process itself (see __init__'s own
-        comment), not per-GameRunner, so there's nothing left for THIS
-        method to clean up. Kept as a no-op (rather than removed outright)
-        since patient_main.py's _teardown_runner() always calls it
-        unconditionally; removing the method would be a bigger, riskier
-        change than leaving a harmless no-op in place."""
+        """No hardware resources of its own to release -- the LED is owned
+        by the patient process itself (see __init__'s own comment), not
+        per-GameRunner, so there's nothing left for THIS method to clean
+        up. Kept as a no-op since patient_main.py's _teardown_runner()
+        always calls it unconditionally."""
         pass
 
     def stop(self):
@@ -327,13 +325,12 @@ class GameRunner:
         self.game.handle_event(event)
 
     def update(self, dt: float):
-        # The LED is no longer ticked here -- it's owned by the patient
-        # process itself now and ticked once per frame from its own main
-        # loop (see patient_main.py's run()), regardless of whether a
-        # GameRunner exists at all (the idle fade has to keep animating
-        # between sessions too). Ticking it again here would double-tick
-        # it (this update() and the process's own loop both running every
-        # frame while a game is active), corrupting the blink timing.
+        # The LED is owned by the patient process itself and ticked once per
+        # frame from its own main loop (see patient_main.py's run()),
+        # regardless of whether a GameRunner exists at all (the idle fade
+        # has to keep animating between sessions too). Ticking it again here
+        # would double-tick it while a game is active, corrupting the blink
+        # timing.
 
         if self._fading:
             self._fade_t += dt

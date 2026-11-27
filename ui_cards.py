@@ -101,10 +101,9 @@ def _draw_icon(surface, center, r, kind, accent, white=(255, 255, 255)):
         box.center = center
         pygame.draw.rect(surface, white, box, border_radius=max(2, int(r * 0.14)))
     else:   # "break" -- a simple resting "Zzz" glyph
-        # _font() falls back to a cached SysFont("arial", ..., bold=True)
-        # for any name it can't load as a Poppins .ttf -- same fonts as
-        # before, just going through the shared cache instead of building
-        # 3 brand-new Font objects every single frame this overlay is up.
+        # _font() falls back to a cached SysFont("arial", ..., bold=True) for
+        # any name it can't load as a Poppins .ttf, avoiding 3 brand-new Font
+        # objects every single frame this overlay is up.
         f1 = _font("arial", int(r * 0.86))
         f2 = _font("arial", int(r * 0.56))
         f3 = _font("arial", int(r * 0.36))
@@ -137,17 +136,13 @@ def draw_state_card(surface, *, title, subtitle, accent, kind="break", dim=True,
     if dim:
         surface.blit(_get_dim_overlay(W, H), (0, 0))
 
-    # Was far too wide relative to its own height (card_w up to 1.15x
-    # card_h) -- a wide-short shape like that reads as cramped top-to-bottom
-    # while wasting space left-to-right. card_w is fixed by the window size
-    # alone (never by content), so text wrapping is always the same
-    # regardless of how much vertical margin is added below -- ref_h is a
-    # FIXED reference (not the final card height) that every font size,
-    # the icon radius, and every inter-block gap scale from, so adding more
-    # top/bottom margin can never also grow the text into wrapping harder
-    # and overflowing -- it was exactly that coupling (margins and font
-    # size both tied to one growing card_h) that caused the hint line to
-    # spill past the card's own bottom edge the first time this was tuned.
+    # card_w is fixed by the window size alone (never by content), so text
+    # wrapping is always the same regardless of how much vertical margin is
+    # added below. ref_h is a FIXED reference (not the final card height)
+    # that every font size, the icon radius, and every inter-block gap scale
+    # from, so margins and font/text size are never coupled to one growing
+    # card_h -- changing margins can't also change wrapping and overflow
+    # the card.
     card_w = int(min(W * 0.52, H * 0.95))
     ref_h  = int(H * 0.56)
 

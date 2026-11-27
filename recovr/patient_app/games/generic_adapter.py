@@ -100,16 +100,14 @@ def _mask_results_buttons(game, surface):
     whichever of _results_exit_rect / _results_back_rect it uses) instead of
     a guessed screen-fraction strip -- those rects are exactly where the game
     just drew the buttons this frame, so this never drifts out of sync when a
-    game's results layout changes (a hardcoded strip previously did, landing
-    visibly off-target after the Round Complete card redesign).
+    game's results layout changes.
 
     The fill colour is SAMPLED from the pixel just above the button strip --
     i.e. the Round Complete card's own stat-row background -- rather than a
-    flat constants.get_theme()["PANEL"] guess. PANEL is pure white in Light
-    mode, which painted a visibly mismatched white rectangle over the
-    card's actual (non-white) art at that point; sampling what the game
-    itself just rendered there blends in regardless of theme or which
-    game's card is on screen."""
+    flat constants.get_theme()["PANEL"] guess, since PANEL is pure white in
+    Light mode and would mismatch the card's actual (non-white) art there.
+    Sampling what the game itself just rendered blends in regardless of
+    theme or which game's card is on screen."""
     if not getattr(game, "game_over", False):
         return
     rects = [r for r in (
@@ -150,21 +148,17 @@ def _hidden_pause_rect(game):
     at instead, so it never appears on the patient display, in ANY game
     state. Returns None only when the game has no _pause_btn_rect at all.
 
-    This used to let the game draw the button on-screen and then paint over
-    its footprint with a sampled colour. That cannot reproduce detailed
-    background art (e.g. Purrfect Feast's sky/trees): a single sampled pixel
-    flood-filled across the button's box showed up as a solid mismatched
-    rectangle in that corner. Relocating the button before the game ever
-    draws it fixes the actual rendering issue instead of covering it up.
+    Relocating the button before the game draws it (rather than painting
+    over its footprint afterward with a sampled colour) is required to not
+    corrupt detailed background art (e.g. Purrfect Feast's sky/trees): a
+    single sampled pixel flood-filled across the button's box would show up
+    as a solid mismatched rectangle in that corner.
 
-    Previously this skipped hiding during _show_instructions/game_over,
-    assuming the game's own overlay (instruction panel / results dialog)
-    would already cover it -- but those overlays are translucent (e.g.
-    _draw_results()'s alpha=185 dim), so the button showed through, dimmed
-    but clearly visible, on the Session Complete screen. Hiding it
-    unconditionally is always safe: a game that doesn't draw the button in
-    some state is unaffected, and one that does (like the results screen)
-    now has it correctly relocated off-screen in every state."""
+    Hiding is unconditional, including during _show_instructions/game_over:
+    the game's own overlays there (instruction panel / results dialog) are
+    translucent (e.g. _draw_results()'s alpha=185 dim), so a button left in
+    place would show through, dimmed but visible. A game that doesn't draw
+    the button in some state is unaffected by the unconditional hide."""
     r = getattr(game, "_pause_btn_rect", None)
     if r is None:
         return None
@@ -233,18 +227,18 @@ def make_real_adapter(game_cls):
                 stop_music()
             except Exception:
                 pass
-            # The patient side has no in-game Exit control here -- only the
+            # The patient side has no in-game Exit control -- only the
             # therapist's STOP (Session in Progress panel) can end a session
-            # mid-play -- so the original game's own
+            # mid-play -- so the game's own
             # _exit_to_game_config() -> _save_session("stopped") path (the
             # single-process app's only route to a "stopped" row) is never
-            # reached in the dual-monitor architecture. Without this, a
-            # therapist-stopped session was silently never persisted at all.
-            # Mirrors the exact game_over/_show_instructions guard every
-            # game's own exit path already uses, and calls the SAME
-            # self._save_session the "completed" path does -- so therapist
-            # attribution (self.account_id, captured once at session start)
-            # can never drift between the two outcomes.
+            # reached in the dual-monitor architecture. Without this hook, a
+            # therapist-stopped session would never be persisted. Mirrors
+            # the exact game_over/_show_instructions guard every game's own
+            # exit path already uses, and calls the SAME self._save_session
+            # the "completed" path does -- so therapist attribution
+            # (self.account_id, captured once at session start) can never
+            # drift between the two outcomes.
             if (not getattr(self, "game_over", False)
                     and not getattr(self, "_show_instructions", False)
                     and not getattr(self, "_stop_saved", False)):

@@ -1,10 +1,8 @@
 """
 Shared "target tracker" pill -- the one live progress readout every game
-shows during play (e.g. "3/15 shots", "0 sorted", "12 fed"). Originally
-reinvented per game (a plain unboxed line of text in some, a bespoke
-gradient card in others, an image-backed box using a different font in
-another), this is the single implementation now, so every game reads as
-the same interface instead of ten different ones.
+shows during play (e.g. "3/15 shots", "0 sorted", "12 fed"). One shared
+implementation, so every game's progress readout reads as the same
+interface.
 
 Usage (inside a game's draw(surface), with its own self._font_target --
 pygame.font.SysFont("monospace", 54, bold=True) -- already created in
@@ -59,14 +57,12 @@ _tutorial_badge_font = None
 
 def draw_feedback_banner(surface, feedback, font, center_pos):
     """feedback = (text, color, remaining_seconds), the exact tuple every
-    game already keeps in self.feedback (decremented once per frame, as
-    before -- this function doesn't change that data model, only how it's
-    drawn). Replaces the flat font.render()+blit() every game used to do at
-    its own feedback call-site with one shared, more impactful treatment:
-    a bordered rounded banner (border = the feedback's own color) behind
-    bold, outlined text, a continuous breathing pulse, and a fade-out over
-    the final ~0.25s of remaining_seconds -- remaining_seconds alone is
-    enough to drive the fade, no extra per-game state needed."""
+    game already keeps in self.feedback (decremented once per frame; this
+    function only changes how it's drawn, not that data model). Draws a
+    bordered rounded banner (border = the feedback's own color) behind
+    bold, outlined text, with a continuous breathing pulse and a fade-out
+    over the final ~0.25s of remaining_seconds -- remaining_seconds alone
+    is enough to drive the fade, no extra per-game state needed."""
     text, color, remaining = feedback
     if remaining <= 0:
         return

@@ -27,8 +27,8 @@
 //      number's value jumps. That is the REAL channel that finger is wired
 //      to -- it may not be C0.
 //   4. Repeat one finger at a time for Index/Middle/Ring/Pinky.
-//   5. Tell me which physical finger mapped to which channel number, and
-//      I'll fix the CH_FLEX_* defines in the real firmware to match.
+//   5. Report which physical finger maps to which channel number so the
+//      CH_FLEX_* defines in the real firmware can be updated to match.
 // =============================================================================
 
 #define MUX_SIG  2    // D0  ADC input from MUX SIG pin

@@ -89,9 +89,9 @@ class RegisterScene:
         self.font_login_ln = pygame.font.Font(_F("Lexend-Light.ttf"),       int(17 * _s))
         self.font_error    = pygame.font.Font(_F("Lexend-Light.ttf"),       int(16 * _s))
         self.font_dropdown = pygame.font.Font(_F("Lexend-Regular.ttf"),     int(18 * _s))
-        # A plain text font has no glyph for ▲/▼ (renders as an empty box --
-        # the same bug class as the old "<- Back" arrow); use a symbol font,
-        # matching scenes/therapist_dashboard.py's nav_sym/sym26.
+        # A plain text font has no glyph for ▲/▼ (renders as an empty box);
+        # use a symbol font instead, matching
+        # scenes/therapist_dashboard.py's nav_sym/sym26.
         self.font_sym      = pygame.font.SysFont("segoeuisymbol",           int(22 * _s))
 
         # Fonts for the shared draw_confirm_dialog (discard-registration /
@@ -190,7 +190,7 @@ class RegisterScene:
         return max(1, int(px * self._fs))
 
     # ------------------------------------------------------------------
-    # DESKTOP LAYOUT (unchanged from before this pass)
+    # DESKTOP LAYOUT
     # ------------------------------------------------------------------
 
     def _init_desktop_layout(self):
@@ -273,10 +273,9 @@ class RegisterScene:
 
         last_field_rect = self.fields[-1]["rect"]
         # Reserve room for a validation message ("X is required.") between
-        # the last field and the Register button -- previously the button
-        # sat only ~20px below where the message itself was drawn, so the
-        # two overlapped. Reserved unconditionally so the button/login link
-        # don't jump position when a message appears/disappears.
+        # the last field and the Register button, unconditionally, so the
+        # button/login link don't jump position when a message
+        # appears/disappears.
         self._err_msg_y = last_field_rect.bottom + int(16 * (height / 1080))
         err_block_h = self.font_error.get_height() + int(18 * (height / 1080))
         btn_y  = last_field_rect.bottom + err_block_h + int(20 * (height / 1080))
@@ -732,7 +731,7 @@ class RegisterScene:
                 surface.blit(glow, (cx - radius - 4, cy - radius - 4))
 
     # ------------------------------------------------------------------
-    # DESKTOP FORM (unchanged)
+    # DESKTOP FORM
     # ------------------------------------------------------------------
 
     def _draw_form(self, surface):
@@ -950,17 +949,15 @@ class RegisterScene:
 
     def _sq_popup_scroll_handle_event(self, event):
         """Touch-drag scroll for an OPEN dropdown's own option popup.
-        Previously only MOUSEWHEEL was handled for this popup -- touch
-        devices had no way to scroll it at all, since the existing
-        FINGERDOWN/FINGERMOTION/FINGERUP handling always drove the OUTER
-        column's own scroll (self._sq_scroll) with no awareness that a
-        dropdown might be open on top of it. Takes priority over that outer
-        scroll and the generic tap dispatch whenever a dropdown is open and
-        the touch lands inside its popup. The UP resolve also checks the
-        net down->up displacement directly (not just whatever a MOTION
-        event already flagged), since some touch drivers only report the
-        down and up positions with no motion samples in between -- same
-        fix as scenes/login.py's own profile-grid scroll.
+        Takes priority over the outer column's own scroll (self._sq_scroll)
+        and the generic tap dispatch whenever a dropdown is open and the
+        touch lands inside its popup -- otherwise FINGERDOWN/FINGERMOTION/
+        FINGERUP would drive the OUTER column's own scroll with no
+        awareness that a dropdown is open on top of it. The UP resolve also
+        checks the net down->up displacement directly (not just whatever a
+        MOTION event already flagged), since some touch drivers only
+        report the down and up positions with no motion samples in between
+        -- same approach as scenes/login.py's own profile-grid scroll.
         Returns (consumed, result)."""
         sf = self._sq_open_dropdown()
         if sf is None:
@@ -1375,11 +1372,10 @@ class RegisterScene:
     # ------------------------------------------------------------------
 
     def _draw_back_link(self, surface):
-        """Text-only Back button (same fix as the Login page): the old label
-        was the literal string "<- Back" using U+2190, a glyph Lexend-Light
-        has no shape for -- it rendered as an empty box next to the word.
-        No icon at all now; a real bordered pill matching the dashboard's
-        Back control, with the hit rect equal to what's drawn."""
+        """Text-only Back button -- Lexend-Light has no glyph for U+2190,
+        so an arrow character would render as an empty box next to the
+        word. A real bordered pill matching the dashboard's Back control,
+        with the hit rect equal to what's drawn."""
         r = self._back_rect()
         hov = self.back_hovered
         pygame.draw.rect(surface, (255, 255, 255) if not hov else (236, 243, 252),
@@ -1391,9 +1387,8 @@ class RegisterScene:
         surface.blit(s, s.get_rect(center=r.center))
 
     def _back_rect(self):
-        """Hit area == the drawn pill (previously started at x=0 while the
-        text was drawn at x=30, so the tappable area didn't match what was
-        visible)."""
+        """Hit area == the drawn pill, so the tappable area always matches
+        what's visible."""
         bw = max(self._tt(120), self.font_back.size("Back")[0] + self._sc(40))
         bh = self._tt(48)
         m  = self._sc(16)

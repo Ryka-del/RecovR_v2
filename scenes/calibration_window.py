@@ -240,8 +240,7 @@ RECORD_DURATION   = 3.0
 # 5 full seconds, matching the visible 5-4-3-2-1 countdown and the spoken
 # "keep your hand relaxed" cue -- both sized so the patient has real time to
 # settle into a resting position before baseline sampling begins (see
-# _draw_prep/_draw_baseline below; was a rushed 2.0s with no lead-in before
-# this revision).
+# _draw_prep/_draw_baseline below).
 BASELINE_DURATION = 5.0
 COUNTDOWN_STEPS   = 3
 TRIAL_DONE_PAUSE  = 1.5
@@ -269,8 +268,7 @@ DIRECTION_RETRY_DURATION = 4.0
 # preset card is picked and to restore via "Reset to Preset". "key" is the
 # calibration_result["params"] key the game checks (falling back to its own
 # difficulty dict when absent, so normal non-customized sessions are
-# unaffected). All 10 games now have a schema entry here (Whack-a-Mole was
-# the one gap, now filled -- see wm_* below). Every "Required Grip Strength"/
+# unaffected). Every game has a schema entry here. Every "Required Grip Strength"/
 # "Required Finger Flexion"/"Required Wrist Rotation" row across every game
 # uses the same Easy=30%/Medium=70%/Hard=90% anchor: the % a patient must
 # reach, relative to THEIR OWN calibrated resting->peak range, not a raw
@@ -402,11 +400,10 @@ GAME_PARAM_SCHEMA = {
         {"key": "sa_goal",       "label": "Target Score",           "unit": "pts", "is_goal": True,
          "min": 10,  "max": 400,  "step": 5,
          "presets": {"Easy": 80,    "Medium": 120,  "Hard": 160}},
-        # Aim Tolerance (the hold-still precision radius) is now a frozen,
-        # non-difficulty constant -- see steady_aim.py's AIM_TOLERANCE_R --
-        # the spec names exactly one Advanced Settings parameter for this
-        # game (Required Wrist Rotation), so this row is intentionally
-        # removed rather than left scaling alongside it.
+        # Aim Tolerance (the hold-still precision radius) is a frozen,
+        # non-difficulty constant -- see steady_aim.py's AIM_TOLERANCE_R.
+        # The spec defines exactly one Advanced Settings parameter for this
+        # game (Required Wrist Rotation), so no row for it exists here.
         {"key": "sa_cursor_spd", "label": "Cursor Sensitivity",    "unit": "",
          "min": 500, "max": 1500, "step": 10,
          "presets": {"Easy": 900,   "Medium": 1000, "Hard": 1100}},
@@ -427,10 +424,9 @@ GAME_PARAM_SCHEMA = {
         {"key": "ftc_move_deadzone",  "label": "Wrist Movement Sensitivity","unit": "%",
          "min": 2,    "max": 25,   "step": 1, "scale": 0.01,
          "presets": {"Easy": 5,     "Medium": 8,    "Hard": 12}},
-        # Presets now match ZONE_TOLERANCE in feed_the_cat.py exactly (they
-        # had drifted apart: 150/110/75 here vs. the game's own 180/135/95 --
-        # the game dict is the real fallback actually read, so this was
-        # silently wrong before).
+        # Presets match ZONE_TOLERANCE in feed_the_cat.py exactly -- the
+        # game dict is the real fallback actually read, so these must stay
+        # in sync with it.
         {"key": "ftc_zone_tolerance", "label": "Positioning Tolerance",     "unit": "px",
          "min": 40,   "max": 220,  "step": 5,
          "presets": {"Easy": 180,   "Medium": 135,  "Hard": 95}},
@@ -460,8 +456,8 @@ GAME_PARAM_SCHEMA = {
         {"key": "ptg_water_hold",      "label": "Watering Hold Duration",    "unit": "s",
          "min": 0.5,  "max": 3.0,  "step": 0.1,
          "presets": {"Easy": 0.8,   "Medium": 1.2,  "Hard": 1.6}},
-        # NEW -- watering is now gated by wrist rotation (a pouring-motion
-        # gesture), not grip; grip's role narrows to can/seed pickup. See
+        # Watering is gated by wrist rotation (a pouring-motion gesture),
+        # not grip; grip is used only for can/seed pickup. See
         # games/plant_the_garden.py's on_enter()/_update_watering().
         {"key": "ptg_wrist_requirement", "label": "Required Wrist Rotation", "unit": "%",
          "min": 10,   "max": 95,   "step": 1, "scale": 0.01,
@@ -602,18 +598,15 @@ class CalibrationWindow:
         self.calibration_result = None
 
         # ── touch-aware scaling ─────────────────────────────────────────
-        # Every size/position in this window used to scale off a flat
-        # H/1080 (or W/1920) ratio, which is correct for a 1080p desktop
-        # window but makes everything roughly 44% of its intended size on
-        # the actual 800x480 touch panel this runs on in production --
-        # that undersizing was the root cause of the "too small to read"
-        # complaints. Below a touch-sized window, scale against a much
-        # smaller reference (400 tall / 680 wide) instead of 1080/1920 --
-        # deliberately well past a bare 2x fix (an earlier pass at 512/854
-        # still read as too small on the physical 7" panel), capped so a
-        # taller touch window doesn't blow up disproportionately; a genuine
-        # desktop-sized window (height > 820) keeps the original H/1080
-        # behaviour untouched.
+        # A flat H/1080 (or W/1920) ratio is correct for a 1080p desktop
+        # window but renders everything roughly 44% of its intended size on
+        # the actual 800x480 touch panel this runs on in production. Below a
+        # touch-sized window, scale against a much smaller reference (400
+        # tall / 680 wide) instead of 1080/1920 -- deliberately well past a
+        # bare 2x fix, since the physical 7" panel still reads too small at
+        # that scale -- capped so a taller touch window doesn't blow up
+        # disproportionately; a genuine desktop-sized window (height > 820)
+        # keeps the original H/1080 behaviour.
         self._touch = height <= 820
         self._FS    = min(height / 400.0, 1.7) if self._touch else (height / 1080.0)
         self._FSW   = min(width  / 680.0, 1.7) if self._touch else (width  / 1920.0)
@@ -657,11 +650,11 @@ class CalibrationWindow:
         self._adv_open_rect     = pygame.Rect(0, 0, 1, 1)   # "Advanced Settings" button (results screen)
 
         # ── Close confirmation overlay (see _draw_close_confirm) ────────
-        # Clicking the Close button (self._cancel_rect) no longer exits
-        # calibration immediately -- it opens this confirmation first.
-        # Confirming sets self.cancelled (the same flag/behavior as before);
-        # Cancel just dismisses the overlay, leaving the in-progress
-        # calibration's phase/trials/baseline untouched.
+        # Clicking the Close button (self._cancel_rect) opens this
+        # confirmation instead of exiting calibration immediately.
+        # Confirming sets self.cancelled; Cancel just dismisses the overlay,
+        # leaving the in-progress calibration's phase/trials/baseline
+        # untouched.
         self._close_confirm_open      = False
         self._close_confirm_yes_rect  = pygame.Rect(0, 0, 1, 1)
         self._close_confirm_no_rect   = pygame.Rect(0, 0, 1, 1)
@@ -1368,14 +1361,14 @@ class CalibrationWindow:
         Direction-independent: if avg reads BELOW baseline (this sensor's
         raw value decreases when flexed), the threshold is placed the same
         fraction of the way BELOW baseline instead of collapsing to exactly
-        baseline -- the old `span <= 0 -> return baseline` branch made a
-        decreasing-direction sensor's calibrated threshold equal to its own
-        resting value, which raw could never cross while flexed (permanent
-        "Idle"). This value is still saved/shown for display (Results
-        screen "Active threshold", saved DB row) -- see games/whack_mole.py
-        etc. for the runtime path, which now computes its own
-        direction-independent percentage directly from baseline/average
-        instead of comparing raw against this single scalar."""
+        baseline -- collapsing to baseline would make a decreasing-direction
+        sensor's threshold equal to its own resting value, which raw could
+        never cross while flexed (permanent "Idle"). This value is still
+        saved/shown for display (Results screen "Active threshold", saved DB
+        row) -- see games/whack_mole.py etc. for the runtime path, which
+        computes its own direction-independent percentage directly from
+        baseline/average instead of comparing raw against this single
+        scalar."""
         span = avg - baseline
         sign = 1.0 if span >= 0 else -1.0
         span = abs(span)
@@ -1386,11 +1379,11 @@ class CalibrationWindow:
     def _enter_results(self):
         self.phase = "results"
         self._results_scroll_y = 0
-        # Recommended difficulty: new logic (none existed before) -- how far
-        # through the sensor's own 0-1 range the patient's average trial
-        # reached. Low average -> limited strength/range -> Easy; high
-        # average -> strong/full range -> Hard. Simple, explainable, and
-        # driven entirely by the real calibration data, never hardcoded.
+        # Recommended difficulty is based on how far through the sensor's
+        # own 0-1 range the patient's average trial reached. Low average ->
+        # limited strength/range -> Easy; high average -> strong/full range
+        # -> Hard. Simple, explainable, and driven entirely by the real
+        # calibration data, never hardcoded.
         self.recommended_preset = self._recommend_difficulty()
         self._apply_preset(self.recommended_preset)
 
@@ -1567,8 +1560,9 @@ class CalibrationWindow:
             # _normalize_grip/_normalize_tilt (see games/*.py) unchanged --
             # those already compute (raw - rest) / (mx - rest) /
             # (raw - wmin) / (wmax - wmin); plugging the real measured
-            # baseline in here (instead of the old hardcoded 0.0/symmetric
-            # range) is the only change those formulas need.
+            # baseline in here is all those formulas need to use the
+            # patient's own calibration instead of a hardcoded 0.0/symmetric
+            # range.
             if sensor_type == "Grip Strength":
                 extra["grip_rest"] = baseline
                 extra["grip_max"]  = max(avg, baseline + 0.05)
@@ -1700,17 +1694,17 @@ class CalibrationWindow:
                                          top_h // 2 - gn_s.get_height() // 2))
         else:
             if self._finger_group_active:
-                # All 5 fingers calibrate together as ONE step now (see
+                # All 5 fingers calibrate together as ONE step (see
                 # _finish_finger_group) -- "(1 of 5)" would misreport it as
                 # 5 separate sequential passes.
                 title_txt = "Sensor Calibration — All Finger Flex Sensors"
             else:
-                # A per-finger pass that fell back to the old one-at-a-time
-                # path (see _is_finger_group_start) still used the SPECIFIC
-                # finger's own sensor_name here (e.g. "Pinky Flex Sensor"),
-                # which read as a confusing/unexpected label -- generic
-                # "Flex Sensors" instead, consistent with the grouped
-                # path's own "All Finger Flex Sensors" title.
+                # A per-finger pass that falls back to the one-at-a-time
+                # path (see _is_finger_group_start) uses the generic "Flex
+                # Sensors" label rather than the SPECIFIC finger's own
+                # sensor_name (e.g. "Pinky Flex Sensor"), which would read
+                # as a confusing/unexpected label -- consistent with the
+                # grouped path's own "All Finger Flex Sensors" title.
                 sensor_label = ("Flex Sensors" if self.game_type in _FINGER_FLEX_KEYS
                                 else self.cfg['sensor_name'])
                 title_txt = f"Sensor Calibration — {sensor_label}"
@@ -1772,12 +1766,10 @@ class CalibrationWindow:
             "advanced":     self._draw_advanced_settings,
         }.get(self.phase, lambda s, a, c: None)(surface, content, C)
 
-        # Controller (BLE) status -- same source/labels/size/design as
-        # before, just relocated from the header to the lower-right corner
-        # of the screen (per request) instead of being reserved space next
-        # to the title. Drawn after the phase content (not inside the top
-        # bar) so it stays on top of whatever that phase renders, same as
-        # the close-confirmation overlay below.
+        # Controller (BLE) status, shown in the lower-right corner of the
+        # screen. Drawn after the phase content (not inside the top bar) so
+        # it stays on top of whatever that phase renders, same as the
+        # close-confirmation overlay below.
         ctrl_w = self._scw(150)
         self._draw_controller_status(surface, W - self._scw(20), H - self._sc(24), ctrl_w, C)
 
@@ -1928,11 +1920,10 @@ class CalibrationWindow:
         surface.blit(count_s, count_s.get_rect(midtop=(lx + rw // 2, cy)))
         cy += count_s.get_height()
 
-        # No countdown/progress-bar readout below the card any more (removed
-        # per spec) -- the card is taller instead, reclaiming that freed
-        # space so "Resting Reading" has real room rather than leaving it
-        # empty. The 5-4-3-2-1 digit above (self.baseline_t-driven, same as
-        # before) is the only countdown shown on this screen now.
+        # No countdown/progress-bar readout below the card -- it's taller
+        # instead, giving "Resting Reading" real room rather than leaving it
+        # empty. The 5-4-3-2-1 digit above (self.baseline_t-driven) is the
+        # only countdown shown on this screen.
         card_h = self._sc(110)
         live_r = pygame.Rect(lx, cy, rw, card_h)
         self._draw_reading_card(surface, live_r, C, "Resting Reading",
@@ -2067,11 +2058,11 @@ class CalibrationWindow:
         """Flow layout (each row positioned from the actual rendered height
         of the row above it, not a fixed design-space offset table) so this
         never depends on hand-tuned constants staying in sync with the
-        current font/card sizes -- it was exactly that kind of drift (fixed
-        offsets calibrated for a smaller scale) that caused content to
-        overflow the bottom of the 800x480 panel before. Live Reading /
-        Peak Reading sit side by side (not stacked) specifically to use
-        this screen's generous WIDTH and ease the tight HEIGHT budget."""
+        current font/card sizes -- fixed offsets calibrated for a smaller
+        scale risk overflowing the bottom of the 800x480 panel. Live
+        Reading / Peak Reading sit side by side (not stacked) specifically
+        to use this screen's generous WIDTH and ease the tight HEIGHT
+        budget."""
         W, H = self.W, self.H
         cx   = area.centerx
         lx   = self._scw(40)
@@ -2298,16 +2289,14 @@ class CalibrationWindow:
         y += ban_h + u(16)
 
         # ── B. Calibration Results card(s) ──────────────────────────────
-        # Single-sensor games (len(self.game_types) == 1), AND Whack-a-Mole/
-        # Tile Rush's 5-same-type finger group ALONE (game_types is exactly
-        # the 5 _FINGER_FLEX_KEYS, no other category): one card, exactly as
-        # before -- deliberately UNCHANGED, see _multi_card_eligible below.
+        # Single-sensor games (len(self.game_types) == 1): one card, see
+        # _multi_card_eligible below.
         #
         # Multi-CATEGORY games (Garden Wonders/Purrfect Feast -- game_types
-        # drawn from Grip Strength/Finger Flexion (now, for Garden Wonders,
-        # its own 5-finger group)/Wrist Rotation): self.game_type/self.cfg/
+        # drawn from Grip Strength/Finger Flexion (for Garden Wonders, its
+        # own 5-finger group)/Wrist Rotation): self.game_type/self.cfg/
         # self.trial_results only ever reflect the LAST sensor calibrated,
-        # so showing just this one card silently hid every other sensor's
+        # so showing just this one card would hide every other sensor's
         # results -- _draw_multi_sensor_results below instead loops
         # self.sensor_results, which has a complete, correctly shaped entry
         # for every sensor in self.game_types. _collapse_finger_group folds
@@ -2316,28 +2305,25 @@ class CalibrationWindow:
         # Grip + 5 fingers + 1 Wrist) is recognized as the same 3 categories
         # this section already groups -- Whack-a-Mole/Tile Rush's 5-ENTRIES-
         # ALONE list collapses to a single "Finger Flexion" placeholder
-        # (len 1, not > 1) -- that used to exclude them from this path
-        # entirely, silently falling back to the old single-sensor card
-        # below (self.game_type/self.trial_results, which after a live run
-        # only ever reflect whichever finger was calibrated LAST -- e.g.
-        # "Pinky Flex Sensor (5 of 5)" showing just Pinky's own result).
-        # _draw_finger_group_card already handles this exact shape
-        # correctly (it reads every one of the 5 fingers' own
-        # self.sensor_results entry independently); it just was never
-        # reached for this case. Explicitly including it here fixes that
-        # without touching the Garden Wonders multi-category path at all.
+        # (len 1, not > 1), so _is_finger_group_alone is checked explicitly
+        # below rather than relying on the len > 1 test, which would
+        # otherwise route them to the single-sensor card below instead --
+        # that card only ever shows self.game_type/self.trial_results, i.e.
+        # whichever finger was calibrated LAST (e.g. "Pinky Flex Sensor (5
+        # of 5)" showing just Pinky's own result). _draw_finger_group_card
+        # instead reads every one of the 5 fingers' own self.sensor_results
+        # entry independently, showing all 5 correctly.
         _collapsed = self._collapse_finger_group(self.game_types)
         _is_finger_group_alone = (_collapsed == ["Finger Flexion"])
         _multi_card_eligible = _is_finger_group_alone or (
             len(_collapsed) > 1 and all(t in self._MULTI_RESULTS_HEADING for t in _collapsed))
         if not _multi_card_eligible:
-            # +20 over the original 230 -- headroom for the "Resting baseline
-            # removed" line below, but that line only actually draws when
-            # baseline > 0 -- checked here too (not just where it's drawn) so
-            # the card is only grown by the extra line's real height when that
-            # line is actually going to be there, instead of a flat guess that
-            # didn't leave quite enough room and let the line run past the
-            # card's own bottom edge.
+            # Height is sized for the base card content, plus extra headroom
+            # when the "Resting baseline removed" line below actually draws
+            # (only when baseline > 0, checked here too, not just where it's
+            # drawn) so the card is grown by exactly that line's real height
+            # instead of guessing and letting the line run past the card's
+            # own bottom edge.
             _baseline_for_sizing = self.sensor_baseline.get(self.game_type, 0.0)
             res_h = u(250) + (u(30) if _baseline_for_sizing > 0 else 0)
             res_r = pygame.Rect(lx, y, rw, res_h)
@@ -2415,10 +2401,10 @@ class CalibrationWindow:
         # so next frame's clamping/scrollbar math is correct), then restore
         # the surface's own clip and draw the fixed footer below it.
         # content_top already has -self._results_scroll_y baked in, so
-        # y - content_top is already scroll-independent on its own; adding
-        # scroll_y again here (an earlier bug) made content_h grow by
-        # whatever it was just scrolled by, compounding on every frame the
-        # view wasn't at the very top.
+        # y - content_top is already scroll-independent on its own --
+        # adding scroll_y again here would make content_h grow by whatever
+        # it was just scrolled by, compounding every frame the view wasn't
+        # at the very top.
         self._results_content_h = y - content_top
         surface.set_clip(prev_clip)
 
@@ -2500,11 +2486,11 @@ class CalibrationWindow:
         """One combined card for a 5-finger flex group. Shared by two
         callers (see _draw_multi_sensor_results): Garden Wonders, where
         this card is one of several categories (Grip/Fingers/Wrist) and
-        keeps its original "Finger Flexion" header to match the others --
-        and Whack-a-Mole/Tile Rush, whose game_types is ONLY these 5
-        entries with nothing else, which now passes header="Flex Sensors"
-        instead (see task C) since there's no other category it needs to
-        read consistently alongside. Each of the 5 rows comes from that
+        keeps the "Finger Flexion" header to match the others -- and
+        Whack-a-Mole/Tile Rush, whose game_types is ONLY these 5 entries
+        with nothing else, which passes header="Flex Sensors" instead
+        since there's no other category it needs to read consistently
+        alongside. Each of the 5 rows comes from that
         finger's own self.sensor_results entry, populated by
         _finish_finger_group -- never a shared/averaged value. Height is
         measured from the real wrapped lines before anything is drawn,
@@ -2585,11 +2571,11 @@ class CalibrationWindow:
         that sensor's own self.sensor_results entry -- never
         self.trial_results/self.sensor_baseline/self.game_type, which after
         a multi-sensor run only ever reflect whichever sensor was
-        calibrated LAST (the bug this replaces: Results silently showed
-        only that one sensor). Height is measured from each card's own real
-        content (including the wrapped Finger Flexion gameplay note)
-        before anything is drawn, so nothing here can overflow its own
-        card. Returns the y position immediately below the last card."""
+        calibrated LAST, which would otherwise show only that one sensor.
+        Height is measured from each card's own real content (including the
+        wrapped Finger Flexion gameplay note) before anything is drawn, so
+        nothing here can overflow its own card. Returns the y position
+        immediately below the last card."""
         u = self._sc
         f_small = self.fnt["small"]
         note_max_w = rw - u(28)
@@ -2610,7 +2596,7 @@ class CalibrationWindow:
             # alongside Grip/Wrist -- keeps the "Finger Flexion" header to
             # read consistently next to those) and Whack-a-Mole/Tile Rush
             # (game_types is ONLY these 5 entries, nothing else -- uses the
-            # generic "Flex Sensors" header instead, see task C).
+            # generic "Flex Sensors" header instead).
             if self.game_types[idx:idx + n_grp] == _FINGER_FLEX_KEYS:
                 header = "Finger Flexion" if n_types > n_grp else "Flex Sensors"
                 y = self._draw_finger_group_card(surface, lx, y, rw, C, header=header)
@@ -2689,12 +2675,11 @@ class CalibrationWindow:
     def _draw_difficulty_cards(self, surface, lx, ry, rw, C):
         """Easy/Medium/Hard cards. Height is measured from the tallest
         card's own content (name + optional RECOMMENDED badge + the FULL
-        description, never truncated to a fixed line count -- that
-        previously silently dropped whatever didn't fit in 2 lines, e.g.
-        Hard's description cutting off mid-word) and shared by all 3, so
-        a short card isn't cramped and a long one isn't clipped. Returns
-        the row height actually used, so the caller can lay out whatever
-        comes next at the right y."""
+        description, never truncated to a fixed line count -- a truncated
+        description could cut off mid-word) and shared by all 3, so a short
+        card isn't cramped and a long one isn't clipped. Returns the row
+        height actually used, so the caller can lay out whatever comes next
+        at the right y."""
         n   = len(PRESET_ORDER)
         gap = self._scw(12)
         cw  = (rw - gap * (n - 1)) // n
@@ -2786,7 +2771,7 @@ class CalibrationWindow:
     def _draw_preset_summary(self, surface, lx, cy, rw, C):
         """Section D/E: EVERY setting the therapist can actually customize
         for this game + the selected difficulty preset -- not just the
-        game's own GAME_PARAM_SCHEMA rows (as before), but also the generic
+        game's own GAME_PARAM_SCHEMA rows, but also the generic
         Difficulty/Speed/Session Duration preset fields and the Activation
         Threshold % (the stepper in Advanced Settings), grouped into
         category headings so a Multi-Skill game's settings are clearly

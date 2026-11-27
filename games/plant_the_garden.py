@@ -73,15 +73,13 @@ FLEX_THRESHOLD  = {"Easy": 0.30, "Medium": 0.70, "Hard": 0.90}   # fallback flex
 # Per-finger press/release hysteresis margin -- same value and mechanism as
 # games/whack_mole.py's own RELEASE_MARGIN: a finger must drop back below
 # press_threshold[i] * this (not just below press_threshold[i] itself)
-# before it can register another press. Not used by anything before this
-# change -- the old single shared flex_raw/flex_threshold check released
-# as soon as the value dropped below the press threshold, with no margin.
+# before it can register another press.
 FLEX_RELEASE_MARGIN = 0.65
 MOVE_DEADZONE   = {"Easy": 0.05, "Medium": 0.08, "Hard": 0.12}   # wrist tilt magnitude before the hand moves
-# Watering is gated by WRIST ROTATION now, not grip (grip's role narrows to
-# can pickup only -- see on_enter()/update()/_update_watering()) -- a
-# calibration-relative magnitude of horizontal wrist tilt, same 30/70/90%
-# anchor, sustained for `water_hold` seconds to register one watering.
+# Watering is gated by wrist rotation, not grip (grip only gates can pickup
+# -- see on_enter()/update()/_update_watering()) -- a calibration-relative
+# magnitude of horizontal wrist tilt, same 30/70/90% anchor, sustained for
+# `water_hold` seconds to register one watering.
 WRIST_REQUIREMENT = {"Easy": 0.30, "Medium": 0.70, "Hard": 0.90}
 # px radius of every interaction zone. Unlike Purrfect Feast's 3 zones spread
 # across the whole screen, this game packs 5 plots PLOT_COUNT-wide into the
@@ -142,31 +140,23 @@ def _pick_random_plant():
 # on-screen target box each sprite is cropped-to-content and fit within
 # (aspect ratio preserved, never stretched) -- see _load_image_fit.
 HAND_BOX   = (420, 620)
-CRATE_BOX  = (260, 130)   # the 5 new crate sprites are much wider/shallower
-                          # than the old single crate -- width-constrained at
-                          # every one of their aspect ratios, so all 5 render
-                          # at the same 260px width regardless of each one's
-                          # own height, per "maintain consistent visual sizes
-                          # ... while respecting differences in the artwork."
+CRATE_BOX  = (260, 130)   # width-constrained at each sprite's own aspect
+                          # ratio, so all 5 crates render at the same 260px
+                          # width regardless of each one's own height --
+                          # keeps visual sizes consistent across the artwork.
 SOURCE_BOX = (230, 300)
 CAN_BOX    = (260, 300)
-# Narrowed from (190, 240) -- at that width every grown-plant sprite (all
-# width-constrained, like the crates above) rendered flush with or past
-# the crate's own soil-trapezoid side edges at the vine/bush stage (grapes
-# and starfruit worst, but even cucumber brushed it) -- measured directly
-# against each crate's own soil region (colour-sampled, not guessed) and
-# verified by rendering all 11 plant sprites (new/small/all 9 grown) on
-# all 5 crate sprites: this size clears every one with real margin.
+# Sized (and verified by rendering all 11 plant sprites on all 5 crates) so
+# every grown-plant sprite, width-constrained like the crates above, stays
+# within each crate's own soil-trapezoid region with real margin -- the
+# vine/bush-stage plants (grapes, starfruit) are the widest cases.
 PLANT_BOX  = (150, 190)
 WATER_IND_BOX = (80, 80)
 
 GROUND_Y   = int(GAME_H * 0.82)   # seed source / watering can rest here
 # The 5 crates (+ whatever is planted in them + their water-needed indicator)
-# sit between the original too-low position and the previous revision's
-# too-high one -- a ~46px downward move from the prior 0.64, matching the
-# therapist's "30-50px at 1650x927" starting-point request scaled to this
-# game's actual 1920x1080 canvas (40px at 927 -> ~46px at 1080). The seed
-# source/watering can keep GROUND_Y unchanged.
+# sit higher than the seed source/watering can, per the therapist's
+# requested vertical placement scaled to this game's 1920x1080 canvas.
 CRATE_GROUND_Y = int(GAME_H * 0.683)
 # Where a plant anchors within a crate -- the soil surface, not the crate
 # sprite's own bottom edge. The new crates are drawn at a shallow angle (soil
@@ -234,9 +224,8 @@ PLANT_TOLERANCE     = 60   # px of forgiveness around each crate's own soil regi
 # sharply reduced one approaching from the right -- the hand has to
 # actually move in past the can from its left side to grab it (even
 # comfortably past, not merely adjacent), rather than drifting near it
-# from either direction. Pushed further per spec: the right side keeps
-# only a sliver (never quite zero, so standing exactly on CAN_X still
-# always works), with that allowance moved onto the left side instead.
+# from either direction. The right side keeps only a sliver (never quite
+# zero, so standing exactly on CAN_X still always works).
 CAN_GRAB_TOLERANCE_LEFT_SCALE  = 1.8
 CAN_GRAB_TOLERANCE_RIGHT_SCALE = 0.05
 
@@ -396,11 +385,9 @@ class PlantTheGardenGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # release_threshold. Falls back to the Advanced Settings "Required
         # Finger Flexion" override (ptg_flex_threshold) / difficulty
         # default for any finger never actually calibrated (e.g.
-        # calibration skipped, or an older single-channel "Finger Flexion"
-        # record from before this change -- that key is simply absent from
-        # "sensors" now, so .get() below falls through to the default
-        # exactly as if that finger had never been calibrated at all; it is
-        # never misread as a complete 5-finger record).
+        # calibration skipped, or a record with no per-finger "sensors"
+        # key at all -- .get() below falls through to the default exactly
+        # as if that finger had never been calibrated).
         # Direction-independent: a flex sensor's raw reading may DECREASE,
         # not increase, when the finger bends (never verified in hardware).
         # A CALIBRATED finger's "how flexed is it right now" is therefore
@@ -409,7 +396,7 @@ class PlantTheGardenGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # (see _finger_pct()) instead of comparing raw ADC values directly
         # against a single precomputed raw threshold. An UNCALIBRATED
         # finger has no baseline/peak to compute a percentage from, so it
-        # keeps the exact raw-value comparison this always used.
+        # keeps a plain raw-value comparison instead.
         sensors_cal   = self.cal.get("sensors", {})
         threshold_pct = self.cal.get("params", {}).get(
             "threshold_pct", FLEX_THRESHOLD[self.difficulty] * 100)
@@ -537,9 +524,8 @@ class PlantTheGardenGame(SessionModeMixin, FatigueMixin, BaseScreen):
             self.hand_max_x = HAND_MAX_X
         # Floored at CAN_X - self._hand_min_x (+10 margin): on Hard,
         # zone_tolerance is small enough that CAN_GRAB_TOLERANCE_LEFT_SCALE
-        # alone no longer reached all the way out to hand_x==0 -- the one
-        # guarantee above's whole point was that hand_x could always reach
-        # that far, so this floor keeps it true at every difficulty
+        # alone would not reach all the way out to hand_x==0 -- this floor
+        # guarantees hand_x==0 can always grab the can, at every difficulty,
         # regardless of how the per-difficulty scale happens to come out.
         self.can_grab_tolerance_left  = max(self.zone_tolerance * CAN_GRAB_TOLERANCE_LEFT_SCALE,
                                              CAN_X - self._hand_min_x + 10)
@@ -876,14 +862,12 @@ class PlantTheGardenGame(SessionModeMixin, FatigueMixin, BaseScreen):
         if self.fatigue_paused or self.paused:
             return
 
-        # _session_tick() itself is still called HERE (same point as
-        # before, so elapsed/time_left advance on the exact same schedule
-        # they always have) but acting on it -- actually ending the
-        # session -- is deferred to the end of the function (or, in the
-        # cycle-pause branch below, to right before ITS OWN early return)
-        # so Timed Mode's duration expiring on the exact same frame as a
-        # plant finishing growing can never preempt that already-earned
-        # point, the way checking (and returning) immediately here used to.
+        # _session_tick() advances elapsed/time_left here, but acting on
+        # it -- actually ending the session -- is deferred to the end of
+        # the function (or, in the cycle-pause branch below, to right
+        # before ITS OWN early return), so Timed Mode's duration expiring
+        # on the exact same frame as a plant finishing growing can never
+        # preempt that already-earned point.
         time_up = self._session_tick(dt)
 
         if self._cycle_pause_t > 0:

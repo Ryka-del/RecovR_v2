@@ -74,18 +74,12 @@ TEST_RAMP_RATE     = 0.5  # normalized units/second (-1..1 range) -- Keyboard Te
 # calibrated-degree units "aligned" already uses) before hold-time progress
 # accumulates at all -- see update()'s "rotated_enough" check.
 #
-# This used to be measured against a flat % of the patient's calibrated
-# resting->peak range instead (independent of any given round's actual
-# target) -- on Medium/Hard that floor (63deg / 81deg equivalent) ended up
-# numerically higher than TARGET_ANGLE_RANGE ever rolls (max 34deg / 42deg),
-# so "aligned" and "rotated enough" could never both be true at once: the
-# hold timer would never start no matter how precisely the patient held the
-# arrow on the target. Deriving the requirement from each round's own
-# target_angle instead guarantees it's always satisfiable exactly at
-# alignment (requiring pct <= 100% of the target's own magnitude can never
-# exceed the target itself), while still making higher difficulties demand
-# getting closer to the FULL target rotation rather than just skimming the
-# tolerance band.
+# Deriving the requirement from each round's own target_angle (rather than
+# a flat % of the patient's calibrated resting->peak range) guarantees it's
+# always satisfiable exactly at alignment (requiring pct <= 100% of the
+# target's own magnitude can never exceed the target itself), while still
+# making higher difficulties demand getting closer to the FULL target
+# rotation rather than just skimming the tolerance band.
 WRIST_REQUIREMENT = {"Easy": 0.30, "Medium": 0.70, "Hard": 0.90}
 
 # Magnitude range (degrees) a turn's target angle is rolled from -- always
@@ -94,8 +88,8 @@ WRIST_REQUIREMENT = {"Easy": 0.30, "Medium": 0.70, "Hard": 0.90}
 TARGET_ANGLE_RANGE = {"Easy": (15, 28), "Medium": (20, 34), "Hard": (26, 42)}
 MAX_DISPLAY_ANGLE  = 90.0   # the gauge's own +/-90 degree span; also the degrees-per-normalized-unit scale
 
-# Turns required per lock, by TYPE only -- no longer difficulty-scaled (the
-# patient's effort is now tuned via WRIST_REQUIREMENT/TOLERANCE instead).
+# Turns required per lock, by TYPE only -- not difficulty-scaled; the
+# patient's effort is tuned via WRIST_REQUIREMENT/TOLERANCE instead.
 TURNS_REQUIRED = {"normal": 2, "legendary": 4}
 
 LEGENDARY_CHANCE = 0.15
@@ -131,12 +125,9 @@ KEY_GEM_COLORS  = {
 }
 
 # A real door lock plate is a small fraction of the door's own size, not
-# nearly as wide as the door itself -- previous sizes (up to 320x460) read
-# as a giant fantasy padlock bolted on top of the door instead of a lock
-# the door actually has. Shrunk drastically down to roughly a normal
-# lock's proportion of the door, then nudged back up a little (keyhole
-# included, since it's a fraction of this same box) per feedback that it
-# had gone a bit too small.
+# nearly as wide as the door itself, so LOCK_BOX is sized to roughly a
+# normal lock's proportion of the door rather than a giant padlock bolted
+# on top of it (keyhole included, since it's a fraction of this same box).
 LOCK_BOX = (124, 180)
 
 # The archway opening in bg_key_and_lock.png, measured directly off the
@@ -168,8 +159,7 @@ LOCK_X = GAME_W // 2
 # it. A uniform scale keeps every part's proportions/spacing consistent
 # with each other, so shrinking it further is what actually reads as
 # "compact" (a neatly smaller copy) rather than risking overlapping parts
-# that a length-only squeeze would cause. Pulled down from 0.8 per
-# feedback that the key looked messy/sprawling.
+# that a length-only squeeze would cause.
 KEY_SCALE = 0.62
 
 # _draw_key's rotation axis runs lengthwise through the key (tip to bow),
@@ -551,8 +541,7 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
             # existing angle/tolerance check rather than replacing it.
             # Compared in the same calibrated-degree units as "aligned"
             # itself (current_angle/target_angle), not a separate raw-
-            # sensor floor -- see WRIST_REQUIREMENT's own comment for why
-            # that used to make this unsatisfiable on Medium/Hard.
+            # sensor floor -- see WRIST_REQUIREMENT's own comment for why.
             required_angle = abs(self.target_angle) * self.wrist_requirement_pct
             rotated_enough = abs(self.current_angle) >= required_angle
 
@@ -580,10 +569,9 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
             self._tutorial_hints.update(self, dt)
 
         # Checked LAST, after this frame's own hold/turn logic has already
-        # run -- Timed Mode's duration expiring on the exact same frame as
-        # a completed turn must never preempt it (the old position, before
-        # that logic, could do exactly that and silently drop the final
-        # point). time_left is floored at 0 by _session_tick() itself, so
+        # run, so Timed Mode's duration expiring on the exact same frame as
+        # a completed turn can never preempt it and silently drop the final
+        # point. time_left is floored at 0 by _session_tick() itself, so
         # this still ends the session on every subsequent frame.
         if self._session_tick(dt):
             self._end_game("completed")
@@ -811,9 +799,9 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
         surface.blit(self._lock_img, self._lock_img.get_rect(center=self.lock_rect.center))
 
-    # Procedural key -- replaces the old key1/2/3/legend_key sprites so the
-    # key can show genuine foreshortening (see module docstring) instead of
-    # a rigid sprite swing. Drawn fresh every frame as plain gold shapes in
+    # Procedural key -- drawn as plain gold shapes rather than a sprite, so
+    # it can show genuine foreshortening (see module docstring) instead of
+    # a rigid sprite swing. Drawn fresh every frame in
     # the key's own LOCAL coordinates (origin = the tip, +y running down
     # the shaft toward the bow, exactly the sprites' own layout/angle), each
     # point/circle transformed by the same screen-space rule: x compresses
@@ -1008,11 +996,11 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
             a = math.radians(-90 + deg)
             return (cx + radius * math.cos(a), cy + radius * math.sin(a))
 
-        # Dark backing panel -- the dial used to sit directly on the (often
-        # busy) background art with nothing behind it; a fixed-dark card,
-        # same family as the angle panels/HUD pill elsewhere, makes the
-        # whole gauge read as one deliberate instrument instead of loose
-        # lines floating over the scene.
+        # Dark backing panel -- a fixed-dark card, same family as the angle
+        # panels/HUD pill elsewhere, so the dial doesn't sit directly on
+        # the (often busy) background art; makes the whole gauge read as
+        # one deliberate instrument instead of loose lines floating over
+        # the scene.
         pad_x, pad_top, pad_bot = 110, 95, 35
         panel = pygame.Rect(cx - r - pad_x, cy - r - pad_top, 2 * (r + pad_x), r + pad_top + pad_bot)
         panel_s = pygame.Surface(panel.size, pygame.SRCALPHA)
@@ -1021,10 +1009,10 @@ class KeyLockGame(SessionModeMixin, FatigueMixin, BaseScreen):
         pygame.draw.rect(surface, KEY_GOLD_DARK, panel, 4, border_radius=24)
 
         # Background track -- the dial's full -90..+90 sweep, drawn via the
-        # same ang_to_pt mapping as everything else on this gauge (NOT
-        # pygame.draw.arc's own angle convention, which sweeps the opposite
-        # half of the circle and used to render a disconnected sliver below
-        # the dial instead of the track actually under the numbers/needle).
+        # same ang_to_pt mapping as everything else on this gauge, NOT
+        # pygame.draw.arc's own angle convention (which sweeps the opposite
+        # half of the circle, landing a disconnected sliver below the dial
+        # instead of the track actually under the numbers/needle).
         # Gold, not a generic gray -- matches the key/lock's own metal, and
         # thick enough (18px, a dark-gold base stroke under a slightly
         # narrower bright-gold one) to read as a real dial groove.

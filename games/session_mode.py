@@ -52,9 +52,8 @@ class SessionModeMixin:
         """target_presets / duration_presets: the game's own per-difficulty
         {"Easy": .., "Medium": .., "Hard": ..} dicts. cal_goal_key: the
         Advanced Settings GAME_PARAM_SCHEMA key (e.g. "bb_goal") that can
-        override the Target Mode preset, exactly like before -- Timed Mode's
-        duration is never Advanced-Settings-overridable, matching how
-        duration worked before goal-based sessions existed."""
+        override the Target Mode preset. Timed Mode's duration is never
+        Advanced-Settings-overridable."""
         mode = data.get("session_mode") or "target"
         self.session_mode = mode if mode in ("target", "timed") else "target"
 

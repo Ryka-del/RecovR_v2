@@ -12,7 +12,7 @@ RELEASE -> READY gate.
 Input source (see _read_fingers()):
   - Keyboard Test Mode (no BLE controller connected): keys 1-5 simulate
     Thumb..Pinky independently -- held = flexed, released = relaxed.
-  - Real BLE hardware: the physical controller now has 5 independent Flex
+  - Real BLE hardware: the physical controller has 5 independent Flex
     Sensors (verified wiring, MUX C5-C9 -- see
     firmware/recovr_controller/recovr_controller.ino), read straight off
     sensors.input_handler's state["finger_flex"] -- the same source
@@ -84,11 +84,11 @@ _FLEX_TEST_KEYS = [pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5]
 # The primary difficulty axis is the required finger-flexion INTENSITY
 # (flex threshold), not reaction speed -- fall speed only varies modestly
 # across tiers so the game stays a flexion exercise, not a twitch test.
-# Per-finger calibrated press threshold now comes from the 5 independent
+# Per-finger calibrated press threshold comes from the 5 independent
 # "<Finger> Flexion" calibration passes -- same concept as games/
 # whack_mole.py's own self.press_threshold (see MULTI_SENSOR_CALIBRATION in
 # scenes/therapist_dashboard.py / SENSOR_CFG in scenes/calibration_window.py)
-# -- FLEX_THRESHOLD below is now only the per-finger fallback default for
+# -- FLEX_THRESHOLD below is only the per-finger fallback default for
 # whichever finger was never actually calibrated, exactly like
 # whack_mole.py's own DEFAULT_THRESHOLD.
 BASE_SPEED     = {"Easy": 260, "Medium": 340, "Hard": 420}   # px/s -- Tile Speed
@@ -106,18 +106,18 @@ MISS_FADE_DURATION = 0.18   # tile shrink/fade-out after a miss (no hold, no col
 
 # ── layout ───────────────────────────────────────────────────────────────
 LANE_COUNT     = 5
-LEFT_PANEL_W   = 310    # side margin (the Flexion Threshold/Combo cards that used to live here were removed)
-RIGHT_PANEL_W  = 420    # side margin (the Flex Sensor monitoring panel that used to live here was removed)
+LEFT_PANEL_W   = 310    # side margin
+RIGHT_PANEL_W  = 420    # side margin
 PLAYFIELD_X0   = LEFT_PANEL_W
 PLAYFIELD_X1   = GAME_W - RIGHT_PANEL_W
 PLAYFIELD_W    = PLAYFIELD_X1 - PLAYFIELD_X0
 LANE_W         = PLAYFIELD_W // LANE_COUNT
 PLAYFIELD_TOP  = HEADER_BOTTOM + 20
 
-# Bottom-up: a real margin below the screen edge, then a reserved row (the
-# per-lane Thumb/Index/.../Pinky labels that used to live here were
-# removed), then the tap zones, then the hit line -- each with enough
-# clearance that the fonts below can never run off-screen.
+# Bottom-up: a real margin below the screen edge, then a reserved blank
+# row (FINGER_LABEL_H -- no label is drawn there), then the tap zones,
+# then the hit line -- each with enough clearance that the fonts below
+# can never run off-screen.
 SCREEN_BOTTOM_MARGIN = 16
 FINGER_LABEL_H  = 34
 TAP_ZONE_H      = 120
@@ -235,13 +235,10 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
         self.difficulty = data.get("difficulty", "Easy")
         self.cal        = data.get("calibration", {})
 
-        # Tile Speed -- now a real Advanced Settings parameter (pt_tile_speed)
-        # that actually reaches gameplay. Previously this was unconditionally
-        # overwritten by the generic Session Details Speed dropdown
-        # (Slow/Normal/Fast), which silently made BASE_SPEED's per-difficulty
-        # values dead code -- that override is gone now, since Tile Speed is
-        # a required, independently-tunable difficulty parameter for this
-        # game specifically.
+        # Tile Speed is a real, independently-tunable Advanced Settings
+        # parameter (pt_tile_speed) that reaches gameplay directly --
+        # BASE_SPEED's per-difficulty values are only the fallback when no
+        # override is set.
         cal_params = (data.get("calibration") or {}).get("params", {})
         cal_diff   = cal_params.get("difficulty", self.difficulty)
         self.speed = cal_params.get("pt_tile_speed", BASE_SPEED[self.difficulty])
@@ -306,10 +303,9 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # PERMANENTLY FIXED mapping, independent of the patient's affected
         # hand -- the leftmost lane always requires Pinky (index 4, always
         # channel C9's data), the rightmost always requires Thumb (index 0,
-        # always C5's). This used to flip with affected hand (hand_flipped/
-        # DEFAULT_HAND, removed), which was wrong: there is one glove,
-        # never reflashed per patient, so the physical channel behind each
-        # lane never actually moves. _finger_order is its own inverse (a
+        # always C5's): there is one glove, never reflashed per patient, so
+        # the physical channel behind each lane never moves. _finger_order
+        # is its own inverse (a
         # straight reversal), so the same list converts lane-position->
         # finger AND finger->lane-position (see _try_flex_tap). Which
         # ANATOMICAL finger that represents for THIS patient is a
@@ -478,7 +474,7 @@ class PianoTilesGame(SessionModeMixin, FatigueMixin, BaseScreen):
     # ── finger input ───────────────────────────────────────────────────
 
     def _read_fingers(self):
-        """Returns (ready, values). Real BLE hardware now has 5 independent
+        """Returns (ready, values). Real BLE hardware has 5 independent
         physical Flex Sensors (see module docstring) -- read straight off
         input_handler's own state["finger_flex"], same source
         games/whack_mole.py already reads unconditionally. Test Mode (no

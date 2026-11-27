@@ -7,10 +7,8 @@ and "You are awesome!" are all baked into that image (see
 assets/images/basketball_round_complete_light.png and the attached
 round_complete_sample.png reference) -- and only needs to overlay the two
 LIVE values the art leaves blank: elapsed TIME (left side of the bottom
-panel) and the game's own SCORE/completed-count (right side). This was
-previously re-derived nearly verbatim in 8 separate games/*.py files (only
-the overlay position fractions, font, and loader function name ever
-differed); one shared implementation here instead.
+panel) and the game's own SCORE/completed-count (right side). One shared
+implementation here, used by every game.
 """
 
 import pygame
@@ -35,9 +33,8 @@ def _get_dim_overlay():
 
 def get_mono_font(size):
     """Cached bold monospace font, shared by this overlay's own number
-    labels AND every game's Again/Exit results buttons (all 10 built an
-    identical SysFont("monospace", 28, bold=True) fresh every frame the
-    results screen was up -- one cache, keyed by size, instead)."""
+    labels and every game's Again/Exit results buttons -- one cache,
+    keyed by size."""
     f = _mono_font_cache.get(size)
     if f is None:
         f = pygame.font.SysFont("monospace", size, bold=True)
@@ -79,10 +76,8 @@ def draw_round_complete_overlay(surface, *, card_prefix, duration_sec, score_tex
     surface.blit(card, cr)
 
     num_col = (255, 255, 255) if not is_dark_mode() else (20, 80, 150)
-    # Significantly larger than the old single "Elapsed Time: ... · Score: ..."
-    # recap line this overlay replaces (that line is gone entirely -- its
-    # content now lives here, as the two headline numbers the reference
-    # design calls for, not a small caption underneath them).
+    # Large headline font for the two live numbers the card's own artwork
+    # leaves blank, per the reference design.
     f_num = _get_num_font(max(18, int(cr.height * 0.10)))
 
     mins, secs = divmod(max(0, int(duration_sec)), 60)

@@ -41,12 +41,11 @@ from i18n import tr
 # difficulty-only, matching the spec's Advanced Settings list exactly.
 GRIP_THRESHOLD = {"Easy": 0.30, "Medium": 0.70, "Hard": 0.90}   # calibrated grip (0-1) to grab/hold
 MOVE_DEADZONE  = {"Easy": 0.05, "Medium": 0.08, "Hard": 0.12}   # wrist tilt magnitude before the hand moves
-# px radius of the bowl/food/cat interaction zones. Raised from the previous
-# 150/110/75 -- measured against the actual sprites (empty_bowl/food/cat_
-# hungry at their real rendered sizes: ~300x207, ~230x356, ~400x466), the old
-# radii were well under half those sprites' own on-screen size, so a hand
-# clearly hovering over the bowl/cat could still read as "out of range".
-# Still keeps the same relative Easy>Medium>Hard shape as before.
+# px radius of the bowl/food/cat interaction zones, sized against the
+# actual sprites (empty_bowl/food/cat_hungry at their real rendered sizes:
+# ~300x207, ~230x356, ~400x466) so a hand clearly hovering over the bowl/cat
+# reads as in range. Keeps the same relative Easy>Medium>Hard shape across
+# difficulties.
 ZONE_TOLERANCE = {"Easy": 180,  "Medium": 135,  "Hard": 95}
 TRAVEL_SCALE   = {"Easy": 0.75, "Medium": 1.0,  "Hard": 1.3}    # food/cat distance from the bowl, relative to base
 MOVE_SPEED     = {"Easy": 700,  "Medium": 850,  "Hard": 1000}   # hand px/s per unit tilt
@@ -75,8 +74,8 @@ DEFAULT_HAND = "left"
 # can never reach into those zones. Asymmetric per the reference "grabbing"
 # photo (fingers already making contact while the hand is still left of the
 # bowl's own centre): generous on the hand's LEFT approach, tighter on the
-# right, where there is nothing to reach for -- pushed further in both
-# directions per spec (the hand must move further left to grab it).
+# right, where there is nothing to reach for; the hand must move further
+# left to actually grab it.
 BOWL_GRAB_TOLERANCE_LEFT_SCALE  = 1.5
 BOWL_GRAB_TOLERANCE_RIGHT_SCALE = 0.5
 # Same asymmetric idea for the cat specifically: a little extra allowance on
@@ -89,19 +88,18 @@ CAT_REAR_TOLERANCE_SCALE  = 0.8
 # The food's own zone is asymmetric too, the opposite way round from the
 # cat's: its FRONT -- the side the empty bowl actually approaches from,
 # i.e. the RIGHT (coming from the bowl's resting spot toward food_x, which
-# sits to the LEFT of it) -- gets the reduced allowance, specifically so the
-# hand has to keep moving further left, past where it used to register,
-# before the bowl fills. The LEFT side (beyond food_x, where there's
-# nothing left to reach for) stays generous, matching the cat/bowl pattern.
+# sits to the LEFT of it) -- gets the reduced allowance, so the hand has to
+# move further left before the bowl fills. The LEFT side (beyond food_x,
+# where there's nothing left to reach for) stays generous, matching the
+# cat/bowl pattern.
 FOOD_LEFT_TOLERANCE_SCALE  = 1.3
 FOOD_RIGHT_TOLERANCE_SCALE = 0.4
 # The bowl's own visual centre within the combined grab_*_bowl sprite --
 # grid-overlay measured (color-isolated the blue bowl from the hand/arm):
 # ~68% across the sprite's own width, NOT the sprite's geometric centre
-# (where hand_x itself anchors). Comparing raw hand_x to food_x/cat_x put
-# the real trigger point noticeably right of where the bowl visually was
-# ("hitbox too far right from the sprite's actual position") -- see
-# _carried_bowl_x(), which this is used to compute.
+# (where hand_x itself anchors). Using hand_x directly for food_x/cat_x
+# proximity would place the trigger point right of where the bowl visually
+# sits -- see _carried_bowl_x(), which this is used to compute.
 BOWL_CARRY_X_FRAC = 0.68
 
 FEED_FLASH_DURATION = 1.1   # seconds the cat_food sprite stays up after a feed
@@ -132,10 +130,10 @@ CAT_BOTTOM_Y  = int(GAME_H * 0.90)
 # per spec, instead of showing a hard horizontal edge.
 HAND_BOTTOM_Y = GAME_H + 150
 
-TRAVEL_BASE     = GAME_W * 0.30   # base food/cat distance from the bowl before TRAVEL_SCALE -- raised
-                                   # from 0.28 so the food and cat sit farther apart, keeping their
-                                   # (now larger) interaction zones comfortably clear of each other
-                                   # and of the bowl's own resting spot.
+TRAVEL_BASE     = GAME_W * 0.30   # base food/cat distance from the bowl before TRAVEL_SCALE --
+                                   # keeps the food and cat far enough apart that their interaction
+                                   # zones stay comfortably clear of each other and of the bowl's
+                                   # own resting spot.
 # Extra push outward on top of TRAVEL_BASE -- the food moves further left of
 # the bowl and the cat further right, per spec, independent of (and in
 # addition to) the _carried_bowl_x() hitbox-accuracy fix below.
@@ -154,7 +152,7 @@ BOWL_CARRY_OFFSET_PX = GRABBOWL_BOX[0] * (BOWL_CARRY_X_FRAC - 0.5)
 # actually reach food_x. ZONE_TOLERANCE never makes this NEED more reach
 # (reaching the exact target already succeeds; extra tolerance only ever
 # makes success easier, not farther away), so it is deliberately left out
-# of this sum -- including it nearly pushed the hand's clamp off-screen.
+# of this sum.
 HAND_MOVE_RANGE = (TRAVEL_BASE * max(TRAVEL_SCALE.values())
                     + EXTRA_SPREAD_PX + BOWL_CARRY_OFFSET_PX + 30)
 
@@ -552,10 +550,10 @@ class FeedTheCatGame(SessionModeMixin, FatigueMixin, BaseScreen):
             elif not self.bowl_filled:
                 # Asymmetric: food_x sits LEFT of the bowl's resting spot,
                 # so the bowl always approaches it from the right (its
-                # "front") -- that side gets the reduced tolerance, forcing
-                # the hand to keep moving left past where it used to
-                # register; the far/left side (beyond the food, nothing to
-                # reach for) stays generous.
+                # "front") -- that side gets the reduced tolerance, so the
+                # hand must move further left before the bowl fills; the
+                # far/left side (beyond the food, nothing to reach for)
+                # stays generous.
                 if self._near_asym(bowl_x, self.food_x,
                                     self.food_left_tolerance, self.food_right_tolerance):
                     self.bowl_filled = True
@@ -588,11 +586,10 @@ class FeedTheCatGame(SessionModeMixin, FatigueMixin, BaseScreen):
             self._tutorial_hints.update(self, dt)
 
         # Checked LAST, after this frame's own grip/feed logic has already
-        # run -- Timed Mode's duration expiring on the exact same frame as
-        # a feed must never preempt it (the old position, before that
-        # logic, could do exactly that and silently drop the final point).
-        # time_left is floored at 0 by _session_tick() itself, so this
-        # still ends the session on every subsequent frame.
+        # run, so Timed Mode's duration expiring on the same frame as a
+        # feed never preempts it and drops the final point. time_left is
+        # floored at 0 by _session_tick() itself, so this still ends the
+        # session on every subsequent frame.
         if self._session_tick(dt):
             self._end_game()
 

@@ -27,11 +27,9 @@ ZONE_WIDTH = {"Easy": 0.25, "Medium": 0.16, "Hard": 0.09}
 ZONE_SPEED = {"Easy": 0.0,  "Medium": 0.18, "Hard": 0.28}
 # Required Grip Strength -- % of the patient's own calibrated grip_rest->
 # grip_max span (same 0-1 `raw` value _normalize() already produces) needed
-# to register a squeeze at all. Replaces the old flat, non-calibration,
-# non-difficulty `raw > 0.1` constant.
+# to register a squeeze at all.
 GRIP_THRESHOLD = {"Easy": 0.30, "Medium": 0.70, "Hard": 0.90}
-# Pointer Speed -- how fast the grip needle rises per second while
-# squeezing (replaces the old flat RAMP_UP constant).
+# Pointer Speed -- how fast the grip needle rises per second while squeezing.
 POINTER_SPEED = {"Easy": 0.5, "Medium": 0.8, "Hard": 1.1}
 
 BAR_W, BAR_H = 60, 500
@@ -54,16 +52,15 @@ BALL_R_HELD = 160
 BALL_R_HOOP = 34
 
 # Higher than real-world gravity so the shot arc covers its fixed rise/fall
-# distance noticeably faster, without changing the arc's shape. Raised again
-# so the natural slow-down near the apex (where vertical speed briefly
-# approaches zero, same as any real projectile) passes quickly instead of
-# reading as the animation stalling.
+# distance quickly, without changing the arc's shape -- high enough that the
+# natural slow-down near the apex (where vertical speed briefly approaches
+# zero, same as any real projectile) passes quickly instead of reading as
+# the animation stalling.
 GRAVITY = 8000.0
 
 # The DESCENT only (apex -> hoop -> ground) uses its own, gentler constant --
-# the rise keeps GRAVITY's snappier feel (and avoids reintroducing the
-# apex-stall look the comment above already fixed once), while the fall
-# itself reads as noticeably slower, per feedback that it dropped too fast.
+# the rise keeps GRAVITY's snappier feel (and avoids the apex-stall look
+# noted above), while the fall itself reads as noticeably slower.
 # _shoot()'s own t_fall/_shot_duration math already derives from whichever
 # constant is used here, so the shrink-to-hoop-size cue and the "reached the
 # hoop" timing stay in sync with the real, slower trajectory.
@@ -661,12 +658,11 @@ class BasketballGame(SessionModeMixin, FatigueMixin, BaseScreen):
             self._tutorial_hints.update(self, dt)
 
         # Checked LAST, after this frame's own grip-release/scoring has
-        # already run -- Timed Mode's duration expiring on the exact same
-        # frame as a successful release must never preempt that release
-        # (the old position, before the scoring block above, could do
-        # exactly that and silently drop the final point). time_left is
-        # floored at 0 by _session_tick() itself, so this is still checked
-        # -- and still ends the session -- on every subsequent frame.
+        # already run, so Timed Mode's duration expiring on the exact same
+        # frame as a successful release can never preempt that release and
+        # silently drop the final point. time_left is floored at 0 by
+        # _session_tick() itself, so this still ends the session on every
+        # subsequent frame.
         if self._session_tick(dt):
             self._end_game()
 

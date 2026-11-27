@@ -6,8 +6,9 @@ Best-effort physical-monitor detection so the launcher can place:
   * the therapist browser on another          (via window x/y coordinates)
 
 Windows : ctypes EnumDisplayMonitors / GetMonitorInfoW  (authoritative).
-Other   : Raspberry Pi / xrandr detection is a TODO -- falls back to pygame
-          desktop sizes, then to a single logical 1920x1080 monitor.
+Linux/Pi: xrandr (X11), parsed for real geometry including x/y offsets; falls
+          back to pygame desktop sizes, then to a single logical 1920x1080
+          monitor.
 
 Environment overrides (all optional):
     RECOVR_PATIENT_MONITOR   = "x,y,w,h"   force the patient monitor rect

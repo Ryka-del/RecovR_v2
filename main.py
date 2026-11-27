@@ -87,15 +87,12 @@ if sys.platform == "win32":
 
 # --- START PYGAME ---
 # pygame.init() auto-initialises the mixer submodule with SDL_mixer's own
-# small default buffer -- audio.py's own `pygame.mixer.init(buffer=4096)`
-# (meant to give headroom against scheduling jitter on a Raspberry Pi
-# running 3 processes at once) never actually runs, since by the time any
-# audio.py function checks `pygame.mixer.get_init()` the mixer is already
-# initialised. That left every sound this app plays subject to underruns
-# audible as weak/crackly audio, while anything played outside this
-# process's own mixer sounded fine. pre_init() here sets the buffer BEFORE
-# pygame.init() brings the mixer up, so the intended buffer size actually
-# takes effect.
+# small default buffer, so audio.py's own `pygame.mixer.init(buffer=4096)`
+# call is a no-op by the time it runs (the mixer is already initialised by
+# then). pre_init() here sets the buffer BEFORE pygame.init() brings the
+# mixer up, so the larger buffer -- needed for headroom against scheduling
+# jitter on a Raspberry Pi running 3 processes at once -- actually takes
+# effect.
 pygame.mixer.pre_init(buffer=4096)
 pygame.init()
 
@@ -124,7 +121,7 @@ if screen is None and _THERAPIST_DISPLAY:
         print(f"[recovr] RECOVR_THERAPIST_DISPLAY ignored ({_exc}); using default display")
         screen = None
 
-# 3. Fall back to the whole desktop (original behaviour).
+# 3. Fall back to the whole desktop.
 if screen is None:
     screen_info = pygame.display.Info()
     WIDTH, HEIGHT = screen_info.current_w, screen_info.current_h
@@ -132,11 +129,10 @@ if screen is None:
 pygame.display.set_caption("RecovR")
 
 # --- 7-inch touch scaling (mirrors scenes/login.py / therapist_dashboard.py) ---
-# The confirm-exit dialog below was sized purely from H/1080, giving a 19px
-# button height on the 800x480 panel. _fs uses a H/512 reference in touch
-# mode so it stays finger-sized; _tt() floors every interactive control at a
-# fingertip-sized 50px. Desktop (_touch_ui False) is unaffected -- _fs reduces
-# to the original H/1080 reference.
+# On touch (_TOUCH_UI), _DLG_FS uses a H/512 reference so the confirm-exit
+# dialog below stays finger-sized, and _dlg_tt() floors every interactive
+# control at a fingertip-sized 50px. Desktop (_TOUCH_UI False) uses the
+# plain H/1080 reference instead.
 _TOUCH_UI = (HEIGHT <= 820) or (os.environ.get("RECOVR_THERAPIST_TOUCH") == "1")
 _DLG_FS   = min(HEIGHT / 512.0, 1.32) if _TOUCH_UI else (HEIGHT / 1080.0)
 
@@ -359,11 +355,10 @@ while True:
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
-            # Alt+F4 / OS window-close now goes through the SAME confirm
-            # dialog as the Close button instead of exiting immediately --
-            # matches the Close button's behavior and keeps the only
-            # "intentional exit" signal (see _confirmed_exit()) consistent
-            # regardless of how the user asked to close the window.
+            # Alt+F4 / OS window-close goes through the SAME confirm dialog
+            # as the Close button, so the only "intentional exit" signal
+            # (see _confirmed_exit()) stays consistent regardless of how the
+            # user asked to close the window.
             _confirm_open = True
             continue
 
@@ -461,10 +456,10 @@ while True:
     # Position for THIS frame's visuals + next frame's hit-testing: read the
     # scene's own close-button slot (currently only the Therapist Dashboard
     # publishes one, beside its Light/Dark toggle) if it published one this
-    # draw, else fall back to the fixed corner rect and the original look
-    # (Welcome/Login/Register/games: reverted back to the plain red box + X
-    # for now, at the original fixed position -- only the Therapist
-    # Dashboard uses the close_button.png asset and the repositioned slot).
+    # draw, else fall back to the fixed corner rect (Welcome/Login/Register/
+    # games use the plain red box + X at that fixed position; only the
+    # Therapist Dashboard uses the close_button.png asset and its own
+    # repositioned slot).
     _scene_close_rect = getattr(current_scene, "_close_btn_rect", None)
     if _scene_close_rect is not None and _scene_close_rect.width > 1:
         _close_rect      = _scene_close_rect

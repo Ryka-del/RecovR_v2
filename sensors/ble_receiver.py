@@ -4,9 +4,8 @@
 # Auto-connecting BLE client for the RecovR wireless controller.
 # Runs in a background daemon thread — never blocks pygame.
 #
-# Fixes stale-connection problem on Raspberry Pi / BlueZ:
-#   - Resets the HCI adapter on startup and after every disconnect so that
-#     closing and reopening the app always works cleanly.
+# Resets the HCI adapter on startup and after every disconnect, to avoid
+# stale connections on Raspberry Pi / BlueZ.
 # =============================================================================
 
 import asyncio
@@ -56,10 +55,10 @@ _HANDOFF_RETRY_SECONDS = 30.0   # ~4 scan+settle cycles at _SCAN_TIMEOUT+_RECONN
 # stacks (especially BlueZ on the Pi) occasionally report a transient False
 # for a single poll (a connection-parameter update, a missed keep-alive,
 # brief interference) even though the physical link never actually drops;
-# without this grace window that single blip tore the connection down and
-# re-scanned from scratch, which is what made the UI flicker between
-# Connected/Disconnected on an otherwise stable link. A genuine disconnect
-# stays False well past this window, so it's still caught promptly.
+# without this grace window, a single blip would tear the connection down
+# and force a rescan, flickering the UI between Connected/Disconnected on
+# an otherwise stable link. A genuine disconnect stays False well past this
+# window, so it's still caught promptly.
 _DISCONNECT_GRACE = 1.0
 
 # ── Independent ownership lease (watchdog) ──────────────────────────────────
@@ -376,8 +375,7 @@ class BLEReceiver:
 
     def _thread_main(self):
         while True:
-            # Reset the Bluetooth adapter before every loop iteration.
-            # This clears stale connections left over from a previous session.
+            # Clears stale connections left over from a previous session.
             self._reset_adapter()
 
             loop = asyncio.new_event_loop()
@@ -655,10 +653,10 @@ class BLEReceiver:
     def _on_notification(self, sender, data: bytearray):
         # Backward compatible with a controller still running the OLD 9-byte
         # firmware (grip, flex, buttons, accel_x, accel_y) -- the 5 new
-        # per-finger fields just fall back to duplicating the single legacy
-        # flex reading (today's behavior) instead of the whole packet being
-        # silently dropped and every sensor-based game freezing until the
-        # ESP32 is reflashed with the updated firmware.
+        # per-finger fields fall back to duplicating the single legacy flex
+        # reading instead of the whole packet being silently dropped and
+        # every sensor-based game freezing until the ESP32 is reflashed with
+        # the updated firmware.
         if len(data) >= PACKET_SIZE:
             self._last_packet = time.monotonic()
             vals = struct.unpack_from(PACKET_FORMAT, data)

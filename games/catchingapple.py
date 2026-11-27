@@ -33,9 +33,7 @@ DURATION     = {"Easy": 300, "Medium": 420, "Hard": 600}  # Timed Mode: session 
 # calibrated resting<->peak wrist range, via _normalize_tilt below) the
 # wrist must rotate before basket movement registers at all. Same 30/70/90%
 # anchor as every other rebanded threshold in this task. Applied identically
-# whether BLE-connected or in keyboard Test Mode (see update()) -- there
-# used to be no registration threshold at all on the BLE path and a
-# hardcoded, non-calibrated 0.1 on the keyboard path; this replaces both.
+# whether BLE-connected or in keyboard Test Mode (see update()).
 WRIST_REQUIREMENT = {"Easy": 0.30, "Medium": 0.70, "Hard": 0.90}
 # "Simultaneous Object Count" -- how many falling objects may be active at
 # once. Easy/Medium keep the original single-object feel; Hard allows 2.
@@ -62,10 +60,9 @@ CATCH_HOLD_DURATION = 0.80
 BASKET_BOTTOM_MARGIN = 40
 
 # ── apple tiers / insects ───────────────────────────────────────────────────
-# (type name, asset filename, points). A fresh independent roll each spawn
-# via the FLAT, top-level cumulative probabilities below (_spawn_object) --
-# insect/normal/golden/rainbow sum to 100% directly, not a nested "insect
-# chance, then split the remainder" roll like before.
+# (type name, asset filename, points). Each spawn rolls fresh and independently
+# via the flat, top-level cumulative probabilities below (_spawn_object) --
+# insect/normal/golden/rainbow sum to 100% directly.
 APPLE_TYPES = [
     ("normal",  "normal_apple_apple_catching.png",  1),
     ("golden",  "golden_apple_apple_catching.png",  3),
@@ -76,7 +73,7 @@ INSECT_TYPES = [
     ("ladybug",     "ladybug_apple_catching.png"),
     ("wasp",        "wasp_apple_catching.png"),
 ]
-INSECT_POINTS = -2   # a caught insect is a PENALTY now, not a bonus
+INSECT_POINTS = -2   # a caught insect is a scoring penalty
 # Flat top-level spawn probabilities (cumulative thresholds used directly in
 # _spawn_object): Insect 15%, Normal apple 70%, Golden apple 10%, Rainbow
 # apple 5% -- sums to exactly 100%.
@@ -258,10 +255,9 @@ class AppleCatchingGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
     def _spawn_object(self):
         """Append one new falling object -- an apple tier or, independently,
-        an insect -- to self._objects, at its own spawn position. A FLAT,
-        top-level cumulative roll now decides which (Insect 15% / Normal
-        70% / Golden 10% / Rainbow 5%), not a nested "insect chance, then
-        split the apple remainder" roll. An apple's rotation is rolled
+        an insect -- to self._objects, at its own spawn position. A flat,
+        top-level cumulative roll decides which (Insect 15% / Normal
+        70% / Golden 10% / Rainbow 5%). An apple's rotation is rolled
         fresh here and held fixed for as long as it falls; insects are not
         rotated, per spec."""
         obj = {"caught_active": False, "caught_timer": 0.0}
@@ -320,7 +316,7 @@ class AppleCatchingGame(SessionModeMixin, FatigueMixin, BaseScreen):
     def _opening_rect(self, basket_rect):
         """The basket's actual opening (the rim's oval mouth) -- a smaller
         zone than the basket's full visual footprint, used for catch
-        detection per spec instead of the old full-basket collision rect."""
+        detection per spec."""
         w = int(basket_rect.width * 0.72)
         h = int(basket_rect.height * 0.32)
         r = pygame.Rect(0, 0, w, h)
@@ -433,14 +429,12 @@ class AppleCatchingGame(SessionModeMixin, FatigueMixin, BaseScreen):
         if self.fatigue_paused or self.paused:
             return
 
-        # Required Wrist Rotation: _normalize_tilt already maps raw tilt to
-        # a signed -1..1 fraction of the patient's own calibrated range
-        # (identity when no calibration exists -- its default wrist_min/max
-        # of -1.0/1.0 makes it a no-op), so the SAME calibration-relative
-        # deadzone now gates BOTH the BLE-connected and keyboard Test-Mode
-        # paths identically -- there used to be no registration threshold
-        # at all on the BLE path and a hardcoded, uncalibrated 0.1 on the
-        # keyboard path.
+        # Required Wrist Rotation: _normalize_tilt maps raw tilt to a signed
+        # -1..1 fraction of the patient's own calibrated range (identity
+        # when no calibration exists -- its default wrist_min/max of
+        # -1.0/1.0 makes it a no-op), so the same calibration-relative
+        # deadzone gates both the BLE-connected and keyboard Test-Mode
+        # paths identically.
         tilt_norm = self._normalize_tilt(self._state["tilt_x"])
         if abs(tilt_norm) >= self.wrist_requirement:
             self.basket_x += self.move_speed * dt * tilt_norm
@@ -483,11 +477,10 @@ class AppleCatchingGame(SessionModeMixin, FatigueMixin, BaseScreen):
                     self._end_game()
                     return
             elif obj["y"] > GAME_H:
-                # Missed -- it simply falls out of view and is replaced, no
-                # sound/blast effect (removed per spec). The basket shake is
-                # an apple-type-miss cue only -- insects were never meant to
-                # be caught, so missing one isn't a "miss" and shouldn't
-                # shake the basket.
+                # Missed -- it simply falls out of view and is replaced, with
+                # no sound/blast effect. The basket shake is an apple-type-miss
+                # cue only -- insects were never meant to be caught, so missing
+                # one isn't a "miss" and shouldn't shake the basket.
                 missed_kind = obj["kind"]
                 self._objects.remove(obj)
                 if missed_kind == "apple":
@@ -510,8 +503,7 @@ class AppleCatchingGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
         # Checked LAST, after this frame's own catch logic has already run
         # -- Timed Mode's duration expiring on the exact same frame as a
-        # catch must never preempt it (the old position, before that
-        # logic, could do exactly that and silently drop the final point).
+        # catch must never preempt it and silently drop the final point.
         # time_left is floored at 0 by _session_tick() itself, so this
         # still ends the session on every subsequent frame.
         if self._session_tick(dt):
@@ -629,11 +621,11 @@ class AppleCatchingGame(SessionModeMixin, FatigueMixin, BaseScreen):
         surface.blit(ov, (0, 0))
 
         # Fully designed "How To Play" card art (title, numbered steps, tip
-        # banner all baked in) -- replaces the hand-drawn panel. Per-theme,
-        # cropped to its own opaque content then fit preserving aspect
-        # ratio. Same outer card box (position + max size) as _draw_results'
-        # Round Complete card -- the two screens read as stages of one
-        # interface rather than two differently-proportioned popups.
+        # banner all baked in), per-theme, cropped to its own opaque content
+        # then fit preserving aspect ratio. Same outer card box (position +
+        # max size) as _draw_results' Round Complete card -- the two screens
+        # read as stages of one interface rather than two differently-
+        # proportioned popups.
         card_name = (f"apple_catching_how_to_play_{'dark' if is_dark_mode() else 'light'}"
                      f"{'_fil' if self.language == 'fil' else ''}.png")
         top_margin, bottom_reserved = int(GAME_H * 0.05), int(GAME_H * 0.17)

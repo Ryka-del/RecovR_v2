@@ -12,16 +12,13 @@ of the other two was running, then resumes it):
 Owned ONCE per patient PROCESS (see recovr/patient_app/patient_main.py's
 PatientApp.__init__), not per game session -- the idle fade has to keep
 running even when no GameRunner exists at all (patient on the Waiting
-Screen / Dashboard between sessions), so this can't be scoped to a single
-GameRunner's lifetime the way the old score-blink-only version was.
-GameRunner still triggers request_blink() on a score increase and tells
-set_active() when a session starts/stops, but no longer constructs or
-owns the LedFeedback instance itself.
+Screen / Dashboard between sessions). GameRunner triggers request_blink()
+on a score increase and tells set_active() when a session starts/stops,
+but does not construct or own the LedFeedback instance itself.
 
 Ticked once per frame from the patient process's own main loop (see
 PatientApp.run()), never a background thread, never a sleep call -- GPIO17
-therefore only ever has one thread touching it, by construction, exactly
-like the version this replaces.
+therefore only ever has one thread touching it, by construction.
 
 Hardware degrades gracefully: if gpiozero (or its pin-factory backend)
 isn't available -- this dev machine, a Pi without the library installed, a
@@ -30,23 +27,21 @@ raising into the game loop, the same established pattern as
 sensors/ble_receiver.py's "bleak not installed" handling and audio.py's
 blanket try/except around every sound call.
 
-Requires `gpiozero` on the Raspberry Pi target (not installed by this
-change -- see the deployment notes wherever this project's setup steps are
-tracked). Uses PWMLED (not the plain digital LED class) so the idle fade
-can vary brightness smoothly -- same GPIO17 pin, gpiozero software-PWMs it
-at its own default frequency, which is a normal, supported way to dim an
-LED through a MOSFET gate.
+Requires `gpiozero` on the Raspberry Pi target (see the deployment notes
+wherever this project's setup steps are tracked). Uses PWMLED (not the
+plain digital LED class) so the idle fade can vary brightness smoothly --
+same GPIO17 pin, gpiozero software-PWMs it at its own default frequency,
+which is a normal, supported way to dim an LED through a MOSFET gate.
 
 PWM BACKEND -- IMPORTANT for a flicker-free fade: by default gpiozero times
 its software PWM from *inside this same Python process*, sharing the CPU
 (and the GIL) with the patient app's own pygame main loop (per-frame game
 logic, BLE polling, rendering). Under that load the PWM pulse timing gets
 starved and jittery, which shows up as visible flicker riding on top of the
-fade -- not a bug in the brightness curve itself (that part was verified
-smooth, step-by-step, in isolation). The fix is to hand PWM generation to
-`pigpiod`, a separate always-running system daemon immune to this
-process's load, instead of timing it in-process -- see the pin-factory
-setup below. Requires, once, on the Pi:
+fade. The fix is to hand PWM generation to `pigpiod`, a separate
+always-running system daemon immune to this process's load, instead of
+timing it in-process -- see the pin-factory setup below. Requires, once,
+on the Pi:
     sudo apt install pigpio python3-pigpio
     sudo systemctl enable pigpiod --now
 Falls back to gpiozero's own default (in-process, potentially jittery under
@@ -88,10 +83,9 @@ except Exception:
 
 
 class LedFeedback:
-    """One instance per patient process -- see the module docstring for why
-    this changed from one-per-session. request_blink() and set_active() are
-    the only things calling code needs; both are safe to call as often as
-    they like."""
+    """One instance per patient process -- see the module docstring.
+    request_blink() and set_active() are the only things calling code
+    needs; both are safe to call as often as they like."""
 
     def __init__(self, pin: int = GPIO_PIN):
         self._led = None

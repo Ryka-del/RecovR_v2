@@ -60,22 +60,19 @@ def _wait_for_health(timeout: float) -> bool:
 
 
 # How long a BLE ownership handoff may sit unconfirmed before this supervisor
-# treats it as unsafe to leave running and shuts the whole app down for a
-# clean restart. Deliberately longer than both the per-receiver lease
-# watchdog's own _LEASE_TIMEOUT_SEC (sensors/ble_receiver.py, default 4s) and
-# the therapist UI's own "handoff stuck" warning threshold
-# (scenes/therapist_dashboard.py's _BLE_HANDOFF_TIMEOUT_MS, default 5s) --
-# giving the normal, much faster paths every reasonable chance to resolve it
-# on their own first. This is a LAST RESORT, not a normal operating path:
-# the supervisor never selectively kills one child and grants the survivor
-# ownership (that would require a way to PROVE the killed process's BLE
-# connection was actually released before resuming, which is exactly the
-# guarantee a bare timeout can't provide) -- it only ever shuts everything
-# down, via the existing _shutdown() path, which already waits for every
-# child to actually exit (OS-level process teardown is what genuinely
-# guarantees any BLE handle it held is released). See
+# treats it as unsafe and shuts the whole app down for a clean restart.
+# Deliberately longer than both the per-receiver lease watchdog's own
+# _LEASE_TIMEOUT_SEC (sensors/ble_receiver.py, default 4s) and the therapist
+# UI's own "handoff stuck" warning (scenes/therapist_dashboard.py's
+# _BLE_HANDOFF_TIMEOUT_MS, default 5s), so the normal, faster paths get every
+# chance to resolve it first. Last resort only: the supervisor never kills
+# one child and hands the survivor ownership (there is no way to PROVE the
+# killed process's BLE connection was actually released first) -- it only
+# ever shuts everything down via the existing _shutdown() path, which waits
+# for every child to actually exit, since OS-level process teardown is what
+# genuinely guarantees a held BLE handle is released. See
 # recovr/shared/session_state.py's ble_generation docstring for why there is
-# no "force" method any more.
+# no "force" method.
 _BLE_SUPERVISOR_SHUTDOWN_SEC = float(os.environ.get("RECOVR_BLE_SUPERVISOR_SHUTDOWN_SEC", "10.0"))
 
 

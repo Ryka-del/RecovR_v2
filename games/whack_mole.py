@@ -416,14 +416,11 @@ class WhackMoleGame(SessionModeMixin, FatigueMixin, BaseScreen):
         # mapping, independent of the patient's affected hand -- the
         # leftmost hole (HOLE_CONFIG's lowest x_frac) always requires
         # Pinky (index 4, always C9); the rightmost always requires Thumb
-        # (index 0, always C5). This used to flip with self.hand_flipped,
-        # which was wrong: the physical channel behind each hole never
-        # actually moves (there's one glove, its firmware is never
-        # reflashed per patient), so flipping which finger a hole requires
-        # made the channel driving the leftmost/rightmost hole change
-        # depending on affected hand instead of staying fixed. Which
-        # ANATOMICAL finger (Thumb vs Pinky) that represents for THIS
-        # patient is a display-only concern -- see
+        # (index 0, always C5). The physical channel behind each hole never
+        # moves (there's one glove, its firmware is never reflashed per
+        # patient), so this mapping stays fixed regardless of the patient's
+        # affected hand. Which ANATOMICAL finger (Thumb vs Pinky) that
+        # represents for THIS patient is a display-only concern -- see
         # sensors/input_handler.py's anatomical_finger_name(), used by the
         # therapist dashboard, not here.
         hole_names = list(reversed([name for name, _x, _row in HOLE_CONFIG]))
@@ -1121,9 +1118,8 @@ class WhackMoleGame(SessionModeMixin, FatigueMixin, BaseScreen):
 
     def _draw_results(self, surface):
         T = get_theme()
-        # Just the card, centered -- no extra text/descriptions (Moles
-        # Missed etc. are no longer shown here; the HUD's own live counter
-        # during gameplay already covers progress).
+        # Just the card, centered -- no extra text/descriptions (the HUD's
+        # own live counter during gameplay already covers progress).
         _card, bottom_y = draw_round_complete_overlay(
             surface, card_prefix="whack_a_mole", duration_sec=self.game_over_duration,
             score_text=self._session_count_text(), load_fit=_load_image_fit)

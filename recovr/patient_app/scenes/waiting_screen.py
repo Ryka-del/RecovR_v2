@@ -50,8 +50,8 @@ TRANSITION_MS = 900    # synchronized swipe: current card slides out to the
                         # two independently-timed slides that can overlap
 
 # ── EDIT ME: layout / look (fractions of the patient display) ─────────────
-LOGO_H_FRAC        = 0.14    # wordmark box height -- ~24% smaller than before,
-                              # so the instruction card (not the logo) dominates
+LOGO_H_FRAC        = 0.14    # wordmark box height, kept small so the
+                              # instruction card (not the logo) dominates
 CARD_W_FRAC        = 0.82
 CARD_H_FRAC        = 0.46
 CARD_CENTER_Y_FRAC = 0.520   # pulled up, right under the logo
@@ -76,13 +76,12 @@ DOT_SPACING_FRAC   = 0.034   # centre-to-centre spacing between dots, of W
 NAVY_TEXT        = (7, 23, 71)          # #071747 -- primary/secondary text, light theme
 DIVIDER_COLOR    = (176, 196, 221, 170) # thin light blue-gray vertical rule
 
-# Dark Mode: the card's glass shell used to stay a WHITE-tinted fill/border
-# regardless of theme (draw_glass_card's own hardcoded default), which read
-# as a washed-out, too-bright panel against the dark gradient background --
-# only the TEXT color was theme-aware before. A dark navy fill (still
-# translucent, so the gradient shows through, just a dark tint instead of a
-# light one) with a cooler, dimmer border/glow fixes that without touching
-# the Light Mode look at all (CARD_FILL_ALPHA/BORDER_ALPHA unchanged there).
+# Dark Mode: the card's glass shell uses a dark navy fill (still
+# translucent, so the gradient shows through, just a dark tint instead of
+# draw_glass_card's default white one) with a cooler, dimmer border/glow, so
+# it doesn't read as a washed-out, too-bright panel against the dark
+# gradient background. Light Mode is untouched (CARD_FILL_ALPHA/BORDER_ALPHA
+# below apply there).
 CARD_FILL_DARK   = (10, 16, 34)
 CARD_BORDER_DARK = (120, 150, 200)
 CARD_GLOW_DARK   = (90, 120, 170)

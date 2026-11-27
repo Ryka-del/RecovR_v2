@@ -7,9 +7,9 @@
 // in any way -- it's a separate, temporary sketch you flash, use, then
 // re-flash the real firmware over.
 //
-// Purpose: find out which physical MUX channel (C0-C15) each of the five
-// Flex Sensors is actually wired to, before the production firmware is
-// updated to read five independent sensors instead of one.
+// Purpose: confirm which physical MUX channel (C0-C15) each of the five
+// Flex Sensors is actually wired to, so the mapping matches the production
+// firmware's five independent flex channels.
 //
 // Wiring assumed identical to the production firmware (requirements.md):
 //   CD74HC4067 MUX   SIG -> D0 (GPIO2)   S0 -> D1   S1 -> D2   S2 -> D3   S3 -> D6

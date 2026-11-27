@@ -24,7 +24,7 @@ Keyboard fallback (when BLE is disconnected or bleak not installed):
                 (Thumb/Index/Middle/Ring/Pinky) -- Whack-a-Mole
 
 All game files and the calibration window use this module via the singleton
-`input_handler` — the interface is unchanged so no game code needs editing.
+`input_handler` — the interface is stable, so no game code needs editing.
 """
 
 import pygame
@@ -59,7 +59,7 @@ FINGER_NAMES = ["Thumb", "Index", "Middle", "Ring", "Pinky"]
 # Index<->Ring, Middle stays Middle -- used by anatomical_finger_name()
 # below. A right hand's anatomy is the mirror image of a left hand's at
 # each physical channel position (see games/whack_mole.py's _hole_finger
-# comment and the A.2 investigation this resolves).
+# comment).
 _ANATOMICAL_MIRROR = {"Thumb": "Pinky", "Index": "Ring", "Middle": "Middle",
                        "Ring": "Index", "Pinky": "Thumb"}
 
