@@ -6147,12 +6147,14 @@ class TherapistDashboardScene:
         self._pl_scroll     = max(0, min(self._pl_scroll, self._pl_scroll_max))
         scrollable          = self._pl_scroll_max > 0
 
-        arrow_w = self._tt(50) if scrollable else 0
-        # keep a clear gap between the Share icons and the scroll arrows.
-        # (_sc, not _tt -- this is spacing, not a tap target: _tt would floor to 50 px
-        #  and squeeze the Therapist column out of the row.)
-        arrow_gap = self._sc(16) if (scrollable and touch) else 0
-        btn_x_r = pa.right - pad - arrow_w - arrow_gap   # right edge available to Share icon
+        # Scrollbar column. Touch: only as wide as the thumb itself (it isn't
+        # tappable -- scrolling is drag/wheel), flush with the card's inner
+        # right edge. Desktop keeps its wider column.
+        thumb_w = int(6*W/1920)
+        bar_w = (thumb_w if touch else self._tt(50)) if scrollable else 0
+        # keep a clear gap between the Share icons and the scrollbar.
+        arrow_gap = self._sc(8) if (scrollable and touch) else 0
+        btn_x_r = pa.right - pad - bar_w - arrow_gap   # right edge available to Share icon
         bgap    = self._tt(18) if touch else int(10*W/1920)
         f_name  = self.fnt["body_b"] if touch else self.fnt["body"]
         f_ther  = self.fnt["body"]   if touch else self.fnt["tag"]
@@ -6278,13 +6280,12 @@ class TherapistDashboardScene:
         # ── scrollbar thumb (only when the list overflows); scrolling is
         # via mouse-wheel/touch-drag, not tap arrows ──────────────────────
         if scrollable:
-            ax = pa.right - pad - arrow_w
-            tb_x = ax + int(4*W/1920)
+            tb_x = pa.right - pad - bar_w + (0 if touch else int(4*W/1920))
             track_h = view_h
             th = max(int(28*H/1080), int(track_h * view_h / max(content_h, 1)))
             ty0 = list_top + int((track_h - th) * (self._pl_scroll / self._pl_scroll_max))
             pygame.draw.rect(surface, (150,175,210),
-                             pygame.Rect(tb_x, ty0, int(6*W/1920), th), border_radius=3)
+                             pygame.Rect(tb_x, ty0, thumb_w, th), border_radius=3)
         self._pl_up_rect = self._pl_down_rect = pygame.Rect(0, 0, 1, 1)
 
     # ──────────────────────────────────────────────────────────────────
