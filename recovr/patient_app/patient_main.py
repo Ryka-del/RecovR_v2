@@ -152,8 +152,8 @@ class PatientApp:
 
         # LED scoring/state feedback -- owned here (once per process), not
         # per-GameRunner, since its idle "breathing" state has to keep
-        # animating even between sessions, when self.runner is None. Ticked
-        # every frame in run() below regardless of mode; set_active() is
+        # animating even between sessions, when self.runner is None. It
+        # times itself on its own thread; set_active() is
         # toggled from _set_mode(); GameRunner only ever calls
         # request_blink() on it (handed in when constructed -- see
         # _begin_session below).
@@ -207,10 +207,6 @@ class PatientApp:
         while running:
             dt = self.clock.tick(60) / 1000.0
             self.mode_t += dt
-            # Unconditional, every frame, regardless of mode -- see
-            # hardware/led_feedback.py's own docstring for why this can't
-            # be scoped to only while a game is running.
-            self._led.tick(dt)
 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -787,10 +783,16 @@ def main():
     finally:
         # Hardware fail-safe: force the LED off and release GPIO17 on every
         # exit path (normal QUIT/ESC, Ctrl+C/SIGINT, or the launcher's
-        # SIGTERM). Idempotent (LedFeedback.cleanup() is safe to call more
+        # SIGTERM). A repeat signal (systemd and the launcher may both send
+        # SIGTERM) must not interrupt this. Idempotent (LedFeedback.cleanup() is safe to call more
         # than once) -- this is on top of LedFeedback's own atexit
         # registration, not a replacement for it, for the SIGTERM-skips-
         # atexit reason explained above.
+        for sig_name in ("SIGTERM", "SIGINT"):
+            try:
+                signal.signal(getattr(signal, sig_name), signal.SIG_IGN)
+            except (AttributeError, ValueError, OSError):
+                pass
         try:
             app._led.cleanup()
         except Exception:

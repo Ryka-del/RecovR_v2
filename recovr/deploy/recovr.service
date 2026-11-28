@@ -3,8 +3,8 @@
 # what makes monitor/display detection (recovr/monitors.py) work instead of
 # silently falling back to single-monitor mode because X/Wayland isn't up yet.
 Description=RecovR Hand Rehabilitation System
-After=graphical.target
-Wants=graphical.target
+After=graphical.target recovr-led.service
+Wants=graphical.target recovr-led.service
 # Bounded crash-restart lives here (systemd >= 230): recover from a one-off
 # glitch, but a real/persistent crash gives up instead of looping forever.
 # This is resilience, not a way to paper over genuine failures -- it never
@@ -22,6 +22,8 @@ WorkingDirectory=/home/pi/RecovRWE
 # ----------------------------------------------------------------
 Environment=DISPLAY=:0
 ExecStart=/usr/bin/python3 -m recovr.launch_production
+# Switch the LED strip off however the app stopped, including a crash or kill.
+ExecStopPost=-/usr/bin/python3 -m hardware.led_feedback off
 Restart=on-failure
 RestartSec=5
 

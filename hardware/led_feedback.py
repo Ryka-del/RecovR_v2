@@ -1,188 +1,278 @@
 """
-hardware/led_feedback.py -- visual feedback on a 12V LED strip switched via
-a GPIO-driven MOSFET (gate on GPIO17 through a 330ohm series resistor).
+hardware/led_feedback.py -- visual feedback on a 12V LED strip switched by an
+IRLZ44N MOSFET (gate on GPIO17 through a 330 ohm series resistor).
 
-Three states, in priority order (a blink burst always interrupts whichever
-of the other two was running, then resumes it):
-  - idle     : no game session running -- slow continuous breathing fade.
-  - active   : a game session is actively being played -- steady full brightness.
-  - blinking : a transient burst of BLINKS_PER_SEQUENCE on/off flashes on a
-               scoring event, then resumes idle/active exactly where it left off.
+Three states (a blink burst interrupts either of the other two, then resumes):
+  - idle     : no game running -- slow continuous breathing fade.
+  - active   : a game is being played -- steady full brightness.
+  - blinking : BLINKS_PER_SEQUENCE flashes on a scoring event.
 
-Owned ONCE per patient PROCESS (see recovr/patient_app/patient_main.py's
-PatientApp.__init__), not per game session -- the idle fade has to keep
-running even when no GameRunner exists at all (patient on the Waiting
-Screen / Dashboard between sessions). GameRunner triggers request_blink()
-on a score increase and tells set_active() when a session starts/stops,
-but does not construct or own the LedFeedback instance itself.
+Owned ONCE per patient process (recovr/patient_app/patient_main.py's
+PatientApp). The game loop only calls set_active() and request_blink(), which
+just set flags; a small background thread does all timing and is the only code
+that writes to the hardware, so a slow game frame never stalls the effect and
+the LED never delays the game.
 
-Ticked once per frame from the patient process's own main loop (see
-PatientApp.run()), never a background thread, never a sleep call -- GPIO17
-therefore only ever has one thread touching it, by construction.
+PWM backends, tried in this order:
+  1. "kernel"  -- the Linux pwm-gpio driver (dtoverlay=pwm-gpio,gpio=17),
+                  controlled through /sys/class/pwm. The kernel times the
+                  pulses with high-resolution timers and applies brightness
+                  changes only at a cycle boundary, so the fade stays steady
+                  while Python is busy. It does not use the Pi's PWM hardware,
+                  so the 3.5 mm audio output is unaffected. Needs the one-time
+                  setup in recovr/deploy/README.md.
+  2. "gpiozero" -- software PWM timed in user space (lgpio). Works without
+                  setup, but can flicker during the fade.
+  3. none      -- no LED hardware (e.g. a Windows dev machine): every method
+                  is a harmless no-op.
 
-Hardware degrades gracefully: if gpiozero (or its pin-factory backend)
-isn't available -- this dev machine, a Pi without the library installed, a
-permissions issue -- every method below becomes a harmless no-op instead of
-raising into the game loop, the same established pattern as
-sensors/ble_receiver.py's "bleak not installed" handling and audio.py's
-blanket try/except around every sound call.
-
-Requires `gpiozero` on the Raspberry Pi target (see the deployment notes
-wherever this project's setup steps are tracked). Uses PWMLED (not the
-plain digital LED class) so the idle fade can vary brightness smoothly --
-same GPIO17 pin, gpiozero software-PWMs it at its own default frequency,
-which is a normal, supported way to dim an LED through a MOSFET gate.
-
-PWM BACKEND -- IMPORTANT for a flicker-free fade: by default gpiozero times
-its software PWM from *inside this same Python process*, sharing the CPU
-(and the GIL) with the patient app's own pygame main loop (per-frame game
-logic, BLE polling, rendering). Under that load the PWM pulse timing gets
-starved and jittery, which shows up as visible flicker riding on top of the
-fade. The fix is to hand PWM generation to `pigpiod`, a separate
-always-running system daemon immune to this process's load, instead of
-timing it in-process -- see the pin-factory setup below. Requires, once,
-on the Pi:
-    sudo apt install pigpio python3-pigpio
-    sudo systemctl enable pigpiod --now
-Falls back to gpiozero's own default (in-process, potentially jittery under
-load) factory if pigpiod isn't installed/running -- including on this
-Windows dev machine, where there's no GPIO at all.
+Run by hand (with RecovR closed):
+    python3 -m hardware.led_feedback status | test | off
 """
 
 import atexit
+import glob
 import math
+import os
+import sys
+import threading
+import time
 
-GPIO_PIN = 17          # BCM numbering -- confirmed unused elsewhere in this codebase
+GPIO_PIN = 17          # BCM numbering
 
-try:
-    from gpiozero import Device
-    from gpiozero.pins.pigpio import PiGPIOFactory
-    Device.pin_factory = PiGPIOFactory()
-except Exception:
-    pass  # pigpiod not installed/running (or not on a Pi at all) -- gpiozero
-          # falls back to its own default pin factory further down
+PWM_HZ        = 200    # well above visible flicker; light load for the kernel
+MIN_PULSE_NS  = 10_000 # shorter pulses cannot be timed reliably in software
+PWM_SYSFS     = "/sys/class/pwm"
 
-# Idle "breathing" fade -- one full dim(0) -> bright(1) -> dim(0) cycle.
-# Slow and continuous, not a attention-grabbing animation (this plays
-# whenever the device is simply powered on with no game running, which can
-# be most of the time).
+# One full dark -> bright -> dark breath.
 FADE_PERIOD_SEC = 6.0
+# Eyes judge brightness non-linearly; this makes the fade look even instead of
+# lingering near full brightness.
+FADE_GAMMA = 2.2
 
-# Scoring-event blink burst -- snappier than the idle fade so it reads as a
-# distinct, immediate "you scored" cue rather than a continuation of the
-# slow breathing. Tune these two if the real hardware still looks too slow;
-# they're independent of FADE_PERIOD_SEC above.
-BLINK_ON_TIME_SEC  = 0.08
-BLINK_OFF_TIME_SEC = 0.08
+BLINK_ON_TIME_SEC   = 0.08
+BLINK_OFF_TIME_SEC  = 0.08
 BLINKS_PER_SEQUENCE = 3
 
-try:
-    from gpiozero import PWMLED as _LED
-except Exception:
-    _LED = None
+_FADE_STEP_SEC  = 0.02   # 50 brightness updates per second
+_BLINK_STEP_SEC = 0.005
+
+
+class KernelPwm:
+    """GPIO driven by the kernel's pwm-gpio driver, through sysfs."""
+
+    name = "kernel"
+
+    def __init__(self, channel_dir: str, hz: int = PWM_HZ):
+        self._dir = channel_dir
+        self._period = int(1_000_000_000 / hz)
+        # Disabled first: the kernel then accepts any period/duty combination
+        # left behind by an earlier run.
+        self._write("enable", 0)
+        self._write("duty_cycle", 0)
+        self._write("period", self._period)
+        self._write("enable", 1)
+
+    @staticmethod
+    def find_channel(pin: int = GPIO_PIN, root: str = PWM_SYSFS):
+        """The sysfs directory of the pwm-gpio channel on `pin`, exporting it
+        if permitted; None if the overlay is not loaded for that pin."""
+        for chip in sorted(glob.glob(os.path.join(root, "pwmchip*"))):
+            node = os.path.join(chip, "device", "of_node")
+            try:
+                with open(os.path.join(node, "compatible"), "rb") as f:
+                    if b"pwm-gpio" not in f.read().split(b"\0"):
+                        continue
+                # gpios = <controller pin flags>, big-endian 32-bit cells
+                with open(os.path.join(node, "gpios"), "rb") as f:
+                    if int.from_bytes(f.read()[4:8], "big") != pin:
+                        continue
+            except OSError:
+                continue
+            channel = os.path.join(chip, "pwm0")
+            if not os.path.isdir(channel):
+                try:
+                    with open(os.path.join(chip, "export"), "w") as f:
+                        f.write("0")
+                except OSError:
+                    pass
+            return channel if os.path.isdir(channel) else None
+        return None
+
+    def _write(self, attr: str, value: int):
+        with open(os.path.join(self._dir, attr), "w") as f:
+            f.write(str(value))
+
+    def duty_ns(self, level: float) -> int:
+        duty = int(round(max(0.0, min(1.0, level)) * self._period))
+        if duty < MIN_PULSE_NS:
+            return 0
+        if self._period - duty < MIN_PULSE_NS:
+            return self._period
+        return duty
+
+    def set(self, level: float):
+        self._write("duty_cycle", self.duty_ns(level))
+
+    def close(self):
+        """Drive the pin low and leave it there."""
+        self._write("duty_cycle", 0)
+        time.sleep(2 * self._period / 1e9)   # the change lands at a cycle edge
+        self._write("enable", 0)             # the driver holds the pin low
+
+
+class GpiozeroPwm:
+    """Fallback: gpiozero's own (user-space) software PWM."""
+
+    name = "gpiozero"
+
+    def __init__(self, pin: int = GPIO_PIN):
+        from gpiozero import PWMLED
+        self._led = PWMLED(pin, initial_value=0.0, frequency=PWM_HZ)
+
+    def set(self, level: float):
+        self._led.value = max(0.0, min(1.0, level))
+
+    def close(self):
+        self._led.off()
+        self._led.close()
+
+
+def open_backend(pin: int = GPIO_PIN):
+    """The best available backend, or None. Says which one on stdout."""
+    channel = KernelPwm.find_channel(pin)
+    if channel is not None:
+        try:
+            backend = KernelPwm(channel)
+            print(f"[led] kernel PWM on GPIO{pin} at {PWM_HZ} Hz")
+            return backend
+        except OSError as exc:
+            print(f"[led] WARNING: kernel PWM found but not usable ({exc}). "
+                  "Check: systemctl status recovr-led")
+    try:
+        backend = GpiozeroPwm(pin)
+        print(f"[led] WARNING: using gpiozero software PWM on GPIO{pin}; the "
+              "fade may flicker. See recovr/deploy/README.md (LED strip).")
+        return backend
+    except Exception as exc:
+        if sys.platform.startswith("linux"):
+            print(f"[led] WARNING: LED disabled, no usable GPIO backend ({exc})")
+        return None
 
 
 class LedFeedback:
-    """One instance per patient process -- see the module docstring.
-    request_blink() and set_active() are the only things calling code
-    needs; both are safe to call as often as they like."""
+    """One instance per patient process. request_blink() and set_active() are
+    safe to call from the game loop as often as needed."""
 
-    def __init__(self, pin: int = GPIO_PIN):
-        self._led = None
-        if _LED is not None:
-            try:
-                self._led = _LED(pin)
-                self._led.value = 0.0
-            except Exception:
-                self._led = None   # hardware unavailable -- stay a no-op
+    def __init__(self, pin: int = GPIO_PIN, *, backend=None, start_thread=True):
+        self._backend = backend if backend is not None else open_backend(pin)
+        self._lock = threading.RLock()
+        self._level = None
 
-        # Base state -- which of "idle" (slow fade) or "active" (steady
-        # full brightness) applies whenever no blink burst is in progress.
+        # Base state: "idle" fade or "active" steady, whenever not blinking.
         self._active = False
         self._fade_t = 0.0
 
-        # Blink-burst state machine -- "idle" / "on" / "off_gap". "idle"
-        # here means "no burst running", distinct from the base idle/active
-        # state above (a burst can interrupt either one).
+        # Blink burst: "idle" (none running) / "on" / "off_gap".
         self._blink_state = "idle"
         self._blink_phase_t = 0.0
         self._blinks_left = 0
-        # A single boolean, not a counter -- deliberately collapses any
-        # number of requests that arrive while a burst is already running
-        # into exactly ONE follow-up burst, never more than one pending at
-        # a time regardless of how many scoring events happened meanwhile.
+        # A flag, not a counter: any number of scores during a burst collapse
+        # into exactly one follow-up burst.
         self._blink_pending = False
+
+        self._stop = threading.Event()
+        self._wake = threading.Event()
+        self._thread = None
+        if self._backend is not None and start_thread:
+            self._thread = threading.Thread(target=self._run, name="LedFeedback",
+                                            daemon=True)
+            self._thread.start()
 
         atexit.register(self.cleanup)
 
     # -- public -----------------------------------------------------------
 
+    @property
+    def backend_name(self) -> str:
+        return self._backend.name if self._backend is not None else "none"
+
     def set_active(self, active: bool):
-        """Call whenever a game session starts or stops being actively
-        played (see patient_main.py's _set_mode) -- True for "steady on",
-        False for "idle fade". Safe to call every frame with the same
-        value; only takes effect as a base-state change, never interrupts
-        an in-progress blink burst."""
-        self._active = bool(active)
+        """True while a game is being played (steady light), else idle fade.
+        Never interrupts a blink burst."""
+        with self._lock:
+            self._active = bool(active)
+        self._wake.set()
 
     def request_blink(self):
-        """Call once per successful scoring event (score increased). Safe
-        to call repeatedly in a burst -- see the pending-collapse note
-        above."""
-        if self._blink_state == "idle":
-            self._start_blink_sequence()
-        else:
-            self._blink_pending = True
+        """Call once per scoring event (score increased)."""
+        with self._lock:
+            if self._blink_state == "idle":
+                self._start_blink_sequence()
+            else:
+                self._blink_pending = True
+        self._wake.set()
 
     def tick(self, dt: float):
-        """Call once per frame, every frame, for the entire lifetime of the
-        patient process -- NOT only while a game is running (the idle fade
-        needs to keep animating between sessions too)."""
-        if self._blink_state != "idle":
-            self._tick_blink(dt)
-        else:
-            self._tick_base(dt)
+        """Advances the effect by dt seconds. Called by the background thread
+        (tests call it directly with start_thread=False)."""
+        with self._lock:
+            if self._blink_state != "idle":
+                self._tick_blink(dt)
+            else:
+                self._tick_base(dt)
 
     def cleanup(self):
-        """Force the LED off and release the GPIO resource. Registered with
-        atexit at construction; also called explicitly on a trapped
-        SIGTERM/SIGINT -- see recovr/patient_app/patient_main.py. Safe to
-        call more than once."""
-        self._active = False
-        self._blink_state = "idle"
-        self._blink_pending = False
-        self._set(0.0)
-        if self._led is not None:
+        """Stop the thread, turn the LED off and release it. Idempotent."""
+        self._stop.set()
+        self._wake.set()
+        if self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join(timeout=1.0)
+        with self._lock:
+            backend, self._backend = self._backend, None
+            self._active = False
+            self._blink_state = "idle"
+            self._blink_pending = False
+        if backend is not None:
             try:
-                self._led.close()
-            except Exception:
-                pass
-            self._led = None
+                backend.close()
+            except Exception as exc:
+                print(f"[led] WARNING: could not switch the LED off: {exc}")
 
     # -- internal -----------------------------------------------------------
+
+    def _run(self):
+        last = time.monotonic()
+        while not self._stop.is_set():
+            self._wake.wait(_BLINK_STEP_SEC if self._blink_state != "idle"
+                            else _FADE_STEP_SEC)
+            self._wake.clear()
+            if self._stop.is_set():
+                break
+            now = time.monotonic()
+            self.tick(now - last)
+            last = now
 
     def _tick_base(self, dt: float):
         if self._active:
             self._set(1.0)
-            # Reset so a later return to idle always restarts the fade from
-            # a consistent, predictable point (dimmest) rather than
-            # whatever phase it happened to be at when the session began.
-            self._fade_t = 0.0
+            self._fade_t = 0.0   # the next idle fade starts from dark
         else:
             self._fade_t += dt
             phase = (self._fade_t % FADE_PERIOD_SEC) / FADE_PERIOD_SEC
-            # Smooth 0 -> 1 -> 0 easing (cosine, not linear) -- no visible
-            # "corner" at the brightest/dimmest points.
-            level = 0.5 - 0.5 * math.cos(2 * math.pi * phase)
-            self._set(level)
+            # Cosine easing: no visible corner at the brightest/dimmest points.
+            wave = 0.5 - 0.5 * math.cos(2 * math.pi * phase)
+            self._set(wave ** FADE_GAMMA)
 
     def _tick_blink(self, dt: float):
         self._blink_phase_t += dt
-        if self._blink_state == "on" and self._blink_phase_t >= BLINK_ON_TIME_SEC:
-            self._set(0.0)
-            self._blink_state = "off_gap"
-            self._blink_phase_t = 0.0
-        elif self._blink_state == "off_gap" and self._blink_phase_t >= BLINK_OFF_TIME_SEC:
+        if self._blink_state == "on":
+            self._set(1.0)
+            if self._blink_phase_t >= BLINK_ON_TIME_SEC:
+                self._set(0.0)
+                self._blink_state = "off_gap"
+                self._blink_phase_t = 0.0
+        elif self._blink_phase_t >= BLINK_OFF_TIME_SEC:
             self._blinks_left -= 1
             if self._blinks_left > 0:
                 self._set(1.0)
@@ -193,20 +283,69 @@ class LedFeedback:
                 if self._blink_pending:
                     self._blink_pending = False
                     self._start_blink_sequence()
-                # else: the NEXT tick() call falls through to _tick_base()
-                # above, resuming idle-fade/active-steady exactly where
-                # that state's own math says it should be.
+                # else the next tick resumes the fade / steady light
 
     def _start_blink_sequence(self):
+        # The first flash is written by the next tick, which the wake event
+        # triggers at once, so all hardware writes stay on one thread.
         self._blinks_left = BLINKS_PER_SEQUENCE
         self._blink_phase_t = 0.0
         self._blink_state = "on"
-        self._set(1.0)
+        if self._thread is None:
+            self._set(1.0)
 
     def _set(self, level: float):
-        if self._led is None:
+        if self._backend is None or level == self._level:
             return
         try:
-            self._led.value = level
-        except Exception:
-            pass
+            self._backend.set(level)
+            self._level = level
+        except Exception as exc:
+            if self._level != "failed":
+                print(f"[led] WARNING: LED write failed: {exc}")
+                self._level = "failed"
+
+
+def force_off(pin: int = GPIO_PIN):
+    """Switch the strip off from outside the patient process -- used after it
+    has exited (cleanly or not). The kernel PWM keeps its last brightness when
+    a process is killed, so this must be run explicitly. Never raises."""
+    try:
+        channel = KernelPwm.find_channel(pin)
+        if channel is not None:
+            KernelPwm(channel).close()
+            return
+        GpiozeroPwm(pin).close()
+    except Exception as exc:
+        if sys.platform.startswith("linux"):
+            print(f"[led] could not force the LED off: {exc}")
+
+
+def _main(argv) -> int:
+    command = argv[0] if argv else "status"
+    if command == "off":
+        force_off()
+        return 0
+    if command not in ("status", "test"):
+        print("usage: python3 -m hardware.led_feedback status | test | off")
+        return 2
+    led = LedFeedback()
+    print(f"[led] backend: {led.backend_name}")
+    if command == "test" and led.backend_name != "none":
+        try:
+            print("1/4  idle fade (12 s)");           time.sleep(12)
+            print("2/4  steady game light (5 s)");    led.set_active(True); time.sleep(5)
+            print("3/4  three scoring flashes, 3 times")
+            for _ in range(3):
+                led.request_blink();                  time.sleep(2)
+            print("4/4  back to idle fade (6 s)");    led.set_active(False); time.sleep(6)
+        except KeyboardInterrupt:
+            print("interrupted")
+    ok = led.backend_name == "kernel"
+    led.cleanup()
+    print("[led] off")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(_main(sys.argv[1:]))

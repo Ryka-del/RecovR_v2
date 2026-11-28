@@ -1,0 +1,37 @@
+#!/bin/sh
+# Prepares the kernel PWM channel that drives the LED strip, so the app can use
+# it without root. Run as root at boot by recovr-led.service, after
+# "dtoverlay=pwm-gpio,gpio=17" has been added to config.txt.
+set -eu
+
+PWM_ROOT="${PWM_ROOT:-/sys/class/pwm}"
+PWM_GROUP="${PWM_GROUP:-gpio}"
+
+find_chip() {
+    for chip in "$PWM_ROOT"/pwmchip*; do
+        if grep -aq "pwm-gpio" "$chip/device/of_node/compatible" 2>/dev/null; then
+            echo "$chip"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# The driver is a module and may still be loading early in the boot.
+chip=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    chip="$(find_chip)" && break
+    sleep 1
+done
+if [ -z "$chip" ]; then
+    echo "recovr-led-setup: no pwm-gpio chip found. Is dtoverlay=pwm-gpio,gpio=17 in config.txt?" >&2
+    exit 1
+fi
+
+[ -d "$chip/pwm0" ] || echo 0 > "$chip/export"
+
+for attr in enable period duty_cycle; do
+    chgrp "$PWM_GROUP" "$chip/pwm0/$attr"
+    chmod g+w "$chip/pwm0/$attr"
+done
+echo "recovr-led-setup: $chip/pwm0 ready for group $PWM_GROUP"

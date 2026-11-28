@@ -1,0 +1,12 @@
+[Unit]
+Description=RecovR LED strip PWM setup
+After=systemd-modules-load.service
+Before=recovr.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/recovr-led-setup
+
+[Install]
+WantedBy=multi-user.target

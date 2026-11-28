@@ -325,13 +325,6 @@ class GameRunner:
         self.game.handle_event(event)
 
     def update(self, dt: float):
-        # The LED is owned by the patient process itself and ticked once per
-        # frame from its own main loop (see patient_main.py's run()),
-        # regardless of whether a GameRunner exists at all (the idle fade
-        # has to keep animating between sessions too). Ticking it again here
-        # would double-tick it while a game is active, corrupting the blink
-        # timing.
-
         if self._fading:
             self._fade_t += dt
             if self._fade_t >= FADE_TOTAL_SEC:

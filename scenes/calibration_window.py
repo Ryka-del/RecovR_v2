@@ -20,6 +20,7 @@ Phases:
 
 import pygame
 from scenes.drag_scroll import DragScroller
+from scenes import calibration_validation as validation
 import builtins
 import os
 import sys
@@ -173,8 +174,9 @@ THERAPIST_CUES = {
     "ready":    "Guide the patient through the upcoming movement.",
     "between":  "Allow the patient to rest before proceeding.",
     "complete": "Calibration is complete. Review the recommended setting based on the results before you start the game.",
-    "direction_retry": "One or more fingers moved inconsistently relative to their resting position. Repeating the 3 trials for this hand.",
-    "direction_warning": "The inconsistent reading persisted on a second attempt. You may retry again, or continue -- the affected finger(s) will be flagged on the Results screen.",
+    "validation_retry":   "Repeating the 3 trials.",
+    "validation_rebase":  "Check the sensor connection and keep the hand relaxed. The resting position will be measured again.",
+    "validation_warning": "Retry again, or continue with a warning on the Results screen.",
 }
 
 # Recording-phase therapist instruction depends on which movement is being
@@ -184,6 +186,14 @@ _RECORDING_CUES = {
     "Finger Flexion": "Ask the patient to bend their fingers to their maximum comfortable range.",
     "Wrist Rotation": "Ask the patient to rotate their wrist to their maximum comfortable range.",
 }
+
+
+# Passes whose trials are checked by scenes/calibration_validation.py: the
+# FSR402 grip sensor and every flex sensor. MPU6050 (wrist) passes are not.
+_FLEX_KEYS      = {"Finger Flexion", *_FINGER_FLEX_KEYS}
+_VALIDATED_KEYS = _FLEX_KEYS | {"Grip Strength"}
+# Longest gap between 50 Hz controller packets before a capture is distrusted.
+_STALE_SIGNAL_SEC = 0.5
 
 
 def _recording_cue_for(game_type):
@@ -544,14 +554,18 @@ class CalibrationWindow:
         # group mode.
         self._finger_group_active = False
         self.peak_values           = [0.0] * len(_FINGER_FLEX_KEYS)
-        # Direction-consistency validation for the finger group (see
-        # _check_finger_group_directions/"direction_retry"/
-        # "direction_warning" phases below) -- 0 until the group's 3 trials
-        # have failed the check once; a 2nd consecutive failure escalates
-        # from an auto-retry to a therapist-facing warning screen instead of
-        # silently repeating forever.
-        self._direction_retry_count  = 0
-        self._direction_issue_names  = []
+        # Trial validation (see scenes/calibration_validation.py). A pass
+        # that fails once repeats on its own; failing again opens the
+        # "direction_warning" screen. (The two "direction_*" phase names are
+        # kept from the earlier direction-only check.)
+        self._validation_retry_count = 0
+        self._validation_issues      = {}     # sensor key -> failed outcome
+        self._validation_outcomes    = {}     # sensor key -> every outcome
+        self.sensor_noise            = {}     # sensor key -> resting std dev
+        self._trial_trackers         = {}
+        self._capture_live           = False  # readings come from the controller
+        self._baseline_lost          = False
+        self._trial_lost             = False
 
         # ── resting-baseline capture (see THERAPIST_CUES above) ────────
         # One measured resting value per sensor type, keyed exactly like
@@ -694,6 +708,8 @@ class CalibrationWindow:
         # the first sensor that still needs calibrating, or straight into
         # Results if the whole game_types list was reused.
         if self.sensor_results:
+            for key, data in self.sensor_results.items():
+                self.sensor_baseline[key] = data.get("baseline", 0.0)
             self._advance_sensor_idx(0)
             if self.phase == "complete":
                 # Nothing was actually just measured THIS window (every
@@ -906,13 +922,10 @@ class CalibrationWindow:
 
         elif self.phase == "direction_warning":
             if self._direction_retry_rect.collidepoint(pos):
-                self.trial_results = []
-                self.current_trial  = 0
-                self.peak_values     = [0.0] * len(_FINGER_FLEX_KEYS)
-                self.peak_value       = 0.0
-                self._start_ready()
+                self._reset_trials()
+                self._restart_after_issue()
             elif self._direction_continue_rect.collidepoint(pos):
-                self._finish_finger_group(direction_warning=True)
+                self._finish_validated_pass()
 
         elif self.phase == "results":
             # Only the fixed footer buttons reach here -- taps inside the
@@ -1001,21 +1014,24 @@ class CalibrationWindow:
                 self.live_value = raw5[0]   # representative only -- see _draw_baseline
                 self._baseline_samples.append(raw5)
                 self.baseline_t += dt
+                self._baseline_lost |= self._signal_lost()
                 if self.baseline_t >= BASELINE_DURATION:
-                    n = len(self._baseline_samples)
                     for i, name in enumerate(_FINGER_FLEX_KEYS):
-                        avg_i = sum(s[i] for s in self._baseline_samples) / n if n else 0.0
-                        self.sensor_baseline[name] = round(avg_i, 4)
+                        mean, noise = validation.rest_stats(
+                            [s[i] for s in self._baseline_samples])
+                        self.sensor_baseline[name] = round(mean, 4)
+                        self.sensor_noise[name]    = noise
                     self._start_ready()
             else:
                 raw = min(1.0, max(0.0, self.cfg["read"](state)))
                 self.live_value = raw
                 self._baseline_samples.append(raw)
                 self.baseline_t += dt
+                self._baseline_lost |= self._signal_lost()
                 if self.baseline_t >= BASELINE_DURATION:
-                    baseline_val = (sum(self._baseline_samples) / len(self._baseline_samples)
-                                     if self._baseline_samples else 0.0)
-                    self.sensor_baseline[self.game_type] = round(baseline_val, 4)
+                    mean, noise = validation.rest_stats(self._baseline_samples)
+                    self.sensor_baseline[self.game_type] = round(mean, 4)
+                    self.sensor_noise[self.game_type]    = noise
                     self._start_ready()
 
         elif self.phase == "ready":
@@ -1029,14 +1045,15 @@ class CalibrationWindow:
                 if self.countdown <= 0:
                     self.phase       = "recording"
                     self.record_t    = 0.0
-                    self.peak_value  = 0.0
-                    self.peak_values = [0.0] * len(_FINGER_FLEX_KEYS)
+                    self._start_trial_capture()
 
         elif self.phase == "recording":
+            self._trial_lost |= self._signal_lost()
             if self._finger_group_active:
                 raw5 = [min(1.0, max(0.0, v)) for v in state["finger_flex"]]
                 self.live_value  = raw5[0]   # representative only -- see _draw_finger_group_readings
-                self.peak_values = [max(p, r) for p, r in zip(self.peak_values, raw5)]
+                for i, (key, value) in enumerate(zip(_FINGER_FLEX_KEYS, raw5)):
+                    self.peak_values[i] = self._track(key, value)
                 self.peak_value  = max(self.peak_values)
                 self.record_t   += dt
                 if self.record_t >= RECORD_DURATION:
@@ -1045,7 +1062,10 @@ class CalibrationWindow:
                     self.pause_t = 0.0
             else:
                 self.live_value  = min(1.0, max(0.0, self.cfg["read"](state)))
-                self.peak_value  = max(self.peak_value, self.live_value)
+                if self.game_type in _VALIDATED_KEYS:
+                    self.peak_value = self._track(self.game_type, self.live_value)
+                else:
+                    self.peak_value = max(self.peak_value, self.live_value)
                 self.record_t   += dt
                 if self.record_t >= RECORD_DURATION:
                     self.trial_results.append(round(self.peak_value, 4))
@@ -1057,27 +1077,7 @@ class CalibrationWindow:
             if self.pause_t >= TRIAL_DONE_PAUSE:
                 self.current_trial += 1
                 if self.current_trial >= 3:
-                    if self._finger_group_active:
-                        # Verify the 3 trials actually moved consistently
-                        # away from each finger's own baseline before
-                        # trusting them -- see _check_finger_group_directions
-                        # and the "direction_retry"/"direction_warning"
-                        # phases below.
-                        issues = self._check_finger_group_directions()
-                        if issues:
-                            self._direction_issue_names = issues
-                            if self._direction_retry_count == 0:
-                                self._direction_retry_count = 1
-                                self._start_direction_retry()
-                            else:
-                                self._start_direction_warning()
-                        else:
-                            self._direction_retry_count = 0
-                            self._finish_finger_group()
-                    elif len(self.game_types) > 1:
-                        self._finish_sensor()
-                    else:
-                        self._enter_complete()
+                    self._validate_pass()
                 else:
                     # Another trial remains for this sensor -- wait on the
                     # "ready" screen (rest cue + Start button) rather than
@@ -1088,7 +1088,7 @@ class CalibrationWindow:
         elif self.phase == "direction_retry":
             self._direction_retry_t += dt
             if self._direction_retry_t >= DIRECTION_RETRY_DURATION:
-                self._start_ready()
+                self._restart_after_issue()
 
         elif self.phase == "direction_warning":
             pass   # waits for the therapist to tap Retry Again / Continue
@@ -1107,14 +1107,18 @@ class CalibrationWindow:
         (skipping any already reused -- see _advance_sensor_idx) or, once
         every sensor in self.game_types is accounted for, enter the one
         combined Results screen."""
+        self._store_sensor_result()
+        self._advance_sensor_idx(self.sensor_idx + 1)
+
+    def _store_sensor_result(self):
         avg = sum(self.trial_results) / len(self.trial_results) if self.trial_results else 0.0
         self.sensor_results[self.game_type] = {
             "sensor_name": self.cfg["sensor_name"],
             "trials":      list(self.trial_results),
             "average":     round(avg, 4),
             "baseline":    self.sensor_baseline.get(self.game_type, 0.0),
+            **self._status_fields(self.game_type),
         }
-        self._advance_sensor_idx(self.sensor_idx + 1)
 
     def _is_finger_group_start(self, idx):
         """True when game_types[idx : idx+5] is exactly the 5 finger-
@@ -1130,51 +1134,122 @@ class CalibrationWindow:
             return False
         return not any(k in self.sensor_results for k in _FINGER_FLEX_KEYS)
 
-    def _check_finger_group_directions(self):
-        """For the finger group's 3 just-completed trials (self.trial_results,
-        each a 5-long raw list -- see update()'s "recording" branch), returns
-        the list of finger names (e.g. ["Thumb", "Ring"]) whose 3 trials are
-        NOT consistently on one side of that finger's own resting baseline.
-        A trial that barely moved at all (within EPS of baseline) counts as
-        neither side, so 3 trials that are "2 up, 1 flat" or "all flat" both
-        flag too -- a real trial should move meaningfully one way or the
-        other. Does NOT assume which direction is correct: all-above and
-        all-below both pass, per the request's "do not force a particular
-        sensor polarity" instruction."""
-        EPS = 0.01
-        issues = []
-        for i, name in enumerate(_FINGER_FLEX_KEYS):
-            baseline = self.sensor_baseline.get(name, 0.0)
-            signs = set()
-            for t in self.trial_results:
-                delta = t[i] - baseline
-                signs.add(0 if abs(delta) < EPS else (1 if delta > 0 else -1))
-            if len(signs) > 1 or signs == {0}:
-                issues.append(name.split()[0])
-        return issues
+    # ── capture + validation ──────────────────────────────────────────────
+
+    def _signal_lost(self):
+        """True when a capture that began on the real controller has since
+        disconnected or stopped receiving packets (the reading then freezes or
+        falls back to keyboard zeros)."""
+        if not self._capture_live:
+            return False
+        if not input_handler.connected:
+            return True
+        try:
+            from sensors.ble_receiver import ble_receiver
+            age = ble_receiver.status().get("data_age")
+        except Exception:
+            return False
+        return age is not None and age > _STALE_SIGNAL_SEC
+
+    def _start_trial_capture(self):
+        self._trial_trackers = {}
+        if self.current_trial == 0:
+            self._trial_lost = False
+        if input_handler.connected and not self._capture_live:
+            # Resting values came from keyboard fallback, not this controller.
+            self._capture_live = self._baseline_lost = True
+        keys = _FINGER_FLEX_KEYS if self._finger_group_active else [self.game_type]
+        rest = [self.sensor_baseline.get(k, 0.0) if k in _VALIDATED_KEYS else 0.0
+                for k in keys]
+        self.peak_values = (rest if self._finger_group_active
+                            else [0.0] * len(_FINGER_FLEX_KEYS))
+        self.peak_value  = max(rest)
+
+    def _track(self, key, value):
+        """Adds a sample and returns this trial's effort reading so far."""
+        tracker = self._trial_trackers.setdefault(key, validation.TrialTracker())
+        tracker.add(value)
+        return tracker.peak(self.sensor_baseline.get(key, 0.0), key in _FLEX_KEYS)
+
+    def _validate_pass(self):
+        """Runs after the third trial: judge each sensor in this pass, then
+        either finish it, repeat it, or ask the therapist."""
+        keys = _FINGER_FLEX_KEYS if self._finger_group_active else [self.game_type]
+        self._validation_outcomes = {}
+        for i, key in enumerate(keys):
+            if key not in _VALIDATED_KEYS:
+                continue
+            trials = ([t[i] for t in self.trial_results] if self._finger_group_active
+                      else list(self.trial_results))
+            baseline = self.sensor_baseline.get(key, 0.0)
+            noise    = self.sensor_noise.get(key, 0.0)
+            outcome  = validation.evaluate(
+                trials, baseline, noise, bidirectional=key in _FLEX_KEYS,
+                live=self._capture_live,
+                signal_lost=self._baseline_lost or self._trial_lost)
+            print(validation.format_log(key, trials, baseline, noise, outcome))
+            self._validation_outcomes[key] = outcome
+
+        self._validation_issues = {
+            k: o for k, o in self._validation_outcomes.items()
+            if o["status"] != validation.PASSED}
+        if not self._validation_issues:
+            self._finish_validated_pass()
+        elif self._validation_retry_count == 0:
+            self._validation_retry_count = 1
+            self._start_direction_retry()
+        else:
+            self._start_direction_warning()
+
+    def _needs_new_baseline(self):
+        return any(o["baseline_fault"] for o in self._validation_issues.values())
+
+    def _reset_trials(self):
+        self.trial_results = []
+        self.current_trial = 0
+        self.peak_values   = [0.0] * len(_FINGER_FLEX_KEYS)
+        self.peak_value    = 0.0
+
+    def _restart_after_issue(self):
+        """The resting position is measured again only when it was the fault."""
+        if self._needs_new_baseline():
+            self._start_baseline()
+        else:
+            self._start_ready()
 
     def _start_direction_retry(self):
-        """1st direction-consistency failure for this finger group (see
-        _check_finger_group_directions) -- reset the 3-trial cycle
-        (baseline is NOT recaptured) and show a brief explanation before
-        trials restart on their own. A 2nd consecutive failure escalates to
-        _start_direction_warning() instead of retrying forever silently."""
-        self.trial_results = []
-        self.current_trial  = 0
-        self.peak_values     = [0.0] * len(_FINGER_FLEX_KEYS)
-        self.peak_value       = 0.0
+        """1st failed validation of this pass -- reset the 3 trials and show a
+        brief explanation before they restart on their own. A 2nd failure goes
+        to _start_direction_warning() instead of retrying forever."""
+        self._reset_trials()
         self.phase              = "direction_retry"
         self._direction_retry_t = 0.0
 
     def _start_direction_warning(self):
-        """2nd consecutive direction-consistency failure -- stop auto-
-        retrying and let the therapist choose, via handle_event: "Retry
-        Again" (same reset as _start_direction_retry) or "Continue Anyway"
-        (accepts the data as-is and calls _finish_finger_group(True) so the
-        affected finger(s) are flagged, not silently treated as clean)."""
+        """2nd failed validation -- let the therapist choose, via
+        handle_event: "Retry Again", or "Continue Anyway" (keeps the data, and
+        each affected sensor stays flagged on the Results screen)."""
         self.phase = "direction_warning"
 
-    def _finish_finger_group(self, direction_warning=False):
+    def _status_fields(self, key):
+        outcome = self._validation_outcomes.get(key)
+        if not outcome:
+            return {}
+        return {"status": outcome["status"], "status_detail": outcome["detail"]}
+
+    def _finish_validated_pass(self):
+        self._validation_retry_count = 0
+        self._validation_issues      = {}
+        if self._finger_group_active:
+            self._finish_finger_group()
+        elif len(self.game_types) > 1:
+            self._finish_sensor()
+        else:
+            if self.game_type in _VALIDATED_KEYS:
+                self._store_sensor_result()
+            self._enter_complete()
+
+    def _finish_finger_group(self):
         """Counterpart to _finish_sensor() for the 5-finger group -- splits
         the 3 shared trials (each trial_results entry is a 5-long list, one
         peak per finger -- see update()'s "recording" branch) back into 5
@@ -1183,26 +1258,18 @@ class CalibrationWindow:
         (_advance_sensor_idx's terminal branch, _enter_results,
         _recommend_difficulty, _accept_multi_sensor, the Results screen)
         already expects that shape and needs no group-specific handling at
-        all once this has run. `direction_warning=True` (only reachable via
-        the therapist's own "Continue Anyway" tap) additionally marks each
-        finger still listed in self._direction_issue_names so the saved
-        record and Results screen can show it was accepted with a warning,
-        not calibrated cleanly."""
+        all once this has run. Each finger keeps its own validation status."""
         for i, name in enumerate(_FINGER_FLEX_KEYS):
             trials_i = [round(t[i], 4) for t in self.trial_results]
             avg_i = sum(trials_i) / len(trials_i) if trials_i else 0.0
-            entry = {
+            self.sensor_results[name] = {
                 "sensor_name": SENSOR_CFG[name]["sensor_name"],
                 "trials":      trials_i,
                 "average":     round(avg_i, 4),
                 "baseline":    self.sensor_baseline.get(name, 0.0),
+                **self._status_fields(name),
             }
-            if direction_warning and name.split()[0] in self._direction_issue_names:
-                entry["direction_warning"] = True
-            self.sensor_results[name] = entry
-        self._finger_group_active   = False
-        self._direction_retry_count = 0
-        self._direction_issue_names = []
+        self._finger_group_active = False
         self._advance_sensor_idx(self.sensor_idx + len(_FINGER_FLEX_KEYS))
 
     def _advance_sensor_idx(self, start_idx):
@@ -1251,6 +1318,8 @@ class CalibrationWindow:
         self.baseline_t       = 0.0
         self.live_value       = 0.0
         self._baseline_samples = []
+        self._capture_live     = input_handler.connected
+        self._baseline_lost    = False
 
     def _start_ready(self):
         self.phase = "ready"
@@ -1556,6 +1625,10 @@ class CalibrationWindow:
         # regrip, a different arm rest) -- recapture it fresh rather than
         # reusing a stale baseline.
         self.sensor_baseline  = {}
+        self.sensor_noise     = {}
+        self._validation_retry_count = 0
+        self._validation_issues      = {}
+        self._validation_outcomes    = {}
         self._prep_t          = 0.0
         self._complete_t      = 0.0
         self._finger_group_active = self._is_finger_group_start(0)
@@ -1909,56 +1982,75 @@ class CalibrationWindow:
         surface.blit(b_s, b_s.get_rect(center=start_r.center))
         self._start_trial_rect = start_r
 
-    def _draw_direction_retry(self, surface, area, C):
-        """1st direction-consistency failure (see
-        _check_finger_group_directions/_start_direction_retry) -- a brief,
-        auto-advancing explanation before the 3 trials restart on their
-        own, same layout family as _draw_prep/_draw_complete."""
-        W, H = self.W, self.H
+    def _issue_title(self):
+        statuses = {o["status"] for o in self._validation_issues.values()}
+        if len(statuses) == 1:
+            return {validation.NO_MOVEMENT:  "No Movement Detected",
+                    validation.INCONSISTENT: "Inconsistent Movement",
+                    validation.UNRELIABLE:   "Unreliable Sensor Reading"}[statuses.pop()]
+        return "Check Sensor Readings"
+
+    def _issue_lines(self):
+        """One line per problem type (at most three), naming the sensors that
+        share it; the detail is shown when they all share that too."""
+        grouped = {}
+        for key, o in self._validation_issues.items():
+            name = key.split()[0] if key in _FINGER_FLEX_KEYS else SENSOR_CFG[key]["sensor_name"]
+            names, details = grouped.setdefault(o["status"], ([], set()))
+            names.append(name)
+            details.add(o["detail"])
+        lines = []
+        for status, (names, details) in grouped.items():
+            line = f"{', '.join(names)}: {validation.STATUS_LABELS[status]}"
+            if len(details) == 1:
+                line += f" ({details.pop()})"
+            lines.append(line)
+        return lines
+
+    def _draw_issue_screen(self, surface, area, C, state_text, state_col, cue):
+        """Shared header + problem list + cue; returns the y below them."""
         lx = self._scw(40)
-        rw = W - lx * 2
+        rw = self.W - lx * 2
         cy = area.y + self._sc(6)
-
-        tl_s = self.fnt["head2"].render("Inconsistent Reading Detected", True, C["text"])
-        surface.blit(tl_s, (lx, cy))
-        st_s = self.fnt["head2"].render("Retrying", True, C["accent"])
+        st_s = self.fnt["head2"].render(state_text, True, state_col)
         surface.blit(st_s, st_s.get_rect(topright=(lx + rw, cy)))
-        cy += tl_s.get_height() + self._sc(14)
+        tl_s = self._fit_text(self._bold_font_path, self._sc(25), self._issue_title(),
+                              rw - st_s.get_width() - self._scw(16), C["text"], self._sc(16))
+        surface.blit(tl_s, (lx, cy))
+        cy += max(tl_s.get_height(), st_s.get_height()) + self._sc(8)
+        for line in self._issue_lines():
+            s = self._fit_text(self._small_font_path, self._sc(18), line, rw,
+                               C["text"], self._sc(12))
+            surface.blit(s, (lx, cy))
+            cy += s.get_height() + self._sc(2)
+        return self._draw_cue_box(surface, lx, cy + self._sc(6), rw, C, cue)
 
-        names = ", ".join(self._direction_issue_names) or "One or more fingers"
-        cue = f"{names}: {THERAPIST_CUES['direction_retry']}"
-        cy = self._draw_cue_box(surface, lx, cy, rw, C, cue)
-        cy += self._sc(10)
-        self._draw_timer_bar(surface, lx, cy, rw, C,
+    def _draw_direction_retry(self, surface, area, C):
+        """1st failed validation -- a brief, auto-advancing explanation, same
+        layout family as _draw_prep/_draw_complete."""
+        lx = self._scw(40)
+        rw = self.W - lx * 2
+        cue = THERAPIST_CUES["validation_rebase" if self._needs_new_baseline()
+                             else "validation_retry"]
+        cy = self._draw_issue_screen(surface, area, C, "Retrying", C["accent"], cue)
+        self._draw_timer_bar(surface, lx, cy + self._sc(8), rw, C,
                              max(0.0, DIRECTION_RETRY_DURATION - self._direction_retry_t),
                              DIRECTION_RETRY_DURATION)
 
     def _draw_direction_warning(self, surface, area, C):
-        """2nd consecutive direction-consistency failure -- stops auto-
-        retrying and lets the therapist choose, via the two buttons below
-        (see handle_event's "direction_warning" branch)."""
-        W, H = self.W, self.H
-        cx = area.centerx
+        """2nd failed validation -- the therapist chooses via the two buttons
+        below (see handle_event's "direction_warning" branch)."""
         lx = self._scw(40)
-        rw = W - lx * 2
-        cy = area.y + self._sc(6)
-
-        tl_s = self.fnt["head2"].render("Inconsistent Reading Persists", True, C["text"])
-        surface.blit(tl_s, (lx, cy))
-        st_s = self.fnt["head2"].render("Action Needed", True, C["yellow"])
-        surface.blit(st_s, st_s.get_rect(topright=(lx + rw, cy)))
-        cy += tl_s.get_height() + self._sc(14)
-
-        names = ", ".join(self._direction_issue_names) or "One or more fingers"
-        cue = f"{names}: {THERAPIST_CUES['direction_warning']}"
-        cy = self._draw_cue_box(surface, lx, cy, rw, C, cue)
-        cy += self._sc(20)
-
+        rw = self.W - lx * 2
+        cy = self._draw_issue_screen(surface, area, C, "Action Needed", C["yellow"],
+                                     THERAPIST_CUES["validation_warning"])
         btn_h = self._tt(44)
         gap   = self._scw(16)
         btn_w = (rw - gap) // 2
-        retry_r = pygame.Rect(lx, cy, btn_w, btn_h)
-        cont_r  = pygame.Rect(lx + btn_w + gap, cy, btn_w, btn_h)
+        # Never pushed off the screen by a long list of affected sensors.
+        by      = min(cy + self._sc(10), self.H - btn_h - self._sc(44))
+        retry_r = pygame.Rect(lx, by, btn_w, btn_h)
+        cont_r  = pygame.Rect(lx + btn_w + gap, by, btn_w, btn_h)
         pygame.draw.rect(surface, C["panel2"], retry_r, border_radius=14)
         pygame.draw.rect(surface, C["accent"], retry_r, 2, border_radius=14)
         pygame.draw.rect(surface, C["accent"], cont_r, border_radius=14)
@@ -2222,13 +2314,18 @@ class CalibrationWindow:
         y = content_top
         ban_h = u(100)
         ban_r = pygame.Rect(lx, y, rw, ban_h)
+        flagged = any(d.get("status") not in (None, validation.PASSED)
+                      for d in self.sensor_results.values())
+        ban_col = C["orange"] if flagged else C["green"]
         pygame.draw.rect(surface, C["panel"], ban_r, border_radius=12)
-        pygame.draw.rect(surface, C["green"], ban_r, 2, border_radius=12)
-        hd_s = self.fnt["head2"].render("Calibration Complete!", True, C["green"])
+        pygame.draw.rect(surface, ban_col, ban_r, 2, border_radius=12)
+        hd_s = self.fnt["head2"].render("Calibration Complete!", True, ban_col)
         surface.blit(hd_s, (ban_r.x + u(16), ban_r.y + u(12)))
-        sub_s = self.fnt["small"].render(
-            "All required sensors have been successfully calibrated.",
-            True, C["sub"])
+        sub_s = self._fit_text(
+            self._small_font_path, self._sc(18),
+            "Some sensors were accepted with a warning. Check them below."
+            if flagged else "All required sensors have been successfully calibrated.",
+            rw - u(32), C["sub"], self._sc(12))
         surface.blit(sub_s, (ban_r.x + u(16),
                               ban_r.y + u(12) + hd_s.get_height() + u(2)))
         y += ban_h + u(16)
@@ -2270,7 +2367,9 @@ class CalibrationWindow:
             # instead of guessing and letting the line run past the card's
             # own bottom edge.
             _baseline_for_sizing = self.sensor_baseline.get(self.game_type, 0.0)
-            res_h = u(250) + (u(30) if _baseline_for_sizing > 0 else 0)
+            _status_data = self.sensor_results.get(self.game_type) or {}
+            res_h = (u(250) + (u(30) if _baseline_for_sizing > 0 else 0)
+                     + (u(52) if _status_data.get("status") else 0))
             res_r = pygame.Rect(lx, y, rw, res_h)
             pygame.draw.rect(surface, C["panel"],  res_r, border_radius=12)
             pygame.draw.rect(surface, C["border"], res_r, 1, border_radius=12)
@@ -2314,7 +2413,12 @@ class CalibrationWindow:
             # would otherwise run into it.
             left_col_w = max(av_lbl_s.get_width(), avl_s.get_width())
             divx = max(res_r.x + u(160), res_r.x + u(14) + left_col_w + u(16))
-            pygame.draw.line(surface, C["border"], (divx, strip_y), (divx, res_r.bottom - u(10)), 1)
+            status_room = u(52) if _status_data.get("status") else 0
+            pygame.draw.line(surface, C["border"], (divx, strip_y),
+                             (divx, res_r.bottom - u(10) - status_room), 1)
+            if status_room:
+                self._draw_status_line(surface, _status_data, res_r.x + u(14),
+                                       res_r.bottom - u(28), res_r.width - u(28), C)
 
             baseline = self.sensor_baseline.get(self.game_type, 0.0)
             thr_now = self._baseline_threshold(avg, baseline, self.adv_threshold_pct)
@@ -2427,6 +2531,21 @@ class CalibrationWindow:
                 return gt[:i] + ["Finger Flexion"] + gt[i + n:]
         return gt
 
+    @staticmethod
+    def _status_text(data):
+        label = validation.STATUS_LABELS.get(data.get("status"), "")
+        detail = data.get("status_detail")
+        return f"Check: {label} ({detail})" if detail else f"Check: {label}"
+
+    def _draw_status_line(self, surface, data, x, y, max_w, C):
+        """Draws one sensor's validation result; returns the height used."""
+        ok = data.get("status") == validation.PASSED
+        s = self._fit_text(self._bold_font_path, self._sc(16),
+                           "Check: Passed" if ok else self._status_text(data),
+                           max_w, C["green"] if ok else C["orange"], self._sc(12))
+        surface.blit(s, (x, y))
+        return s.get_height()
+
     def _draw_finger_group_card(self, surface, lx, y, rw, C, header="Finger Flexion"):
         """One combined card for a 5-finger flex group. Shared by two
         callers (see _draw_multi_sensor_results): Garden Wonders, where
@@ -2459,13 +2578,9 @@ class CalibrationWindow:
                     f"Threshold {self._fmt_value_for(key, thr)}")
             if baseline > 0:
                 line += f"  ·  Baseline {self._fmt_value_for(key, baseline)}"
-            # Flagged via the therapist's own "Continue Anyway" tap on the
-            # direction-consistency warning screen (see
-            # _check_finger_group_directions/_finish_finger_group) -- the 3
-            # trials weren't consistently on one side of this finger's
-            # baseline, so this reading may be less reliable than usual.
-            if data and data.get("direction_warning"):
-                line += "  ·  ⚠ Inconsistent during calibration"
+            # This finger's own validation result (see _validate_pass).
+            if data and data.get("status"):
+                line += f"  ·  {self._status_text(data)}"
             rows.append(self._wrap_text(line, f_small, row_max_w))
 
         note_lines = self._wrap_text(
@@ -2493,9 +2608,12 @@ class CalibrationWindow:
         surface.blit(sn_s, (r.x + u(14), ty))
         ty += sn_s.get_height() + u(10)
 
-        for lines in rows:
+        for key, lines in zip(_FINGER_FLEX_KEYS, rows):
+            data = self.sensor_results.get(key) or {}
+            col = (C["orange"] if data.get("status") not in (None, validation.PASSED)
+                   else C["text"])
             for ln in lines:
-                ls = f_small.render(ln, True, C["text"])
+                ls = f_small.render(ln, True, col)
                 surface.blit(ls, (r.x + u(14), ty))
                 ty += line_h
             ty += u(4)
@@ -2581,7 +2699,9 @@ class CalibrationWindow:
                              thr_s.get_height() + u(4) + (base_s.get_height() if base_s else 0))
             note_h     = (u(10) + len(note_lines) * (f_small.get_height() + u(2))) if note_lines else 0
             bottom_pad = u(10)
-            card_h = top_pad + header_h + row_h + note_h + bottom_pad
+            has_status = bool(data and data.get("status"))
+            status_h = (self._sc(24)) if has_status else 0
+            card_h = top_pad + header_h + row_h + status_h + note_h + bottom_pad
 
             r = pygame.Rect(lx, y, rw, card_h)
             pygame.draw.rect(surface, C["panel"],  r, border_radius=12)
@@ -2605,8 +2725,12 @@ class CalibrationWindow:
             if base_s:
                 surface.blit(base_s, (divx + u(16), row_y + thr_s.get_height() + u(4)))
 
+            if has_status:
+                self._draw_status_line(surface, data, r.x + u(14), row_y + row_h + u(4),
+                                       r.width - u(28), C)
+
             if note_lines:
-                note_y = row_y + row_h + u(10)
+                note_y = row_y + row_h + status_h + u(10)
                 pygame.draw.line(surface, C["border"], (r.x + u(14), note_y - u(5)),
                                  (r.right - u(14), note_y - u(5)), 1)
                 for ln in note_lines:

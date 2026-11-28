@@ -80,6 +80,53 @@ To stop autostarting without uninstalling anything: `sudo systemctl disable reco
   just stays stopped until someone looks at it).
 - Does not touch calibration code, assets, or the database schema.
 
+## LED strip (GPIO17, Debian 13 / Trixie)
+
+The 12V strip's MOSFET stays on **GPIO17**. Brightness comes from the Linux
+kernel's `pwm-gpio` driver, which needs no extra packages and does not use the
+Pi's PWM hardware, so 3.5 mm audio is unaffected. `pigpio` is not used.
+
+Install once, from this `recovr/deploy` folder:
+
+1. Check that this kernel provides the driver (both should print information):
+   ```bash
+   modinfo pwm-gpio
+   dtoverlay -h pwm-gpio
+   ```
+2. Add the overlay, then reboot:
+   ```bash
+   echo -e "\n[all]\ndtoverlay=pwm-gpio,gpio=17" | sudo tee -a /boot/firmware/config.txt
+   ```
+3. Install the boot-time permission setup (the service user must be in the
+   `gpio` group):
+   ```bash
+   sudo install -m 0755 -o root -g root recovr-led-setup /usr/local/bin/recovr-led-setup
+   sudo install -m 0644 recovr-led.service /etc/systemd/system/recovr-led.service
+   # If recovr.service is already installed and edited, don't overwrite it:
+   # run "sudo systemctl edit --full recovr" and copy in the new
+   # After=, Wants= and ExecStopPost= lines. Otherwise edit User= and
+   # WorkingDirectory= in the file first, then:
+   sudo install -m 0644 recovr.service /etc/systemd/system/recovr.service
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now recovr-led.service
+   sudo reboot
+   ```
+
+Test it, from the project folder with RecovR stopped
+(`sudo systemctl stop recovr`):
+
+```bash
+python3 -m hardware.led_feedback status   # should report: backend: kernel
+python3 -m hardware.led_feedback test     # fade, steady light, flashes, off
+python3 -m hardware.led_feedback off
+```
+
+If the overlay or setup is missing, the app falls back to `gpiozero` software
+PWM (Raspberry Pi OS packages `python3-gpiozero` and `python3-lgpio`), which can
+flicker; the console shows a `[led] WARNING` line. With the overlay loaded, GPIO17 belongs to
+the kernel driver and that fallback cannot take it, so a failed
+`recovr-led.service` leaves the strip dark.
+
 ## Date/time accuracy (occasional wrong date/time reported in the field)
 
 **Investigated, not fixed in code — this is an OS/hardware issue, not an

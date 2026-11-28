@@ -131,6 +131,19 @@ def _shutdown(*_a):
               "exited -- see the WARNING(s) above.")
 
 
+def _led_off():
+    """The patient process switches the LED strip off when it exits cleanly.
+    If it crashed or had to be killed, the kernel PWM would stay lit, so the
+    supervisor switches it off too (after every child has been stopped)."""
+    if "patient" not in _PROCS:
+        return
+    try:
+        from hardware import led_feedback
+        led_feedback.force_off()
+    except Exception as exc:
+        print(f"[launch] WARNING: could not switch the LED off: {exc}")
+
+
 # The one and only place that may ever power off the Pi. This sentinel is
 # written by main.py's _confirmed_exit() -- ONLY on the confirmed "Yes,
 # Close" dialog action -- and nowhere else: not a crash, not a kill, not
@@ -310,6 +323,7 @@ def main():
         pass
     finally:
         _shutdown()
+        _led_off()
         _maybe_shutdown_pi()
     print("[launch] done.")
 
