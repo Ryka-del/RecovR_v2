@@ -13,6 +13,7 @@ turns an elapsed-seconds float into a frame.
 import pygame
 
 from ui_cards import font as _font
+from recovr.patient_app.scenes.common import render_outlined
 
 STEP_SEC  = 1.0     # each of "3", "2", "1"
 FLASH_SEC = 0.55    # brief "START!" transition
@@ -65,7 +66,10 @@ class CountdownScreen:
             scale, alpha = 1.0, 1.0
 
         f = _font(font_name, size_px)
-        s = f.render(text, True, color)
+        if text.isdigit():
+            s = render_outlined(f, text, color, size_px * 0.025)
+        else:
+            s = f.render(text, True, color)
         if scale != 1.0:
             w = max(1, int(s.get_width() * scale))
             h = max(1, int(s.get_height() * scale))

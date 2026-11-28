@@ -27,6 +27,7 @@
 # =============================================================================
 
 import pygame
+from scenes.drag_scroll import DragScroller
 import sys, os, math, datetime, time
 from collections import defaultdict
 
@@ -1135,18 +1136,18 @@ class TherapistDashboardScene:
         }
 
         # Patient List scroll offset (touch: list scrolls instead of shrinking).
+        self._scroller      = DragScroller()
+        self._scroll_views  = {}          # area key -> on-screen viewport Rect
         self._pl_scroll     = 0
         self._pl_scroll_max  = 0
         self._pl_up_rect    = pygame.Rect(0, 0, 1, 1)
         self._pl_down_rect  = pygame.Rect(0, 0, 1, 1)
-        self._pl_drag_y     = None
 
         # Session History (panel 1) scroll.
         self._sh_scroll     = 0
         self._sh_scroll_max = 0
         self._sh_up_rect    = pygame.Rect(0, 0, 1, 1)
         self._sh_down_rect  = pygame.Rect(0, 0, 1, 1)
-        self._sh_drag_y     = None
         self._sh_row_rects  = []     # [(rect, session_record), ...] -- tap a row to open it
         # Short-lived cache for get_sessions(): avoids re-running the same
         # multi-join SQL query (plus per-row datetime conversion) 60x/sec
@@ -1167,7 +1168,6 @@ class TherapistDashboardScene:
         self._shd_scroll_max   = 0
         self._shd_up_rect      = pygame.Rect(0, 0, 1, 1)
         self._shd_down_rect    = pygame.Rect(0, 0, 1, 1)
-        self._shd_drag_y       = None
         self._shd_back_rect    = pygame.Rect(0, 0, 1, 1)
 
         # Analytics / Metrics (panel 2) scroll -- an expandable tree now
@@ -1176,7 +1176,6 @@ class TherapistDashboardScene:
         self._an_scroll_max = 0
         self._an_up_rect    = pygame.Rect(0, 0, 1, 1)
         self._an_down_rect  = pygame.Rect(0, 0, 1, 1)
-        self._an_drag_y     = None
         # Which tree nodes are expanded -- a set of path tuples, e.g.
         # ("Single Skill",), ("Single Skill","Grip Strength"),
         # ("Single Skill","Grip Strength","Basketball"),
@@ -1191,7 +1190,6 @@ class TherapistDashboardScene:
         self._cr_scroll_max = 0
         self._cr_up_rect    = pygame.Rect(0, 0, 1, 1)
         self._cr_down_rect  = pygame.Rect(0, 0, 1, 1)
-        self._cr_drag_y     = None
         self._cr_row_rects  = []     # [(rect, record), ...] -- tap a row to open it
         # Short-lived cache for get_calibrations() -- same reasoning as
         # _sessions_cache_* above (Calibration Records draw() every frame).
@@ -1208,7 +1206,6 @@ class TherapistDashboardScene:
         self._crd_scroll_max   = 0
         self._crd_up_rect      = pygame.Rect(0, 0, 1, 1)
         self._crd_down_rect    = pygame.Rect(0, 0, 1, 1)
-        self._crd_drag_y       = None
         self._crd_back_rect    = pygame.Rect(0, 0, 1, 1)
 
         # Shared Confirm/Cancel hit-rects for the 5 "standard" 2-button
@@ -1281,7 +1278,6 @@ class TherapistDashboardScene:
         self._pv_info_down_rect       = pygame.Rect(0, 0, 1, 1)
         self._rp_scroll               = 0          # Register Patient (touch) form scroll offset
         self._rp_scroll_max           = 0
-        self._rp_drag_y               = None
         self._rp_up_rect              = pygame.Rect(0, 0, 1, 1)
         self._rp_down_rect            = pygame.Rect(0, 0, 1, 1)
         self._pending_select_patient  = None       # patient awaiting the SELECT confirm dialog
@@ -1363,7 +1359,6 @@ class TherapistDashboardScene:
         self._ss_scroll_max = 0
         self._ss_up_rect    = pygame.Rect(0, 0, 1, 1)
         self._ss_down_rect  = pygame.Rect(0, 0, 1, 1)
-        self._ss_drag_y     = None
 
         # ── Interactive UI element rects ──
         # These store clickable areas for various buttons/interactive elements
@@ -1427,7 +1422,6 @@ class TherapistDashboardScene:
         self._share_shared_scroll     = 0          # "Currently shared with:" list scroll offset (px)
         self._share_shared_scroll_max = 0
         self._share_shared_viewport   = pygame.Rect(0, 0, 1, 1)
-        self._share_shared_drag_y     = None       # finger-drag scroll tracking (touch)
         self._share_confirm_therapist = None       # therapist chosen from suggestions, pending confirm/choice
         # Stage machine for the modal: "pick" (typing/suggestions) ->
         # "choice" (SHARE or TRANSFER?) -> "confirm" (final Yes/Cancel, worded
@@ -1456,7 +1450,6 @@ class TherapistDashboardScene:
         self.edit_icon_picker_open = False
         self._eip_scroll     = 0
         self._eip_scroll_max = 0
-        self._eip_drag_y     = None
         self._eip_up_rect    = pygame.Rect(0, 0, 1, 1)
         self._eip_down_rect  = pygame.Rect(0, 0, 1, 1)
         self._eip_done_rect  = pygame.Rect(0, 0, 1, 1)
@@ -1850,220 +1843,10 @@ class TherapistDashboardScene:
             self._cal_win.handle_event(event)
             return None
 
-        # ── Share search popup: "Currently shared with:" list scroll
-        #    (wheel + finger drag, same pattern as Register Patient below --
-        #    FINGERDOWN does not return, so a plain tap still reaches the
-        #    normal click dispatch later; only an actual drag's MOTION
-        #    consumes the event and adjusts scroll). Checked here, ahead of
-        #    the Patient List's own wheel handler below, because the share
-        #    modal is a full-screen overlay on top of panel 0 (Patient
-        #    List is always the active_panel underneath it) -- without this
-        #    priority, every wheel event while the modal is open would
-        #    scroll the hidden patient list instead of the popup on top of
-        #    it. ──────────────────────────────────────────────────────────
-        if self._share_modal_open and self._share_stage == "pick":
-            if event.type == pygame.MOUSEWHEEL:
-                if self._share_shared_viewport.collidepoint(pygame.mouse.get_pos()):
-                    self._share_shared_scroll = max(0, min(
-                        self._share_shared_scroll - event.y * self._tt(40),
-                        self._share_shared_scroll_max))
-                    return None
-            elif event.type == pygame.FINGERDOWN:
-                pos = (int(event.x * self.WIDTH), int(event.y * self.HEIGHT))
-                if self._share_shared_viewport.collidepoint(pos):
-                    self._share_shared_drag_y = event.y * self.HEIGHT
-            elif event.type == pygame.FINGERMOTION and self._share_shared_drag_y is not None:
-                cy = event.y * self.HEIGHT
-                self._share_shared_scroll = max(0, min(
-                    self._share_shared_scroll + (self._share_shared_drag_y - cy),
-                    self._share_shared_scroll_max))
-                self._share_shared_drag_y = cy
-                return None
-            elif event.type == pygame.FINGERUP:
-                self._share_shared_drag_y = None
-
-        # ── Edit Profile: icon-picker popup scroll (wheel + finger drag).
-        #    Checked here, ahead of the Patient List's own wheel handler
-        #    below, for the exact same reason as the Share popup above --
-        #    this modal opens on top of panel 0 (Patient List is still the
-        #    active_panel underneath it), so without this priority every
-        #    wheel event would scroll the hidden patient list instead of
-        #    the picker on top of it. ──────────────────────────────────
-        if self.modal == "edit_profile" and self.edit_icon_picker_open:
-            if event.type == pygame.MOUSEWHEEL:
-                self._eip_scroll = max(0, min(
-                    self._eip_scroll - event.y * int(60 * self._fs), self._eip_scroll_max))
-                return None
-            if event.type == pygame.FINGERDOWN:
-                self._eip_drag_y = event.y * self.HEIGHT
-            elif event.type == pygame.FINGERMOTION and self._eip_drag_y is not None:
-                cy = event.y * self.HEIGHT
-                self._eip_scroll = max(0, min(
-                    self._eip_scroll + (self._eip_drag_y - cy), self._eip_scroll_max))
-                self._eip_drag_y = cy
-                return None
-            elif event.type == pygame.FINGERUP:
-                self._eip_drag_y = None
-
-        # ── Patient List scrolling (wheel + touch drag) ──────────────
-        if self.active_panel == 0:
-            if event.type == pygame.MOUSEWHEEL:
-                step = int(60 * self._fs)
-                self._pl_scroll = max(0, min(self._pl_scroll - event.y * step,
-                                             self._pl_scroll_max))
-                return None
-            if event.type == pygame.FINGERDOWN:
-                self._pl_drag_y = event.y * self.HEIGHT
-            elif event.type == pygame.FINGERMOTION and self._pl_drag_y is not None:
-                cy = event.y * self.HEIGHT
-                self._pl_scroll = max(0, min(self._pl_scroll + (self._pl_drag_y - cy),
-                                             self._pl_scroll_max))
-                self._pl_drag_y = cy
-                return None
-            elif event.type == pygame.FINGERUP:
-                self._pl_drag_y = None
-
-        # ── Session Details scrolling (wheel + touch drag) ────────────
-        # Metrics/Calibration Records/Session History are TABS inside panel 8
-        # (self._pv_tab), not separate panels, so this gates on the tab state
-        # directly rather than "active_panel == 1/2/3" (those panel numbers
-        # are unused and can never be true here).
-        if self.active_panel == 8 and self._pv_tab == "history" and self._sh_detail_record is not None:
-            if event.type == pygame.MOUSEWHEEL:
-                self._shd_scroll = max(0, min(self._shd_scroll - event.y * int(60 * self._fs),
-                                              self._shd_scroll_max))
-                return None
-            if event.type == pygame.FINGERDOWN:
-                self._shd_drag_y = event.y * self.HEIGHT
-            elif event.type == pygame.FINGERMOTION and self._shd_drag_y is not None:
-                cy = event.y * self.HEIGHT
-                self._shd_scroll = max(0, min(self._shd_scroll + (self._shd_drag_y - cy),
-                                              self._shd_scroll_max))
-                self._shd_drag_y = cy
-                return None
-            elif event.type == pygame.FINGERUP:
-                self._shd_drag_y = None
-
-        # ── Session History (list) scrolling (wheel + touch drag) ─────
-        if self.active_panel == 8 and self._pv_tab == "history" and self._sh_detail_record is None:
-            if event.type == pygame.MOUSEWHEEL:
-                self._sh_scroll = max(0, min(self._sh_scroll - event.y * int(60 * self._fs),
-                                             self._sh_scroll_max))
-                return None
-            if event.type == pygame.FINGERDOWN:
-                self._sh_drag_y = event.y * self.HEIGHT
-            elif event.type == pygame.FINGERMOTION and self._sh_drag_y is not None:
-                cy = event.y * self.HEIGHT
-                self._sh_scroll = max(0, min(self._sh_scroll + (self._sh_drag_y - cy),
-                                             self._sh_scroll_max))
-                self._sh_drag_y = cy
-                return None
-            elif event.type == pygame.FINGERUP:
-                self._sh_drag_y = None
-
-        # ── Analytics (Metrics) scrolling (wheel + touch drag) ────────
-        if self.active_panel == 8 and self._pv_tab == "analytics":
-            if event.type == pygame.MOUSEWHEEL:
-                self._an_scroll = max(0, min(self._an_scroll - event.y * int(60 * self._fs),
-                                             self._an_scroll_max))
-                return None
-            if event.type == pygame.FINGERDOWN:
-                self._an_drag_y = event.y * self.HEIGHT
-            elif event.type == pygame.FINGERMOTION and self._an_drag_y is not None:
-                cy = event.y * self.HEIGHT
-                self._an_scroll = max(0, min(self._an_scroll + (self._an_drag_y - cy),
-                                             self._an_scroll_max))
-                self._an_drag_y = cy
-                return None
-            elif event.type == pygame.FINGERUP:
-                self._an_drag_y = None
-
-        # ── Calibration Record Details scrolling (wheel + touch drag) ─
-        if self.active_panel == 8 and self._pv_tab == "calibration" and self._cr_detail_record is not None:
-            if event.type == pygame.MOUSEWHEEL:
-                self._crd_scroll = max(0, min(self._crd_scroll - event.y * int(60 * self._fs),
-                                              self._crd_scroll_max))
-                return None
-            if event.type == pygame.FINGERDOWN:
-                self._crd_drag_y = event.y * self.HEIGHT
-            elif event.type == pygame.FINGERMOTION and self._crd_drag_y is not None:
-                cy = event.y * self.HEIGHT
-                self._crd_scroll = max(0, min(self._crd_scroll + (self._crd_drag_y - cy),
-                                              self._crd_scroll_max))
-                self._crd_drag_y = cy
-                return None
-            elif event.type == pygame.FINGERUP:
-                self._crd_drag_y = None
-
-        # ── Calibration Records (list) scrolling (wheel + touch drag) ─
-        if self.active_panel == 8 and self._pv_tab == "calibration" and self._cr_detail_record is None:
-            if event.type == pygame.MOUSEWHEEL:
-                self._cr_scroll = max(0, min(self._cr_scroll - event.y * int(60 * self._fs),
-                                             self._cr_scroll_max))
-                return None
-            if event.type == pygame.FINGERDOWN:
-                self._cr_drag_y = event.y * self.HEIGHT
-            elif event.type == pygame.FINGERMOTION and self._cr_drag_y is not None:
-                cy = event.y * self.HEIGHT
-                self._cr_scroll = max(0, min(self._cr_scroll + (self._cr_drag_y - cy),
-                                             self._cr_scroll_max))
-                self._cr_drag_y = cy
-                return None
-            elif event.type == pygame.FINGERUP:
-                self._cr_drag_y = None
-
-        # ── Start Session scrolling (wheel + touch drag) ──────────────
-        if self.active_panel == 5:
-            if event.type == pygame.MOUSEWHEEL:
-                self._ss_scroll = max(0, min(self._ss_scroll - event.y * int(60 * self._fs),
-                                             self._ss_scroll_max))
-                return None
-            if event.type == pygame.FINGERDOWN:
-                self._ss_drag_y = event.y * self.HEIGHT
-            elif event.type == pygame.FINGERMOTION and self._ss_drag_y is not None:
-                cy = event.y * self.HEIGHT
-                self._ss_scroll = max(0, min(self._ss_scroll + (self._ss_drag_y - cy),
-                                             self._ss_scroll_max))
-                self._ss_drag_y = cy
-                return None
-            elif event.type == pygame.FINGERUP:
-                self._ss_drag_y = None
-
-        # ── Patient page Info tab: scroll the field list ────────────
-        if self.active_panel == 8 and self._pv_tab == "info":
-            if event.type == pygame.MOUSEWHEEL:
-                self._pv_info_scroll = max(0, min(
-                    self._pv_info_scroll - event.y * int(60 * self._fs),
-                    self._pv_info_scroll_max))
-                return None
-            if event.type == pygame.FINGERDOWN:
-                self._pv_drag_y = event.y * self.HEIGHT
-            elif event.type == pygame.FINGERMOTION and getattr(self, "_pv_drag_y", None) is not None:
-                cy = event.y * self.HEIGHT
-                self._pv_info_scroll = max(0, min(
-                    self._pv_info_scroll + (self._pv_drag_y - cy), self._pv_info_scroll_max))
-                self._pv_drag_y = cy
-                return None
-            elif event.type == pygame.FINGERUP:
-                self._pv_drag_y = None
-
-        # ── Register Patient (touch): scroll the form ───────────────
-        if self.active_panel == 6 and self._touch_ui:
-            if event.type == pygame.MOUSEWHEEL:
-                self._rp_scroll = max(0, min(
-                    self._rp_scroll - event.y * int(60 * self._fs),
-                    self._rp_scroll_max))
-                return None
-            if event.type == pygame.FINGERDOWN:
-                self._rp_drag_y = event.y * self.HEIGHT
-            elif event.type == pygame.FINGERMOTION and self._rp_drag_y is not None:
-                cy = event.y * self.HEIGHT
-                self._rp_scroll = max(0, min(
-                    self._rp_scroll + (self._rp_drag_y - cy), self._rp_scroll_max))
-                self._rp_drag_y = cy
-                return None
-            elif event.type == pygame.FINGERUP:
-                self._rp_drag_y = None
+        # ── Scrollable areas (wheel + mouse/touch drag) ──────────────
+        consumed, result = self._handle_scroll_event(event)
+        if consumed:
+            return result
 
         # ── Touch screen input (mobile/tablet) ──
         if event.type == pygame.FINGERDOWN:
@@ -2108,6 +1891,54 @@ class TherapistDashboardScene:
             # (no ESC navigation — use mouse/touch only)
 
         return None
+
+    def _active_scroll_area(self):
+        """The one scroll area currently on top, as (key, offset_attr), or
+        None. A popup always wins over the panel hidden underneath it."""
+        if self._share_modal_open:
+            if self._share_stage == "pick" and self.modal != "revoke_share_confirm":
+                return "share", "_share_shared_scroll"
+            return None
+        if self._ep_modal_open or self._gc_skill_modal_open:
+            return None
+        if self.modal == "edit_profile" and self.edit_icon_picker_open:
+            return "eip", "_eip_scroll"
+        if self.modal:
+            return None
+        if self.active_panel == 0:
+            return "pl", "_pl_scroll"
+        if self.active_panel == 6 and self._touch_ui:
+            return "rp", "_rp_scroll"
+        if self.active_panel != 8:
+            return None
+        if self._pv_tab == "info":
+            return "pv_info", "_pv_info_scroll"
+        if self._pv_tab == "analytics":
+            return "an", "_an_scroll"
+        if self._pv_tab == "history":
+            return (("sh", "_sh_scroll") if self._sh_detail_record is None
+                    else ("shd", "_shd_scroll"))
+        if self._pv_tab == "calibration":
+            return (("cr", "_cr_scroll") if self._cr_detail_record is None
+                    else ("crd", "_crd_scroll"))
+        return None
+
+    def _handle_scroll_event(self, event):
+        """Returns (consumed, result). Each draw method publishes its own
+        viewport in self._scroll_views and its limit in <offset_attr>_max."""
+        area = self._active_scroll_area()
+        if area is None or area[0] not in self._scroll_views:
+            self._scroller.cancel()
+            return False, None
+        key, attr = area
+        consumed, offset, tap = self._scroller.handle(
+            event, key=key, viewport=self._scroll_views[key],
+            scroll=getattr(self, attr), max_scroll=getattr(self, attr + "_max"),
+            size=(self.WIDTH, self.HEIGHT),
+            wheel_step=self._tt(40) if key == "share" else int(60 * self._fs),
+            threshold=self._sc(20), wheel_anywhere=key != "share")
+        setattr(self, attr, offset)
+        return consumed, (self._handle_click(tap) if tap is not None else None)
 
     def _handle_click(self, pos):
         """
@@ -2918,12 +2749,10 @@ class TherapistDashboardScene:
             self._gc_step = "game"
         if idx == 6:
             self._rp_scroll  = 0
-            self._rp_drag_y  = None
         if idx == 0:
             self._pt_search_active = False
             self._pt_search_text   = ""
             self._pl_scroll        = 0
-            self._pl_drag_y        = None
             try:
                 self.patients = (
                     self.db.get_all_patients(therapist_id=self.account["id"])
@@ -4150,7 +3979,6 @@ class TherapistDashboardScene:
         self._share_stage             = "pick"
         self._share_pending_action    = None
         self._share_shared_scroll     = 0
-        self._share_shared_drag_y     = None
         self._share_revoke_pending    = None
 
     # ──────────────────────────────────────────────────────────────────
@@ -4658,7 +4486,6 @@ class TherapistDashboardScene:
     def _open_icon_picker(self):
         self.edit_icon_picker_open = True
         self._eip_scroll = 0
-        self._eip_drag_y = None
 
     def _handle_icon_picker_click(self, pos):
         if self._eip_done_rect.collidepoint(pos):
@@ -6332,7 +6159,8 @@ class TherapistDashboardScene:
 
         mp = pygame.mouse.get_pos()
         prev_clip = surface.get_clip()
-        surface.set_clip(pygame.Rect(pa.x+1, list_top, pa.width-2, view_h))
+        self._scroll_views["pl"] = pygame.Rect(pa.x+1, list_top, pa.width-2, view_h)
+        surface.set_clip(self._scroll_views["pl"])
         for k, pt in enumerate(visible_patients):
             ry = list_top + k*row_h - self._pl_scroll
             if ry + row_h <= list_top or ry >= list_bottom:
@@ -6421,12 +6249,16 @@ class TherapistDashboardScene:
 
             enabled = is_owner
             hov = shr_r.collidepoint(mp) and enabled
-            share_img = _img("share_button.png", ic)
+            # Drawn smaller than its tap target, which stays touch-sized.
+            vis = max(self._sc(30), int(ic * 0.65))
+            vis_r = pygame.Rect(0, 0, vis, vis)
+            vis_r.center = shr_r.center
+            share_img = _img("share_button.png", vis)
             if share_img is not None:
                 if not enabled:
                     share_img = share_img.copy()
                     share_img.set_alpha(100)
-                surface.blit(share_img, shr_r.topleft)
+                surface.blit(share_img, share_img.get_rect(center=shr_r.center))
             else:
                 # fallback if the asset is ever missing -- the original
                 # vector-drawn button, unchanged
@@ -6436,9 +6268,9 @@ class TherapistDashboardScene:
                     shr_col = (110, 168, 235)
                 else:
                     shr_col = (90, 150, 220)
-                pygame.draw.rect(surface, shr_col, shr_r, border_radius=12)
-                self._share_icon(surface, shr_r.centerx, shr_r.centery,
-                                 int(ic * 0.32), (255, 255, 255))
+                pygame.draw.rect(surface, shr_col, vis_r, border_radius=10)
+                self._share_icon(surface, vis_r.centerx, vis_r.centery,
+                                 int(vis * 0.32), (255, 255, 255))
             if enabled:
                 self._patient_rows.append((shr_r, pt, "share"))
         surface.set_clip(prev_clip)
@@ -6764,6 +6596,7 @@ class TherapistDashboardScene:
         viewport = pygame.Rect(mr.x + pad, content_y, mr.width - pad * 2,
                                max(0, close_top - content_y))
         self._share_shared_viewport = viewport
+        self._scroll_views["share"] = viewport
 
         if not shared:
             self._share_shared_scroll = self._share_shared_scroll_max = 0
@@ -7006,6 +6839,7 @@ class TherapistDashboardScene:
         view_h = bottom - top
         total  = len(FIELDS) * row_h + self._sc(10)
         self._rp_scroll_max = max(0, total - view_h)
+        self._scroll_views["rp"] = pygame.Rect(pa.x + 1, top, pa.width - 2, view_h)
         self._rp_scroll = max(0, min(self._rp_scroll, self._rp_scroll_max))
         arrow_w = self._tt(46) if self._rp_scroll_max > 0 else 0
         field_w = fw - (arrow_w + int(8 * W / 1920) if arrow_w else 0)
@@ -7356,6 +7190,7 @@ class TherapistDashboardScene:
         bottom = pa.bottom - self._sc(14)
         view_h = bottom - top
         self._pv_info_scroll_max = max(0, total - view_h)
+        self._scroll_views["pv_info"] = pygame.Rect(pa.x + 1, top, pa.width - 2, view_h)
         self._pv_info_scroll = max(0, min(self._pv_info_scroll, self._pv_info_scroll_max))
 
         self._pv_sec_edit_rects = {}
@@ -7618,6 +7453,7 @@ class TherapistDashboardScene:
 
         content_h = sum(rh for _, rh, _ in row_data)
         self._sh_scroll_max = max(0, content_h - view_h)
+        self._scroll_views["sh"] = pygame.Rect(pa.x + 1, view_top, pa.width - 2, view_h)
         self._sh_scroll     = max(0, min(self._sh_scroll, self._sh_scroll_max))
         scrollable  = self._sh_scroll_max > 0
         arrow_w     = arrow_w if scrollable else 0
@@ -7758,6 +7594,7 @@ class TherapistDashboardScene:
 
         content_h = sum(hdr_h + row_h * len(rows) + self._sc(8) for _, rows in sections)
         self._shd_scroll_max = max(0, content_h - view_h)
+        self._scroll_views["shd"] = pygame.Rect(pa.x + 1, view_top, pa.width - 2, view_h)
         self._shd_scroll     = max(0, min(self._shd_scroll, self._shd_scroll_max))
         scrollable = self._shd_scroll_max > 0
         arrow_w    = arrow_w if scrollable else 0
@@ -7951,6 +7788,7 @@ class TherapistDashboardScene:
         row_data = self._metrics_build_rows(by_game, W, H, content_right - lx)
         content_h = sum(h + gap for _, _, h, _, gap in row_data)
         self._an_scroll_max = max(0, content_h - view_h)
+        self._scroll_views["an"] = pygame.Rect(pa.x + 1, view_top, pa.width - 2, view_h)
         self._an_scroll     = max(0, min(self._an_scroll, self._an_scroll_max))
         scrollable  = self._an_scroll_max > 0
         arrow_w     = arrow_w if scrollable else 0
@@ -8156,6 +7994,7 @@ class TherapistDashboardScene:
 
         content_h = sum(rh for _, rh, _ in row_data)
         self._cr_scroll_max = max(0, content_h - view_h)
+        self._scroll_views["cr"] = pygame.Rect(pa.x + 1, view_top, pa.width - 2, view_h)
         self._cr_scroll     = max(0, min(self._cr_scroll, self._cr_scroll_max))
         scrollable  = self._cr_scroll_max > 0
         arrow_w     = arrow_w if scrollable else 0
@@ -8289,6 +8128,7 @@ class TherapistDashboardScene:
 
         content_h = sum(hdr_h + row_h * len(rows) + self._sc(8) for _, rows in sections)
         self._crd_scroll_max = max(0, content_h - view_h)
+        self._scroll_views["crd"] = pygame.Rect(pa.x + 1, view_top, pa.width - 2, view_h)
         self._crd_scroll     = max(0, min(self._crd_scroll, self._crd_scroll_max))
         scrollable = self._crd_scroll_max > 0
         arrow_w    = arrow_w if scrollable else 0
@@ -8965,6 +8805,7 @@ class TherapistDashboardScene:
         rows_n = (12 + cols - 1) // cols
         total_h = rows_n * step - gap
         self._eip_scroll_max = max(0, total_h - view_h)
+        self._scroll_views["eip"] = pygame.Rect(pr.x, top, pw, view_h)
         self._eip_scroll = max(0, min(self._eip_scroll, self._eip_scroll_max))
         arrow_w = self._tt(40) if self._eip_scroll_max > 0 else 0
         grid_w = cols * step - gap

@@ -7,6 +7,7 @@ Kept separate from the games -- games own their own rendering entirely.
 """
 
 import os
+import math
 import pygame
 
 # The patient info screens follow the SAME light/dark theme as the games:
@@ -474,3 +475,19 @@ def draw_progress(surface: pygame.Surface, frac: float, y_frac: float = 0.62):
     y = int(h * y_frac)
     pygame.draw.rect(surface, PALETTE["panel"], (x, y, bar_w, bar_h), border_radius=bar_h // 2)
     pygame.draw.rect(surface, PALETTE["accent"], (x, y, int(bar_w * frac), bar_h), border_radius=bar_h // 2)
+
+
+def render_outlined(font, text, color, outline_px, outline_color=(255, 255, 255)):
+    """`text` in `color` with a solid outline (white by default), as one
+    surface so it can be scaled and faded as a unit."""
+    px = max(1, int(outline_px))
+    fg = font.render(text, True, color)
+    edge = font.render(text, True, outline_color)
+    out = pygame.Surface((fg.get_width() + px * 2, fg.get_height() + px * 2),
+                         pygame.SRCALPHA)
+    steps = max(16, px * 6)
+    for i in range(steps):
+        a = 2 * math.pi * i / steps
+        out.blit(edge, (px + round(math.cos(a) * px), px + round(math.sin(a) * px)))
+    out.blit(fg, (px, px))
+    return out

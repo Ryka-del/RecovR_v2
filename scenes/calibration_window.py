@@ -19,6 +19,7 @@ Phases:
 """
 
 import pygame
+from scenes.drag_scroll import DragScroller
 import builtins
 import os
 import sys
@@ -671,11 +672,7 @@ class CalibrationWindow:
         self._results_scroll_y   = 0
         self._results_content_h  = 0
         self._results_viewport   = pygame.Rect(0, 0, 1, 1)
-        self._scroll_drag_active   = False   # a pointer-down started inside the viewport
-        self._scroll_is_dragging   = False   # that pointer has since moved past the drag threshold
-        self._scroll_drag_start_pos   = (0, 0)
-        self._scroll_drag_start_scroll = 0
-        self._scroll_pending_tap_pos  = None  # resolved as a real tap only if released without dragging
+        self._scroller           = DragScroller()
         # ── Advanced Settings screen (separate phase) ──────────────────
         self._adv_back_rect     = pygame.Rect(0, 0, 1, 1)
         self._adv_reset_rect    = pygame.Rect(0, 0, 1, 1)
@@ -964,73 +961,19 @@ class CalibrationWindow:
                     self._step_param(spec, +1); return
 
     def _handle_results_scroll_event(self, event):
-        """Results-screen drag-to-scroll state machine. Returns True if this
-        event was consumed (the generic handler above must not also act on
-        it). A pointer-down inside the results viewport starts as a PENDING
-        tap; if it moves past a small threshold before release, it becomes
-        a scroll drag instead and the tap is cancelled -- released without
-        ever crossing that threshold, it fires as a real tap via
-        _dispatch_results_tap, same as every other button in this file."""
-        if event.type == pygame.MOUSEWHEEL:
-            mp = pygame.mouse.get_pos()
-            mp = builtins.normalise_pos(mp) if hasattr(builtins, "normalise_pos") else mp
-            if self._results_viewport.collidepoint(mp):
-                max_scroll = max(0, self._results_content_h - self._results_viewport.height)
-                self._results_scroll_y = max(0, min(max_scroll,
-                                              self._results_scroll_y - event.y * self._sc(40)))
-                return True
-            return False
-
-        pos, down = None, False
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            pos = builtins.normalise_pos(event.pos) if hasattr(builtins, "normalise_pos") else event.pos
-            down = True
-        elif event.type == pygame.FINGERDOWN:
-            pos = (int(event.x * self.W), int(event.y * self.H))
-            down = True
-        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-            pos = builtins.normalise_pos(event.pos) if hasattr(builtins, "normalise_pos") else event.pos
-        elif event.type == pygame.FINGERUP:
-            pos = (int(event.x * self.W), int(event.y * self.H))
-        elif event.type == pygame.MOUSEMOTION:
-            pos = builtins.normalise_pos(event.pos) if hasattr(builtins, "normalise_pos") else event.pos
-        elif event.type == pygame.FINGERMOTION:
-            pos = (int(event.x * self.W), int(event.y * self.H))
-        else:
-            return False
-
-        if down:
-            if not self._results_viewport.collidepoint(pos):
-                return False
-            self._scroll_drag_active       = True
-            self._scroll_is_dragging       = False
-            self._scroll_drag_start_pos    = pos
-            self._scroll_drag_start_scroll = self._results_scroll_y
-            self._scroll_pending_tap_pos   = pos
-            return True
-
-        if not self._scroll_drag_active:
-            return False
-
-        dx = pos[0] - self._scroll_drag_start_pos[0]
-        dy = pos[1] - self._scroll_drag_start_pos[1]
-
-        if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION):
-            if not self._scroll_is_dragging and (abs(dx) + abs(dy)) > 10:
-                self._scroll_is_dragging     = True
-                self._scroll_pending_tap_pos = None
-            if self._scroll_is_dragging:
-                max_scroll = max(0, self._results_content_h - self._results_viewport.height)
-                self._results_scroll_y = max(0, min(max_scroll, self._scroll_drag_start_scroll - dy))
-            return True
-
-        # MOUSEBUTTONUP / FINGERUP -- resolve
-        self._scroll_drag_active = False
-        if not self._scroll_is_dragging and self._scroll_pending_tap_pos is not None:
-            self._dispatch_results_tap(self._scroll_pending_tap_pos)
-        self._scroll_is_dragging     = False
-        self._scroll_pending_tap_pos = None
-        return True
+        """Results-screen wheel + drag scrolling (see scenes/drag_scroll.py).
+        Returns True if the event was consumed. Presses inside the viewport
+        are captured even when nothing overflows, because the preset cards
+        there are only reachable through _dispatch_results_tap."""
+        consumed, self._results_scroll_y, tap = self._scroller.handle(
+            event, key="results", viewport=self._results_viewport,
+            scroll=self._results_scroll_y,
+            max_scroll=max(0, self._results_content_h - self._results_viewport.height),
+            size=(self.W, self.H), wheel_step=self._sc(40), threshold=self._sc(16),
+            wheel_anywhere=False, capture_unscrollable=True)
+        if tap is not None:
+            self._dispatch_results_tap(tap)
+        return consumed
 
     def _dispatch_results_tap(self, pos):
         """A confirmed (non-drag) tap inside the results viewport -- only
@@ -1770,8 +1713,10 @@ class CalibrationWindow:
         # screen. Drawn after the phase content (not inside the top bar) so
         # it stays on top of whatever that phase renders, same as the
         # close-confirmation overlay below.
-        ctrl_w = self._scw(150)
-        self._draw_controller_status(surface, W - self._scw(20), H - self._sc(24), ctrl_w, C)
+        # Not on Results / Advanced Settings: no live reading happens there.
+        if self.phase not in ("results", "advanced"):
+            ctrl_w = self._scw(150)
+            self._draw_controller_status(surface, W - self._scw(20), H - self._sc(24), ctrl_w, C)
 
         # ── Close confirmation overlay -- drawn last so it covers everything
         # above, including whichever phase screen is currently showing. ────

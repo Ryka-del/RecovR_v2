@@ -216,6 +216,10 @@ class LoginScene:
         """Plain scaled size for NON-interactive spacing -- no tap-target floor."""
         return max(1, int(px * self._fs))
 
+    def _name_gap(self):
+        """Distance from a profile icon's bottom edge to its name's centre."""
+        return int(18 * self.HEIGHT / 1080) + self._sc(14)
+
     def _compute_layout(self):
         r         = self.circle_r
         diam      = 2 * r
@@ -278,6 +282,17 @@ class LoginScene:
             heading_bottom = (int(self.HEIGHT * 0.13) + self.font_heading.get_linesize() // 2
                               + int(12 * self.HEIGHT / 1080))
             back_top = self._back_rect().top
+            if self._touch_ui:
+                # Shrink the icons just enough that two rows AND the names
+                # under them fit between the heading and the Back button.
+                name_extent = self._name_gap() + self.font_username.get_linesize() // 2
+                fit_r = (back_top - heading_bottom - self._sc(46) - name_extent
+                         - self._sc(8)) // 4
+                r = max(self._sc(44), min(r, fit_r))
+                diam = 2 * r
+                v_step = max(int(210 * (self.HEIGHT / 1080)), diam + self._sc(46))
+                self.circle_r = r
+                self.add_radius = r
             avail_h  = max(diam, back_top - heading_bottom)
             rows_by_height = max(1, 1 + (avail_h - diam) // v_step)
             vis_rows = min(rows_n, rows_by_height)
@@ -301,7 +316,7 @@ class LoginScene:
                           f"heading_bottom={heading_bottom} back_top={back_top} avail_h={avail_h} "
                           f"rows_by_height={rows_by_height} vis_rows={vis_rows} "
                           f"scroll_max={self._profile_scroll_max}")
-            lbl_gap = int(18 * self.HEIGHT / 1080)
+            lbl_gap = self._name_gap()
             lbl_h   = self.font_username.get_linesize()
             self._profile_viewport = pygame.Rect(
                 0, cy_row0 - r, self.WIDTH, visible_h + lbl_gap + lbl_h)
@@ -959,7 +974,7 @@ class LoginScene:
 
     def _draw_circles(self, surface):
         r       = self.circle_r
-        lbl_gap = int(18 * self.HEIGHT / 1080)
+        lbl_gap = self._name_gap()
         lbl_col = (60, 75, 95)
 
         scrollable = self._profile_scroll_max > 0

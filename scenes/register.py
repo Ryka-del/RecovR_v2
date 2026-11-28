@@ -16,6 +16,7 @@
 # =============================================================================
 
 import pygame
+from scenes.drag_scroll import DragScroller
 import math
 import sys
 import os
@@ -157,14 +158,15 @@ class RegisterScene:
 
         # Touch-only scroll state (the field column / security-question
         # column scroll while the icon picker / title / footer stay fixed).
+        self._scroller         = DragScroller()
+        self._form_viewport    = pygame.Rect(0, 0, 0, 0)
+        self._sq_viewport      = pygame.Rect(0, 0, 0, 0)
         self._form_scroll      = 0
         self._form_scroll_max  = 0
-        self._form_drag_y      = None
         self._form_up_rect     = pygame.Rect(0, 0, 1, 1)
         self._form_down_rect   = pygame.Rect(0, 0, 1, 1)
         self._sq_scroll        = 0
         self._sq_scroll_max    = 0
-        self._sq_drag_y        = None
         self._sq_up_rect       = pygame.Rect(0, 0, 1, 1)
         self._sq_down_rect     = pygame.Rect(0, 0, 1, 1)
 
@@ -429,67 +431,18 @@ class RegisterScene:
         if self.reg_step == 2:
             return self._sq_handle_event(event)
 
-        # ── Touch: scroll the field column (wheel + finger drag) ──
+        # ── Touch: scroll the field column (wheel + mouse/touch drag) ──
         if self._touch_ui:
-            if event.type == pygame.MOUSEWHEEL:
-                self._form_scroll = max(0, min(
-                    self._form_scroll - event.y * int(60 * self._fs), self._form_scroll_max))
-                return None
-            if event.type == pygame.FINGERDOWN and self.content_top <= event.y * self.HEIGHT:
-                self._form_drag_y = event.y * self.HEIGHT
-            elif event.type == pygame.FINGERMOTION and self._form_drag_y is not None:
-                cy = event.y * self.HEIGHT
-                self._form_scroll = max(0, min(
-                    self._form_scroll + (self._form_drag_y - cy), self._form_scroll_max))
-                self._form_drag_y = cy
-                return None
-            elif event.type == pygame.FINGERUP:
-                self._form_drag_y = None
+            consumed, self._form_scroll, tap = self._scroller.handle(
+                event, key="form", viewport=self._form_viewport,
+                scroll=self._form_scroll, max_scroll=self._form_scroll_max,
+                size=(self.WIDTH, self.HEIGHT), wheel_step=int(60 * self._fs),
+                threshold=self._sc(20))
+            if consumed:
+                return self._form_click(tap) if tap is not None else None
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            pos = event.pos
-
-            if self.role_open:
-                for opt in self.role_opts:
-                    if opt["rect"].collidepoint(pos):
-                        play_click()
-                        self.fields[2]["value"] = opt["label"]
-                        self.role_open          = False
-                        return None
-                self.role_open = False
-
-            for (cx, cy, idx) in self.sm_circles:
-                if math.hypot(pos[0] - cx, pos[1] - cy) <= self.sm_r:
-                    play_click()
-                    self.selected_icon = idx
-                    return None
-
-            clicked_field = False
-            for i, f in enumerate(self.fields):
-                if f["rect"].collidepoint(pos):
-                    if f["key"] == "role":
-                        play_click()
-                        self.role_open    = not self.role_open
-                        self.active_field = -1
-                    else:
-                        self.active_field = i
-                        self.role_open    = False
-                    clicked_field = True
-                    break
-            if not clicked_field:
-                self.active_field = -1
-
-            if self.register_btn_rect.collidepoint(pos):
-                play_click()
-                return self._attempt_create()
-
-            if self.login_link_rect.collidepoint(pos):
-                play_click()
-                return self._try_leave_registration()
-
-            if self._back_rect().collidepoint(pos):
-                play_click()
-                return self._try_leave_registration()
+            return self._form_click(event.pos)
 
         if event.type == pygame.FINGERDOWN:
             touch = (int(event.x * self.WIDTH), int(event.y * self.HEIGHT))
@@ -503,6 +456,52 @@ class RegisterScene:
             if self.active_field >= 0:
                 self._handle_key(event)
 
+        return None
+
+    def _form_click(self, pos):
+        """A click/tap on the Step 1 account form."""
+
+        if self.role_open:
+            for opt in self.role_opts:
+                if opt["rect"].collidepoint(pos):
+                    play_click()
+                    self.fields[2]["value"] = opt["label"]
+                    self.role_open          = False
+                    return None
+            self.role_open = False
+
+        for (cx, cy, idx) in self.sm_circles:
+            if math.hypot(pos[0] - cx, pos[1] - cy) <= self.sm_r:
+                play_click()
+                self.selected_icon = idx
+                return None
+
+        clicked_field = False
+        for i, f in enumerate(self.fields):
+            if f["rect"].collidepoint(pos):
+                if f["key"] == "role":
+                    play_click()
+                    self.role_open    = not self.role_open
+                    self.active_field = -1
+                else:
+                    self.active_field = i
+                    self.role_open    = False
+                clicked_field = True
+                break
+        if not clicked_field:
+            self.active_field = -1
+
+        if self.register_btn_rect.collidepoint(pos):
+            play_click()
+            return self._attempt_create()
+
+        if self.login_link_rect.collidepoint(pos):
+            play_click()
+            return self._try_leave_registration()
+
+        if self._back_rect().collidepoint(pos):
+            play_click()
+            return self._try_leave_registration()
         return None
 
     def _is_dirty(self):
@@ -848,7 +847,8 @@ class RegisterScene:
         open_overlay = None
 
         prev_clip = surface.get_clip()
-        surface.set_clip(pygame.Rect(x0, top, fw, view_h))
+        self._form_viewport = pygame.Rect(x0, top, fw, view_h)
+        surface.set_clip(self._form_viewport)
         y = top - self._form_scroll
         self.role_opts = []
         for i, field in enumerate(self.fields):
@@ -1043,20 +1043,13 @@ class RegisterScene:
             return result
 
         if self._touch_ui:
-            if event.type == pygame.MOUSEWHEEL:
-                self._sq_scroll = max(0, min(
-                    self._sq_scroll - event.y * int(60 * self._fs), self._sq_scroll_max))
-                return None
-            if event.type == pygame.FINGERDOWN:
-                self._sq_drag_y = event.y * self.HEIGHT
-            elif event.type == pygame.FINGERMOTION and self._sq_drag_y is not None:
-                cy = event.y * self.HEIGHT
-                self._sq_scroll = max(0, min(
-                    self._sq_scroll + (self._sq_drag_y - cy), self._sq_scroll_max))
-                self._sq_drag_y = cy
-                return None
-            elif event.type == pygame.FINGERUP:
-                self._sq_drag_y = None
+            consumed, self._sq_scroll, tap = self._scroller.handle(
+                event, key="sq", viewport=self._sq_viewport,
+                scroll=self._sq_scroll, max_scroll=self._sq_scroll_max,
+                size=(self.WIDTH, self.HEIGHT), wheel_step=int(60 * self._fs),
+                threshold=self._sc(20))
+            if consumed:
+                return self._sq_handle_click(tap) if tap is not None else None
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             return self._sq_handle_click(event.pos)
@@ -1254,7 +1247,8 @@ class RegisterScene:
 
         open_overlay = None
         prev_clip = surface.get_clip()
-        surface.set_clip(pygame.Rect(x0, top, w, view_h))
+        self._sq_viewport = pygame.Rect(x0, top, w, view_h)
+        surface.set_clip(self._sq_viewport)
         y = top - self._sq_scroll
         for i, sf in enumerate(self.sq_fields):
             q_rect = pygame.Rect(x0, y + lbl_h + self._sc(2), col_w, fh)

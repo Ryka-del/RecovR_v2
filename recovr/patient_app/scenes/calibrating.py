@@ -28,7 +28,8 @@ import pygame
 from i18n import tr
 from recovr.patient_app.scenes.common import (
     PALETTE, fill_bg, draw_lines, draw_progress,
-    recovr_gradient, draw_recovr_wordmark, draw_glass_card, _IMG_DIR,
+    recovr_gradient, draw_recovr_wordmark, draw_glass_card, render_outlined,
+    _IMG_DIR,
 )
 
 # ── per-sensor content (exact wording from the approved reference designs) ──
@@ -417,7 +418,8 @@ class CalibratingScreen:
             secs = progress.get("countdown_seconds")
             if secs:
                 count_font = _font(int(H * HEAD_SIZE_FRAC * 1.6), "ExtraBold")
-                count_s = count_font.render(str(int(secs)), True, bar_fill)
+                count_s = render_outlined(count_font, str(int(secs)), bar_fill,
+                                          count_font.get_height() * 0.025)
                 surface.blit(count_s, count_s.get_rect(center=(W // 2, illu_top + illu_max_h // 2)))
 
         # -- pre-trial "Starts in Ns" countdown -- same source pattern as
@@ -432,7 +434,8 @@ class CalibratingScreen:
             secs = progress.get("countdown_seconds")
             if secs:
                 count_font = _font(int(illu_max_h * 0.95), "ExtraBold")
-                count_s = count_font.render(str(int(secs)), True, bar_fill)
+                count_s = render_outlined(count_font, str(int(secs)), bar_fill,
+                                          count_font.get_height() * 0.025)
                 surface.blit(count_s, count_s.get_rect(center=(W // 2, illu_top + illu_max_h // 2)))
 
         # -- recording hold countdown -- a smaller readout than the two
@@ -445,7 +448,8 @@ class CalibratingScreen:
             remaining = progress.get("record_seconds_left")
             if remaining is not None:
                 rec_font = _font(int(H * HEAD_SIZE_FRAC * 0.9), "ExtraBold")
-                rec_s = rec_font.render(f"{max(0.0, float(remaining)):.1f}s", True, bar_fill)
+                rec_s = render_outlined(rec_font, f"{max(0.0, float(remaining)):.1f}s",
+                                        bar_fill, rec_font.get_height() * 0.04)
                 surface.blit(rec_s, rec_s.get_rect(center=(W // 2, illu_top + illu_max_h // 2)))
 
         # -- feedback container ------------------------------------------
