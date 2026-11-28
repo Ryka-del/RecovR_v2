@@ -2,175 +2,193 @@
 
 ## System Requirements
 
-| Requirement | Minimum |
+| Requirement | Details |
 |-------------|---------|
-| Operating System | Raspberry Pi OS (Bookworm/Bullseye) **or** Windows 10/11 |
-| Python | 3.8 or higher |
-| Screen Resolution | 1920 × 1080 recommended (app scales to other resolutions) |
-| Bluetooth | Built-in or USB BLE adapter (for wireless controller) |
+| Deployment target | Raspberry Pi 4 Model B, Raspberry Pi OS / Debian 13 (Trixie) |
+| Development | Windows 10/11 (keyboard test mode, no LED output) |
+| Python | 3.10 or newer |
+| Displays | Therapist: 800 × 480 touchscreen. Patient: second monitor |
+| Bluetooth | Built-in or USB BLE adapter (for the wireless controller) |
+| Audio | Raspberry Pi 3.5 mm audio jack |
 
-> **Raspberry Pi 4 is the primary deployment target.** The app also runs on Windows for development; DPI-awareness and window positioning code is Windows-specific.
+The app runs as three processes (session broker, therapist screen, patient screen), all started by `python3 main.py`. With only one monitor it still runs, without forced window placement.
 
 ---
 
 ## Python Dependencies
 
-```
-pygame>=2.0      # game engine and UI
-bleak>=0.21      # BLE communication with the RecovR wireless controller
-```
+| Package | Needed for | Debian package |
+|---------|------------|----------------|
+| `pygame` (or `pygame-ce`) | Interface and games | `python3-pygame` |
+| `bleak` 0.21+ | Bluetooth link to the controller | `python3-bleak` |
+| `flask` 3.0+ | Local session broker between the two screens | `python3-flask` |
+| `gpiozero` + `lgpio` | Optional LED fallback only (see LED Strip) | `python3-gpiozero`, `python3-lgpio` |
 
-All other dependencies (`sqlite3`, `hashlib`, `datetime`, `asyncio`, `struct`, `threading`) are part of the Python standard library.
+Everything else is part of the Python standard library.
 
-All other dependencies (`sqlite3`, `hashlib`, `datetime`, `math`, `sys`, `os`, `random`, `time`, `ctypes`) are part of the Python standard library.
+`edge-tts` is **development only**. It is used by `generate_calibration_audio.py` to regenerate the English and Filipino calibration narration in `assets/audio/`; the running app never imports it.
 
-`edge-tts` is a **dev-only** dependency, not imported by the running app -- it's used solely by `generate_calibration_audio.py`, the one-time script that produced the English + Filipino calibration narration clips in `assets/audio/` (`pip install edge-tts`, run only when those clips need regenerating).
+**Do not install `pigpio`.** It is no longer used and has no installation candidate on Debian 13.
 
 ---
 
-## Installation Steps
+## Installation — Raspberry Pi
 
-### 0. Raspberry Pi — Bluetooth & BLE setup *(skip on Windows)*
-
-Enable and start the Bluetooth stack:
+### 1. System packages
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y bluetooth bluez bluez-tools
-sudo systemctl enable bluetooth
-sudo systemctl start bluetooth
+sudo apt update
+sudo apt install -y bluetooth bluez bluez-tools x11-xserver-utils
+sudo apt install -y python3-pygame python3-flask python3-bleak
+sudo systemctl enable --now bluetooth
 ```
 
-Install Python dependencies:
+`x11-xserver-utils` provides `xrandr`, which is used to detect the two monitors.
+
+Install with `apt`, because the autostart service runs the system Python (`/usr/bin/python3`) and Debian blocks system-wide `pip` installs. If `apt` has no candidate for one package, install just that package for the service user:
 
 ```bash
-pip install pygame bleak
+pip install --user --break-system-packages bleak
 ```
 
-Grant the Python process permission to use BLE without root (one-time setup):
+### 2. Bluetooth permission
 
 ```bash
 sudo setcap 'cap_net_raw,cap_net_admin+eip' $(readlink -f $(which python3))
 ```
 
-> If `setcap` is unavailable, run the app with `sudo python3 main.py` as an alternative.
-
-Verify BLE is working and the controller is visible:
+Power on the controller, then check that it is visible:
 
 ```bash
-# Scan for the controller (power it on first)
-python3 -c "
-import asyncio
-from bleak import BleakScanner
-async def scan():
-    devices = await BleakScanner.discover(timeout=5)
-    for d in devices:
-        print(d.name, d.address)
-asyncio.run(scan())
-"
+python3 tools/test_ble.py
 ```
 
-You should see **`RecovR-Controller`** in the list.
+You should see **`RecovR-Controller`** in the device list. (This tool's live readout expects older firmware; use it only to confirm the controller is found.)
+
+### 3. Copy the project
+
+Copy the whole project folder to the Pi:
+
+```
+<project folder>/
+├── main.py            ← start here
+├── database.py, backup_recovery.py, constants.py, audio.py, i18n.py, ui_cards.py
+├── assets/            ← fonts, images and audio (bundled)
+├── scenes/            ← therapist interface and calibration
+├── games/
+├── screens/
+├── sensors/           ← Bluetooth and sensor input
+├── hardware/          ← LED strip control
+├── recovr/            ← patient screen, session broker, launcher
+│   └── deploy/        ← autostart, shutdown and LED setup files
+├── firmware/          ← controller sketches
+├── tools/             ← diagnostics
+└── recovr.db          ← created on first run
+```
+
+### 4. LED strip, autostart and shutdown
+
+Follow [recovr/deploy/README.md](recovr/deploy/README.md). Before installing `recovr.service`, set `User=` and `WorkingDirectory=` to your account and project folder (the file's defaults are `pi` and `/home/pi/RecovRWE`).
+
+The same guide covers setting the time zone. The Pi 4 has no battery-backed clock.
 
 ---
 
-### 1. Install Python
+## Installation — Windows (development)
 
-Download and install Python 3.8+ from [python.org](https://www.python.org/downloads/).
-
-During installation on Windows, check **"Add Python to PATH"**.
-
-Verify your installation:
-```
-python --version
-```
-
-### 2. Install pygame
-
-Open a terminal (Command Prompt or PowerShell) and run:
+Install Python 3.10+ from [python.org](https://www.python.org/downloads/) and check **"Add Python to PATH"**. Then, in the project folder:
 
 ```
-pip install pygame
+pip install pygame-ce bleak flask
+python main.py
 ```
-
-Or if you have multiple Python versions:
-```
-python -m pip install pygame
-```
-
-### 3. Download / Copy the Project
-
-Copy the entire `RecovRWE` folder to your device. The folder structure should look like:
-
-```
-RecovRWE/
-├── main.py
-├── database.py
-├── constants.py
-├── audio.py
-├── requirements.md
-├── recovr.db          ← auto-created on first run
-├── assets/
-│   ├── font/          ← all font files (bundled)
-│   └── audio/         ← sound effects and music (bundled)
-├── scenes/
-├── games/
-├── sensors/
-└── screens/
-```
-
-All fonts and audio files are bundled in the `assets/` folder — **no additional downloads needed**.
 
 ---
 
 ## Running the App
 
-Open a terminal, navigate to the `RecovRWE` folder, and run:
-
-```
-python main.py
+```bash
+python3 main.py
 ```
 
-### Windows shortcut
+On Windows use `python main.py`. Close it with the therapist screen's close button, or `Ctrl+C` in the terminal. On a Pi with autostart installed:
 
-You can also create a `.bat` file in the project folder:
-
-```bat
-@echo off
-python main.py
+```bash
+sudo systemctl start recovr
+sudo systemctl stop recovr
+journalctl -u recovr -f      # live log
 ```
 
-Double-click it to launch the app.
+Confirming **Close** on the therapist screen also shuts down the Pi if the shutdown files from the deploy guide are installed.
+
+To check monitor detection:
+
+```bash
+python3 tools/diagnose_displays.py
+```
 
 ---
 
 ## Database
 
-- The database file (`recovr.db`) is automatically created in the project folder the first time the app runs.
-- **No manual database setup is required.**
-- Therapist accounts, patients, calibration records, and session history are all stored in this file.
-- To reset all data, delete `recovr.db` and restart the app.
+- `recovr.db` is created automatically in the project folder on first run. No manual setup is needed.
+- It stores therapist accounts, patients, calibration records and session history.
+- Automatic backups are kept in `backups/`. If the database fails its integrity check at startup, the latest valid backup is restored.
+- Both are excluded from Git, so each device keeps its own data.
+- To reset all data, close the app, then delete `recovr.db` and the `backups/` folder.
+
+---
+
+## LED Strip
+
+| Part | Details |
+|------|---------|
+| Strip | 12 V, powered from its own 12 V supply |
+| Switch | IRLZ44N MOSFET |
+| Control pin | Raspberry Pi **GPIO17** (BCM numbering), through a 330 Ω gate resistor |
+| Ground | The Pi and the 12 V supply must share ground |
+| Driver | Linux kernel `pwm-gpio` (`dtoverlay=pwm-gpio,gpio=17`) |
+
+| App state | LED behaviour |
+|-----------|---------------|
+| No game running | Slow breathing fade |
+| Game running | Steady light |
+| Patient scores | Three flashes |
+| App closed | Off |
+
+Test it with RecovR stopped:
+
+```bash
+python3 -m hardware.led_feedback status   # expected: backend: kernel
+python3 -m hardware.led_feedback test
+python3 -m hardware.led_feedback off
+```
+
+The IRLZ44N is usually specified for a gate drive of 4 V or more and the Pi supplies 3.3 V, so check that it stays cool with your strip.
 
 ---
 
 ## Wireless Controller Hardware
 
-The RecovR controller uses a **Seeed Studio XIAO-ESP32 C3** as the BLE transmitter.
+The controller uses a **Seeed Studio XIAO ESP32-C3** and sends readings over Bluetooth every 20 ms.
 
 ### Components
 
 | Component | Role | Connection |
-|-----------|------|-----------|
-| FSR402 | Grip strength sensor | MUX channel C5 |
-| Flex Sensor 2.2 | Finger flexion sensor | MUX channel C0 |
-| Push Button | Action button | MUX channel C10 (pull-down to GND) |
-| CD74HC4067 | 16-channel analog MUX | Signal → D0 (GPIO2); S0-S3 → D1-D3, D6 |
-| MPU6050 | Wrist tilt (accel X/Y) | I2C: SDA → D4 (GPIO6), SCL → D5 (GPIO7) |
+|-----------|------|------------|
+| FSR402 | Grip strength | MUX channel C4 |
+| 5 flex sensors | Thumb, Index, Middle, Ring, Pinky bending | MUX channels C5–C9 (left-hand glove) |
+| CD74HC4067 | 16-channel analog multiplexer | SIG → D0; S0–S3 → D1, D2, D3, D6; EN → GND |
+| MPU6050 | Wrist tilt (acceleration X and Y) | I²C: SDA → D4, SCL → D5 |
 
-### Pin Wiring (XIAO-ESP32 C3)
+No push button is wired.
+
+For a **right-hand glove**, set `GLOVE_RIGHT_HAND` to `1` in the firmware before flashing. Thumb to Pinky then read from C9 down to C5.
+
+### Pin Wiring (XIAO ESP32-C3)
 
 | XIAO Pin | GPIO | Connected to |
-|----------|------|-------------|
+|----------|------|--------------|
 | D0 | GPIO2 | MUX SIG (ADC input) |
 | D1 | GPIO3 | MUX S0 |
 | D2 | GPIO4 | MUX S1 |
@@ -178,32 +196,48 @@ The RecovR controller uses a **Seeed Studio XIAO-ESP32 C3** as the BLE transmitt
 | D6 | GPIO21 | MUX S3 |
 | D4 | GPIO6 | MPU6050 SDA |
 | D5 | GPIO7 | MPU6050 SCL |
-| 3V3 | — | VCC for MUX, MPU6050, sensors |
+| 3V3 | — | MUX, MPU6050 and sensor power |
 | GND | — | Common ground |
 
 ### Flashing the Firmware
 
-1. Install [Arduino IDE](https://www.arduino.cc/en/software) (v2.x recommended).
-2. Add the ESP32 board package: Preferences → Additional boards URL →
+1. Install [Arduino IDE](https://www.arduino.cc/en/software) 2.x.
+2. Add the ESP32 board package (Preferences → Additional boards manager URLs):
    `https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json`
-3. Install these libraries via **Sketch → Include Library → Manage Libraries**:
-   - `NimBLE-Arduino` by h2zero
-   - `Adafruit MPU6050` by Adafruit
-   - `Adafruit Unified Sensor` by Adafruit
-4. Open `firmware/recovr_controller/recovr_controller.ino`, select board **"XIAO_ESP32C3"**, flash.
-5. Open Serial Monitor (115200 baud) — you should see sensor readings every 20 ms and
-   `[BLE] Advertising as 'RecovR-Controller'`.
+3. Install these libraries through the Library Manager:
+   - `Adafruit MPU6050`
+   - `Adafruit Unified Sensor`
 
-### Sensor–Game Mapping
+   Bluetooth support is included in the ESP32 board package.
+4. Open `firmware/recovr_controller/recovr_controller.ino`, select the board **XIAO_ESP32C3**, and upload.
+5. Open the Serial Monitor at 115200 baud. You should see `[BLE] Advertising as 'RecovR-Controller'`, followed by sensor readings.
 
-| Sensor | `get_state()` key | Game |
-|--------|------------------|------|
-| FSR402 | `state["grip"]` | Basketball (squeeze to shoot) |
-| Flex Sensor | `state["tilt_y"]` + `state["fingers"]` | Tile Rush + Calibration |
-| MPU6050 accel X | `state["tilt_x"]` | Steady Aim (wrist rotation) |
-| Push Button | Synthetic `K_RETURN` event | General action |
+### Sensors Used by Each Game
 
-The app automatically falls back to keyboard controls when the BLE controller is off or out of range — no configuration needed.
+| Game | Grip | Flex (5) | Wrist X | Wrist Y |
+|------|:----:|:--------:|:-------:|:-------:|
+| Basketball | ✓ | | | |
+| Lemonade | ✓ | | | |
+| Tile Rush | | ✓ | | |
+| Whack-a-Mole | | ✓ | | |
+| Apple Catching | | | ✓ | |
+| Key and Lock | | | ✓ | |
+| Steady Aim | | | ✓ | ✓ |
+| Toy Factory | ✓ | | ✓ | ✓ |
+| Purrfect Feast | ✓ | | ✓ | |
+| Garden Wonders | ✓ | ✓ | ✓ | ✓ |
+
+The app falls back to keyboard controls when the controller is off or out of range.
+
+### Calibration Checks
+
+Grip and flex calibrations are checked after three trials and reported as **Passed**, **No movement**, **Inconsistent movement** or **Unreliable reading**. A failed check repeats once automatically, then offers **Retry Again** or **Continue Anyway**. Wrist (MPU6050) calibration is not checked.
+
+The limits are provisional and are set in `scenes/calibration_validation.py`. To collect readings for tuning:
+
+```bash
+journalctl -u recovr -f | grep "\[cal\]"
+```
 
 ---
 
@@ -211,12 +245,16 @@ The app automatically falls back to keyboard controls when the BLE controller is
 
 | Problem | Solution |
 |---------|----------|
-| `ModuleNotFoundError: No module named 'pygame'` | Run `pip install pygame` |
-| `ModuleNotFoundError: No module named 'bleak'` | Run `pip install bleak` |
-| Controller not detected (no BLE) | Ensure controller is powered on; run the BLE scan command above to verify it's visible |
-| BLE disconnects frequently | Keep controller within 5–10 m of the Raspberry Pi; avoid walls/metal between them |
-| `BluetoothPermissionError` on RPi | Run `sudo setcap 'cap_net_raw,cap_net_admin+eip' $(readlink -f $(which python3))` |
-| App window does not appear / appears on wrong monitor | Ensure `SDL_VIDEO_WINDOW_POS` is not overridden by another app |
-| Fonts not loading / text appears as squares | Ensure the `assets/font/` folder is present and contains all `.ttf` files |
-| Audio not playing | pygame's mixer requires a working audio device; the app continues without sound if no device is found |
-| Touchscreen taps not registering | The app handles touch via SDL `FINGERDOWN` events — ensure your touchscreen driver is recognized by SDL |
+| `No module named 'pygame'`, `'bleak'` or `'flask'` | Install it as described under Installation |
+| `Package 'pigpio' has no installation candidate` | Expected on Debian 13; `pigpio` is not needed |
+| Controller not detected | Check it is powered on, then run `python3 tools/test_ble.py` |
+| Bluetooth permission error | Repeat the `setcap` command above |
+| Controller disconnects often | Keep it within 5–10 m of the Pi, without metal or walls in between |
+| LED status is not `backend: kernel` | Check `systemctl status recovr-led` and the `config.txt` overlay |
+| LED fade flickers | Confirm the log shows `[led] kernel PWM`, not a `[led] WARNING` |
+| LED stays on after a forced kill | `python3 -m hardware.led_feedback off` |
+| Window on the wrong monitor | Run `python3 tools/diagnose_displays.py` |
+| Autostart cannot open the display | See "If the windows don't appear" in the deploy guide |
+| Text appears as squares | Check that `assets/font/` is complete |
+| No sound | Check the Pi's audio output is set to the 3.5 mm jack |
+| Touchscreen taps do not register | Check that the operating system detects the touchscreen |
